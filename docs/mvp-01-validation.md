@@ -1,6 +1,6 @@
 # MVP-01 Real Sources Offline Validation Report
 
-- Scope: Offline verification complete for branch `mvp/real-sources` at code commit `fed1ac7d338cf4c4ba2c3e0ac5f20da0c68df1b6` (baseline `d08bff4`). Live validation (T8/T9) pending.
+- Scope: Offline verification complete for branch `mvp/real-sources` at code commit `fed1ac7d338cf4c4ba2c3e0ac5f20da0c68df1b6` (baseline `d08bff4`). Live validation is blocked: T8 configuration preflight failed; T9 real-source E2E was not executed (see final handoff below).
 - Isolation: Executed in isolated environment (`RUN_REAL_LLM_TESTS` unset, no network, no live credentials, zero live API/LLM calls).
 
 ## Verification Suites (Foreground Only)
@@ -50,9 +50,27 @@ Generated artifacts per run: `snapshot.json`, `metrics.json`, `code_findings.jso
 ## Boundaries and Limitations
 
 1. **Test Exclusions:** 2 live LLM tests remain skipped (require explicit opt-in `RUN_REAL_LLM_TESTS=1`).
-2. **Pending Live Validation:** T8 (live external source verification) and T9 (controlled real-source E2E with applicable Ollama/conditional Gemini calls) remain pending; no live API credentials verified in this phase.
+2. **Pending Live Validation:** T8 (live external source verification) and T9 (controlled real-source E2E with applicable Ollama/conditional Gemini calls) remain blocked; no live source or LLM authentication was verified.
 3. **Local Scope:** Benchmark timings reflect local deterministic runs, not production cloud SLAs.
 4. **Current vs Historical Data:** External source collection captures current state at retrieval (`captured_at` UTC); no retroactive historical state reconstruction.
 5. **CI Quality Data:** GitHub Actions API does not provide test counts or coverage; fields remain `None` (`unknown`), not synthetic 0% or 80%.
 6. **Sanitization Proof:** Sanitization verified for tested configured secret patterns; does not constitute a mathematical proof against arbitrary untracked token formats.
 7. **Test-First Evidence:** Initial T5c production behavioral RED was not established (mock-payload failures are not behavioral proof). T6 observed 2 genuine failures among 37 tests before the direct SHA guard, then GREEN; already-safe cleanup received coverage-only locks.
+
+## T8/T9 Final Handoff: Blocked, Not Live-Verified
+
+At documentation commit `3647518`, the secure runtime loader and one actual `PYTHONPATH=src .venv/bin/python -m agente_gestion source-check all --sources real` preflight returned exit **1** in approximately **0.30s**. A non-mutating transport wrapper observed **0 Trello, 0 GitHub and 0 Actions GETs**. Trello/GitHub diagnostics reported `configuration`; Actions reported `dependency_blocked`. Counts, target SHA and actual CI runs are unknown, not zero-result successful fetches.
+
+Missing configuration: `trello_api_key`, `trello_token`, `trello_board_id`, all three Trello status-list mapping groups, `github_owner`, and `github_repo` (alias `github_repository`). GitHub token/branch/full SHA are optional, not missing mandatory prerequisites. Gemini key, remote-AI permission and Ollama base URL were configured, but no connectivity, credentials, model availability or LLM calls were verified. T9 was **not executed** because its source prerequisites failed; no fixtures substituted for live evidence. Configuration and secrets were not modified.
+
+Configure values locally—never paste credentials into chat: `TRELLO_API_KEY`, `TRELLO_TOKEN`, `TRELLO_BOARD_ID`, the relevant JSON-list mappings `TRELLO_PENDING_LIST_IDS`, `TRELLO_IN_PROGRESS_LIST_IDS`, `TRELLO_COMPLETED_LIST_IDS`, and `GITHUB_OWNER` / `GITHUB_REPO` (alias `GITHUB_REPOSITORY`). Then resume:
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s pruebas -p 'test_*.py'
+PYTHONPATH=src .venv/bin/python -m agente_gestion source-check all --sources real
+# Only after source checks succeed; confirm IS_FAKE=false in local configuration.
+PYTHONPATH=src .venv/bin/python -m agente_gestion run proyecto-demo --sources real
+```
+
+The final command is a **future** real E2E step, not executed evidence. Review its generated report and audit records; human decision must remain pending. Missing CI test counts/coverage may still produce `evidencia_insuficiente`. No source writes, push, PR, merge, deployment or MVP-02 work was performed.
