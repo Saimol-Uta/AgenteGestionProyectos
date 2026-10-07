@@ -47,10 +47,14 @@ class VerifierAgent:
         provider: LLMProviderPort,
         model: Optional[str] = None,
         coordinator: Optional[StageInvocationCoordinator] = None,
+        timeout_seconds: float = 120.0,
     ):
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
         self.provider = provider
         self.model = model or getattr(provider, "model", "gemini-2.5-flash")
         self.coordinator = coordinator or StageInvocationCoordinator()
+        self.timeout_seconds = timeout_seconds
 
     def run(
         self,
@@ -91,7 +95,7 @@ class VerifierAgent:
             json_schema=VerifierOutputSchema.model_json_schema(),
             model=self.model,
             max_generation_tokens=1024,
-            timeout_seconds=220.0,
+            timeout_seconds=self.timeout_seconds,
         )
 
         def validate_payload(data: dict[str, Any]) -> list[str]:

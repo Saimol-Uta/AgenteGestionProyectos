@@ -233,12 +233,13 @@ El proyecto utiliza un módulo centralizado de configuración (`Settings`) basad
 - `GEMINI_API_KEY`: Clave de API de Google Gemini (requerida únicamente para verificación remota en modo real).
 - `GEMINI_MODEL`: Modelo de Gemini (por defecto `gemini-2.5-flash`).
 - `QUALITY_TIMEOUT_SECONDS`: Timeout para revisión de calidad en el agente revisor (por defecto `120.0` s).
+- `VERIFIER_TIMEOUT_SECONDS`: Timeout para verificación independiente en el agente verificador (por defecto `120.0` s; configurable en `220.0` s si se desea conservar el presupuesto previo). Presupuesto independiente de `QUALITY_TIMEOUT_SECONDS`.
 - `RUN_REAL_LLM_TESTS`: Establecer en `1` para ejecutar pruebas con modelos reales (opt-in).
 
 ### Limitaciones conocidas y comportamiento por defecto
 
 - **Verificación sin credenciales remotas:** Por defecto (`allow_remote_ai: false` o sin `GEMINI_API_KEY`), cuando existen hallazgos de código que escalan (por ejemplo, categorías severas como inyección SQL o seguridad), la corrida finaliza con estado esperado `needs_attention`. No se sustituye localmente ni se asume veredicto favorable. Para una demostración determinista completa sin servicios externos, utilice la bandera `--fake`.
-- **Tiempo de respuesta en calidad:** La revisión exhaustiva de diffs en modelos locales de 4B puede tomar más de 60 segundos. Se configura por defecto un timeout acotado de 120 segundos (`quality_timeout_seconds: 120`).
+- **Tiempo de respuesta en calidad y verificación:** La revisión exhaustiva de diffs en modelos locales de 4B y la verificación en modelos remotos disponen de presupuestos de tiempo independientes y acotados por defecto a 120 segundos (`quality_timeout_seconds: 120.0` y `verifier_timeout_seconds: 120.0`). Si se desea conservar el presupuesto previo de verificación, se puede sobrescribir vía `VERIFIER_TIMEOUT_SECONDS=220`.
 
 ### Ubicación de artefactos y persistencia
 

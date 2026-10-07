@@ -660,6 +660,72 @@ class OrchestratorTestCase(unittest.TestCase):
         self.assertEqual(run_wrong.status, RunStatus.failed)
         self.assertIn("run-ci-wrong-sha", run_wrong.stages["monitoring"].error_message)
 
+    def test_orchestrator_config_independent_timeouts_and_forwarding_to_verifier(self):
+        """OrchestratorConfig maintains independent timeouts and forwards them to Quality and Verifier agents."""
+        # Non-positive validation
+        with self.assertRaises(ValueError):
+            OrchestratorConfig(verifier_timeout_seconds=0.0)
+        with self.assertRaises(ValueError):
+            OrchestratorConfig(verifier_timeout_seconds=-10.0)
+
+        # Default verifier_timeout_seconds is 120.0
+        cfg_default = OrchestratorConfig()
+        self.assertEqual(cfg_default.verifier_timeout_seconds, 120.0)
+        self.assertEqual(cfg_default.quality_timeout_seconds, 120.0)
+
+        # Custom independent sentinel budgets
+        class CapturingRevisorProvider(FakeProvider):
+            def __init__(self):
+                super().__init__(model="qwen3.5:4b-q4_K_M")
+                self.captured_requests = []
+            def generate(self, request):
+                self.captured_requests.append(request)
+                return super().generate(request)
+
+        class CapturingVerifierProvider(FakeProvider):
+            def __init__(self):
+                super().__init__(model="gemini-2.5-flash")
+                self.api_key = "test-fake-key"
+                self.captured_requests = []
+            def generate(self, request):
+                self.captured_requests.append(request)
+                return super().generate(request)
+
+        revisor = CapturingRevisorProvider()
+        verificador = CapturingVerifierProvider()
+
+        config = OrchestratorConfig(
+            project_id="test-proj",
+            allow_remote_ai=True,
+            quality_timeout_seconds=45.0,
+            verifier_timeout_seconds=88.0,
+        )
+        self.assertEqual(config.quality_timeout_seconds, 45.0)
+        self.assertEqual(config.verifier_timeout_seconds, 88.0)
+
+        snapshot = self._sample_snapshot_with_code()
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=revisor,
+            verificador_provider=verificador,
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+        self.assertEqual(run.stages["quality"].status, StageStatus.completed)
+        self.assertEqual(run.stages["verifier"].status, StageStatus.completed)
+
+        # Quality request received independent quality_timeout_seconds (45.0)
+        self.assertEqual(len(revisor.captured_requests), 1)
+        self.assertEqual(revisor.captured_requests[0].timeout_seconds, 45.0)
+
+        # Verifier request received independent verifier_timeout_seconds (88.0)
+        self.assertEqual(len(verificador.captured_requests), 1)
+        self.assertEqual(verificador.captured_requests[0].timeout_seconds, 88.0)
+
 
 if __name__ == "__main__":
     unittest.main()

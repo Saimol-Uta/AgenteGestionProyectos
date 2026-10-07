@@ -97,6 +97,7 @@ def run_command(args: argparse.Namespace) -> int:
         allow_remote_ai=config.allow_remote_ai,
         max_llm_calls_per_run=config.max_llm_calls_per_run,
         quality_timeout_seconds=config.quality_timeout_seconds,
+        verifier_timeout_seconds=config.verifier_timeout_seconds,
         runs_dir=config.runs_dir,
         fixtures_dir=config.fixtures_dir,
         db_path=config.db_path,

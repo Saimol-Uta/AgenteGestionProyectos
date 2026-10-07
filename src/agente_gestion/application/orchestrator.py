@@ -73,6 +73,7 @@ class OrchestratorConfig:
         allow_remote_ai: bool = False,
         max_llm_calls_per_run: int = 8,
         quality_timeout_seconds: float = 120.0,
+        verifier_timeout_seconds: float = 120.0,
         runs_dir: str = "runs",
         fixtures_dir: str = "fixtures",
         db_path: str = ".runtime/agente.db",
@@ -80,11 +81,14 @@ class OrchestratorConfig:
         is_simulated: bool = False,
         timezone: str = "America/Guayaquil",
     ):
+        if verifier_timeout_seconds <= 0:
+            raise ValueError("verifier_timeout_seconds must be positive")
         self.project_id = project_id
         self.default_fixture = default_fixture
         self.allow_remote_ai = allow_remote_ai
         self.max_llm_calls_per_run = max_llm_calls_per_run
         self.quality_timeout_seconds = quality_timeout_seconds
+        self.verifier_timeout_seconds = verifier_timeout_seconds
         self.runs_dir = runs_dir
         self.fixtures_dir = fixtures_dir
         self.db_path = db_path
@@ -435,6 +439,7 @@ class ProjectOrchestrator:
                         provider=self.verificador_provider,
                         model=configured_verifier_model,
                         coordinator=coordinator,
+                        timeout_seconds=getattr(self.config, "verifier_timeout_seconds", 120.0),
                     )
                     verifications = verifier_agent.run(
                         project_id=proj_id,

@@ -231,6 +231,99 @@ class ConfigSettingsTestCase(unittest.TestCase):
             self.assertEqual(cfg.ollama_base_url, "http://127.0.0.1:11436")
             self.assertEqual(cfg.max_repair_attempts, 3)
 
+    def test_verifier_timeout_seconds_default_is_120(self):
+        """verifier_timeout_seconds must default to 120.0."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings(_env_file=None)
+            self.assertEqual(settings.verifier_timeout_seconds, 120.0)
+
+    def test_verifier_timeout_seconds_loads_from_env(self):
+        """VERIFIER_TIMEOUT_SECONDS in OS environment is parsed correctly, including 220.0 budget."""
+        with patch.dict(os.environ, {"VERIFIER_TIMEOUT_SECONDS": "220.0"}, clear=True):
+            s1 = Settings(_env_file=None)
+            self.assertEqual(s1.verifier_timeout_seconds, 220.0)
+
+        # Also supports integer 220
+        with patch.dict(os.environ, {"VERIFIER_TIMEOUT_SECONDS": "220"}, clear=True):
+            s2 = Settings(_env_file=None)
+            self.assertEqual(s2.verifier_timeout_seconds, 220.0)
+
+    def test_verifier_timeout_seconds_loads_from_yaml(self):
+        """verifier_timeout_seconds under execution section in YAML is parsed."""
+        self._write_yaml(
+            "execution:\n"
+            "  quality_timeout_seconds: 45.0\n"
+            "  verifier_timeout_seconds: 150.0\n"
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                _env_file=None,
+            )
+            self.assertEqual(settings.quality_timeout_seconds, 45.0)
+            self.assertEqual(settings.verifier_timeout_seconds, 150.0)
+
+    def test_independent_quality_and_verifier_timeouts_in_config(self):
+        """quality_timeout_seconds and verifier_timeout_seconds must be independent budgets."""
+        with patch.dict(os.environ, {}, clear=True):
+            # Quality override only
+            s_q = Settings(_env_file=None, quality_timeout_seconds=45.0)
+            self.assertEqual(s_q.quality_timeout_seconds, 45.0)
+            self.assertEqual(s_q.verifier_timeout_seconds, 120.0)
+
+            # Verifier override only
+            s_v = Settings(_env_file=None, verifier_timeout_seconds=88.0)
+            self.assertEqual(s_v.quality_timeout_seconds, 120.0)
+            self.assertEqual(s_v.verifier_timeout_seconds, 88.0)
+
+            # Both configured independently
+            s_both = Settings(_env_file=None, quality_timeout_seconds=45.0, verifier_timeout_seconds=88.0)
+            self.assertEqual(s_both.quality_timeout_seconds, 45.0)
+            self.assertEqual(s_both.verifier_timeout_seconds, 88.0)
+
+    def test_verifier_timeout_precedence_hierarchy(self):
+        """CLI override > OS env > dotenv > YAML > defaults precedence for verifier_timeout_seconds."""
+        self._write_yaml(
+            "execution:\n"
+            "  verifier_timeout_seconds: 180.0\n"
+        )
+        self._write_env("VERIFIER_TIMEOUT_SECONDS=150.0\n")
+
+        # Dotenv beats YAML
+        with patch.dict(os.environ, {}, clear=True):
+            s_dotenv = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s_dotenv.verifier_timeout_seconds, 150.0)
+
+        # OS beats dotenv and YAML
+        with patch.dict(os.environ, {"VERIFIER_TIMEOUT_SECONDS": "220.0"}, clear=True):
+            s_os = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s_os.verifier_timeout_seconds, 220.0)
+
+        # CLI override beats OS, dotenv, YAML
+        with patch.dict(os.environ, {"VERIFIER_TIMEOUT_SECONDS": "220.0"}, clear=True):
+            s_cli = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                overrides={"verifier_timeout_seconds": 99.0},
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s_cli.verifier_timeout_seconds, 99.0)
+
+    def test_verifier_timeout_positive_validation(self):
+        """verifier_timeout_seconds must be positive (> 0); non-positive values fail validation."""
+        from pydantic import ValidationError
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ValidationError):
+                Settings(_env_file=None, verifier_timeout_seconds=0.0)
+            with self.assertRaises(ValidationError):
+                Settings(_env_file=None, verifier_timeout_seconds=-10.0)
+
+
 
 if __name__ == "__main__":
     unittest.main()

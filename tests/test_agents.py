@@ -238,6 +238,88 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
         for eid in verifications[0].evidence_ids:
             self.assertIn(eid, finding.evidence_ids)
 
+    def test_verifier_agent_default_timeout_is_120_and_forwarded_to_request(self):
+        """VerifierAgent must default to 120.0 and forward it to GenerationRequest.timeout_seconds."""
+        class CapturingFakeProvider(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.captured_requests = []
+            def generate(self, request):
+                self.captured_requests.append(request)
+                return super().generate(request)
+
+        provider = CapturingFakeProvider()
+        agent = VerifierAgent(provider=provider, model="gemini-2.5-flash")
+        self.assertEqual(agent.timeout_seconds, 120.0)
+
+        finding = CandidateFinding(
+            id="f-1",
+            category="division_cero",
+            file_path="src/service.py",
+            line=15,
+            commit_sha="c0ffee1",
+            evidence="1 / total",
+            suggested_fix="check total != 0",
+            evidence_ids=["ev-1"],
+        )
+        agent.run(
+            project_id="proj-1",
+            findings=[finding],
+            snippets=self.snippets,
+            rules=[],
+            evidence_ids=["ev-1"],
+        )
+        self.assertEqual(len(provider.captured_requests), 1)
+        self.assertEqual(provider.captured_requests[0].timeout_seconds, 120.0)
+
+    def test_verifier_agent_custom_timeout_forwarded_to_request(self):
+        """VerifierAgent with custom timeout_seconds (e.g. 220.0 or 88.0) forwards it to GenerationRequest."""
+        class CapturingFakeProvider(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.captured_requests = []
+            def generate(self, request):
+                self.captured_requests.append(request)
+                return super().generate(request)
+
+        # Legacy 220.0 override
+        provider_220 = CapturingFakeProvider()
+        agent_220 = VerifierAgent(provider=provider_220, timeout_seconds=220.0)
+        self.assertEqual(agent_220.timeout_seconds, 220.0)
+
+        # Custom sentinel 88.0
+        provider_88 = CapturingFakeProvider()
+        agent_88 = VerifierAgent(provider=provider_88, timeout_seconds=88.0)
+        self.assertEqual(agent_88.timeout_seconds, 88.0)
+
+        finding = CandidateFinding(
+            id="f-1",
+            category="division_cero",
+            file_path="src/service.py",
+            line=15,
+            commit_sha="c0ffee1",
+            evidence="1 / total",
+            suggested_fix="check total != 0",
+            evidence_ids=["ev-1"],
+        )
+        agent_88.run(
+            project_id="proj-1",
+            findings=[finding],
+            snippets=self.snippets,
+            rules=[],
+            evidence_ids=["ev-1"],
+        )
+        self.assertEqual(len(provider_88.captured_requests), 1)
+        self.assertEqual(provider_88.captured_requests[0].timeout_seconds, 88.0)
+
+    def test_verifier_agent_rejects_non_positive_timeout(self):
+        """VerifierAgent must reject non-positive timeout_seconds."""
+        fake = FakeProvider()
+        with self.assertRaises(ValueError):
+            VerifierAgent(provider=fake, timeout_seconds=0.0)
+        with self.assertRaises(ValueError):
+            VerifierAgent(provider=fake, timeout_seconds=-5.0)
+
     def test_report_agent_uses_2b_and_respects_deterministic_policy(self):
         fake = FakeProvider()
         agent = ReportAgent(provider=fake)

@@ -49,6 +49,8 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             merged["max_llm_calls_per_run"] = exec_sec["max_llm_calls_per_run"]
         if "quality_timeout_seconds" in exec_sec:
             merged["quality_timeout_seconds"] = exec_sec["quality_timeout_seconds"]
+        if "verifier_timeout_seconds" in exec_sec:
+            merged["verifier_timeout_seconds"] = exec_sec["verifier_timeout_seconds"]
 
     if "providers" in file_data and isinstance(file_data["providers"], dict):
         prov_sec = file_data["providers"]
@@ -110,6 +112,11 @@ class Settings(BaseSettings):
     quality_timeout_seconds: float = Field(
         default=120.0,
         description="Timeout in seconds for code quality review requests (bounded default 120s per ARCHITECTURA/T4).",
+    )
+    verifier_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0.0,
+        description="Timeout in seconds for independent verification requests (bounded default 120s; set to 220s to retain legacy budget).",
     )
     max_llm_calls_per_run: int = Field(default=8)
     max_transient_retries: int = Field(default=1)

@@ -159,7 +159,14 @@ class CLITestCase(unittest.TestCase):
         ]
 
         stdout_capture = io.StringIO()
-        with patch.object(sys, "argv", ["agente_gestion"] + cmd), \
+        from agente_gestion.application.config import Settings
+        orig_loader = Settings.from_env_and_file
+        with patch.dict(os.environ, {}, clear=True), \
+             patch(
+                 "agente_gestion.cli.Settings.from_env_and_file",
+                 side_effect=lambda *a, **kw: orig_loader(*a, **{**kw, "_env_file": None}),
+             ), \
+             patch.object(sys, "argv", ["agente_gestion"] + cmd), \
              patch("sys.stdout", stdout_capture), \
              patch("agente_gestion.cli.ProjectOrchestrator") as mock_orch_cls:
 
@@ -182,6 +189,97 @@ class CLITestCase(unittest.TestCase):
 
         output = stdout_capture.getvalue()
         self.assertIn("Verificador=unavailable", output)
+
+    def test_cli_remote_disabled_scenario_immune_to_ambient_host_dotenv_and_os_flags(self):
+        """Regression test: ambient host dotenv or OS remote flag cannot contaminate remote-disabled scenario."""
+        from agente_gestion.application.config import Settings
+        orig_loader = Settings.from_env_and_file
+        host_env_path = os.path.join(self.temp_dir, "host.env")
+        with open(host_env_path, "w", encoding="utf-8") as f:
+            f.write(
+                "ALLOW_REMOTE_AI=true\n"
+                "GEMINI_API_KEY=synthetic-host-key\n"
+            )
+
+        cmd = [
+            "run",
+            "fixture_1_standard",
+            "--fixture", "fixture_1_standard",
+            "--db-path", self.db_path,
+            "--output-dir", self.runs_dir,
+        ]
+
+        # Case 1: Scoped Settings factory using _env_file=None ignores ambient host dotenv
+        with patch.dict(os.environ, {}, clear=True), \
+             patch(
+                 "agente_gestion.cli.Settings.from_env_and_file",
+                 side_effect=lambda *a, **kw: orig_loader(*a, **{**kw, "_env_file": None}),
+             ), \
+             patch.object(sys, "argv", ["agente_gestion"] + cmd), \
+             patch("sys.stdout", io.StringIO()), \
+             patch("agente_gestion.cli.ProjectOrchestrator") as mock_orch_cls:
+
+            mock_run = MagicMock(run_id="run-test", duration_seconds=1.0)
+            mock_run.status.value = "needs_attention"
+            mock_orch_cls.return_value.execute.return_value = mock_run
+
+            main()
+            call_kwargs = mock_orch_cls.call_args[1]
+            self.assertIsNone(
+                call_kwargs.get("verificador_provider"),
+                "Scoped factory _env_file=None must shield against ambient host dotenv",
+            )
+
+        # Case 2: OS environment ALLOW_REMOTE_AI=false strictly beats host dotenv ALLOW_REMOTE_AI=true
+        cmd_with_host_env = cmd + ["--env-file", host_env_path]
+        with patch.dict(os.environ, {"ALLOW_REMOTE_AI": "false"}, clear=True), \
+             patch.object(sys, "argv", ["agente_gestion"] + cmd_with_host_env), \
+             patch("sys.stdout", io.StringIO()), \
+             patch("agente_gestion.cli.ProjectOrchestrator") as mock_orch_cls_2:
+
+            mock_run = MagicMock(run_id="run-test-2", duration_seconds=1.0)
+            mock_run.status.value = "needs_attention"
+            mock_orch_cls_2.return_value.execute.return_value = mock_run
+
+            main()
+            call_kwargs_2 = mock_orch_cls_2.call_args[1]
+            self.assertIsNone(
+                call_kwargs_2.get("verificador_provider"),
+                "OS ALLOW_REMOTE_AI=false must override host dotenv ALLOW_REMOTE_AI=true",
+            )
+
+    def test_cli_wires_verifier_timeout_from_config_to_orchestrator(self):
+        """CLI must wire verifier_timeout_seconds from Settings into OrchestratorConfig."""
+        from agente_gestion.application.config import Settings
+        orig_loader = Settings.from_env_and_file
+        cmd = [
+            "run",
+            "fixture_1_standard",
+            "--fake",
+            "--fixture", "fixture_1_standard",
+            "--db-path", self.db_path,
+            "--output-dir", self.runs_dir,
+        ]
+
+        with patch.dict(os.environ, {"VERIFIER_TIMEOUT_SECONDS": "150.0"}, clear=True), \
+             patch(
+                 "agente_gestion.cli.Settings.from_env_and_file",
+                 side_effect=lambda *a, **kw: orig_loader(*a, **{**kw, "_env_file": None}),
+             ), \
+             patch.object(sys, "argv", ["agente_gestion"] + cmd), \
+             patch("sys.stdout", io.StringIO()), \
+             patch("agente_gestion.cli.ProjectOrchestrator") as mock_orch_cls:
+
+            mock_run = MagicMock(run_id="run-wires-timeout", duration_seconds=1.0)
+            mock_run.status.value = "awaiting_human"
+            mock_orch_cls.return_value.execute.return_value = mock_run
+
+            main()
+            call_kwargs = mock_orch_cls.call_args[1]
+            orch_config = call_kwargs.get("config")
+            self.assertIsNotNone(orch_config)
+            self.assertEqual(orch_config.verifier_timeout_seconds, 150.0)
+            self.assertEqual(orch_config.quality_timeout_seconds, 120.0)
 
     def test_cli_env_file_option_loads_and_cli_overrides_beat_it(self):
         env_custom_path = os.path.join(self.temp_dir, "custom.env")
