@@ -239,6 +239,7 @@ El proyecto utiliza un módulo centralizado de configuración (`Settings`) basad
 - `GEMINI_MODEL`: Modelo de Gemini (por defecto `gemini-2.5-flash`).
 - `QUALITY_TIMEOUT_SECONDS`: Timeout para revisión de calidad en el agente revisor (por defecto `120.0` s).
 - `VERIFIER_TIMEOUT_SECONDS`: Timeout para verificación independiente en el agente verificador (por defecto `120.0` s; configurable en `220.0` s si se desea conservar el presupuesto previo). Presupuesto independiente de `QUALITY_TIMEOUT_SECONDS`.
+- `TRELLO_STATE_STRATEGY`: Estrategia de determinación de estado para Trello (`list_mapping` por defecto, o `date_fields`).
 - `RUN_REAL_LLM_TESTS`: Establecer en `1` para ejecutar pruebas con modelos reales (opt-in).
 
 ### Limitaciones conocidas y comportamiento por defecto
@@ -293,6 +294,7 @@ El proyecto utiliza un módulo centralizado de configuración (`Settings`) basad
   - **Higiene de credenciales cruzadas:** Admite `known_secret_values` opcional para prevenir que secretos conocidos aparezcan en la configuración del proyecto o en entidades normalizadas antes de su publicación. `repr(adapter)` oculta credenciales.
 - **Configuración y fábrica de fuentes de datos (`Settings` & `factory.py` - T5b):**
   - **Fábrica fresca por invocación:** `create_task_source`, `create_code_source`, `create_ci_source`, `create_policy_source`, y `create_composite_source` generan instancias nuevas e independientes con transporte acotado inyectable. Las credenciales conocidas (`gemini_api_key`, `trello_api_key`, `trello_token`, `github_token`) se resguardan como `SecretStr` y se transfieren privadamente a la frontera de composición sin registro en logs ni cadenas `repr`.
+  - **Estrategia de estado de Trello (`trello_state_strategy`):** Cableada desde la configuración (`TRELLO_STATE_STRATEGY` en variables de entorno/dotenv o en YAML bajo `sources.trello.state_strategy` o plano `trello_state_strategy`) hacia `create_task_source`. Admite `'list_mapping'` (por defecto, mapea listas a grupos de estado) o `'date_fields'` (para tableros por fases donde el estado se determina por `dueComplete`, fecha `start` consciente frente al instante UTC de recolección y etiquetas de bloqueo, sin requerir grupos de IDs de listas; `included_list_ids` actúa como filtro opcional de fases). Valores inválidos, vacíos o no-strings se rechazan de forma segura al cargar la configuración con código de salida `2` sin exponer datos sin sanitizar.
   - **Validación estricta y previa a HTTP:** Los alias de repositorio (`github_repo` / `github_repository`) y rama (`github_branch` / `github_ref`) son reconciliados; si se especifican valores contradictorios, fallan con error de configuración estático antes de cualquier llamada HTTP. El commit SHA exige exactamente 40 o 64 caracteres hexadecimales completos.
   - **Requisitos por proveedor:** La verificación de un proveedor individual requiere únicamente la configuración de dicho proveedor (p. ej., chequear Trello no exige variables de GitHub).
 - **Subcomando de diagnóstico de fuentes (`source-check` - T5b):**

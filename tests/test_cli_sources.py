@@ -131,10 +131,26 @@ class SourceFactoryTestCase(unittest.TestCase):
         fake_tr = FakeTransport()
         task_src = create_task_source(s_trello, transport=fake_tr)
         self.assertIsInstance(task_src, TrelloSourceAdapter)
+        self.assertEqual(task_src.state_strategy, "list_mapping")
+
+    def test_factory_trello_state_strategy_date_fields_without_groups(self):
+        """create_task_source passes state_strategy='date_fields' without requiring list mapping groups."""
+        s_date = Settings(
+            _env_file=None,
+            source_mode="real",
+            trello_board_id="board-123",
+            trello_api_key="api-key-123",
+            trello_token="token-123",
+            trello_state_strategy="date_fields",
+        )
+        fake_tr = FakeTransport()
+        task_src = create_task_source(s_date, transport=fake_tr)
+        self.assertIsInstance(task_src, TrelloSourceAdapter)
+        self.assertEqual(task_src.state_strategy, "date_fields")
 
         # Code source should fail because github config is missing
         with self.assertRaises(SourceError) as cm:
-            create_code_source(s_trello, transport=fake_tr)
+            create_code_source(s_date, transport=fake_tr)
         self.assertEqual(cm.exception.provider, SourceProvider.github)
         self.assertEqual(cm.exception.category, SourceErrorCategory.configuration)
 
@@ -545,6 +561,93 @@ class CLISourceCheckTestCase(unittest.TestCase):
         combined = stdout_capture.getvalue() + stderr_capture.getvalue()
         self.assertIn("configuration", combined.lower())
         self.assertNotIn("Invalid/Nonexistent_TZ", combined)
+
+    def test_cli_source_check_real_trello_date_fields(self):
+        """source-check trello in date_fields mode executes read-only, verifies states, and issues 2 GETs."""
+        config_path = os.path.join(self.temp_dir, "date_config.yaml")
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(
+                "sources:\n"
+                "  mode: real\n"
+                "  trello:\n"
+                "    board_id: board-123\n"
+                "    api_key: api-key-123\n"
+                "    token: token-123\n"
+                "    state_strategy: date_fields\n"
+            )
+        fake_tr = FakeTransport({
+            "https://api.trello.com/1/boards/board-123/lists/all": HttpResponse(
+                status_code=200,
+                body=[{"id": "list-phase", "idBoard": "board-123", "name": "Backlog", "closed": False}],
+            ),
+            "https://api.trello.com/1/boards/board-123/cards/all": HttpResponse(
+                status_code=200,
+                body=[
+                    {
+                        "id": "card-done", "idBoard": "board-123", "idList": "list-phase",
+                        "name": "Finished Task", "closed": False, "dueComplete": True,
+                        "due": "2026-10-06T12:00:00Z", "start": "2026-10-01T00:00:00Z",
+                    },
+                    {
+                        "id": "card-prog", "idBoard": "board-123", "idList": "list-phase",
+                        "name": "Started Task", "closed": False, "dueComplete": False,
+                        "due": "2026-10-10T12:00:00Z", "start": "2026-10-01T00:00:00Z",
+                    },
+                ],
+            ),
+        })
+        cmd = [
+            "source-check",
+            "trello",
+            "--sources", "real",
+            "--config", config_path,
+        ]
+        stdout_capture = io.StringIO()
+        with patch("agente_gestion.adapters.sources.factory.BoundedGetTransport", return_value=fake_tr):
+            with patch.object(sys, "argv", ["agente_gestion"] + cmd), patch("sys.stdout", stdout_capture):
+                exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        out = stdout_capture.getvalue()
+        self.assertIn("success", out.lower())
+        self.assertIn("2", out)  # 2 cards found
+        self.assertEqual(len(fake_tr.calls), 2)
+        # Verify factory created adapter derived correct task states
+        settings = Settings.from_env_and_file(config_path=config_path, _env_file=self.empty_env)
+        adapter = create_task_source(settings, transport=fake_tr)
+        tasks = adapter.get_tasks("test-proj")
+        t_map = {t.id: t for t in tasks}
+        from agente_gestion.domain.tasks import TaskState
+        self.assertEqual(t_map["card-done"].state, TaskState.completed)
+        self.assertEqual(t_map["card-prog"].state, TaskState.in_progress)
+
+    def test_cli_source_check_invalid_state_strategy_fails_safely(self):
+        """Invalid trello state_strategy fails source-check with exit 2 and safe error without leaking value."""
+        bad_config_path = os.path.join(self.temp_dir, "bad_strat_config.yaml")
+        with open(bad_config_path, "w", encoding="utf-8") as f:
+            f.write(
+                "sources:\n"
+                "  mode: real\n"
+                "  trello:\n"
+                "    board_id: board-123\n"
+                "    api_key: api-key-123\n"
+                "    token: token-123\n"
+                "    state_strategy: UNSUPPORTED_STRATEGY\n"
+            )
+        cmd = [
+            "source-check",
+            "trello",
+            "--config", bad_config_path,
+        ]
+        stderr_capture = io.StringIO()
+        stdout_capture = io.StringIO()
+        with patch.object(sys, "argv", ["agente_gestion"] + cmd), patch("sys.stderr", stderr_capture), patch("sys.stdout", stdout_capture):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 2)
+        combined = stdout_capture.getvalue() + stderr_capture.getvalue()
+        self.assertIn("configuration", combined.lower())
+        self.assertNotIn("UNSUPPORTED_STRATEGY", combined)
 
 
 if __name__ == "__main__":

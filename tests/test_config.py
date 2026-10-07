@@ -484,6 +484,75 @@ class ConfigSettingsTestCase(unittest.TestCase):
         for sec in (t_key, t_tok, gh_tok, gem_key):
             self.assertIn(sec, known)
 
+    def test_trello_state_strategy_default_list_mapping(self):
+        """trello_state_strategy defaults to 'list_mapping'."""
+        with patch.dict(os.environ, {}, clear=True):
+            s = Settings(_env_file=None)
+            self.assertEqual(s.trello_state_strategy, "list_mapping")
+
+    def test_trello_state_strategy_os_and_dotenv_loading(self):
+        """TRELLO_STATE_STRATEGY is parsed from OS env and dotenv, normalizing to lowercase."""
+        # OS env
+        with patch.dict(os.environ, {"TRELLO_STATE_STRATEGY": "date_fields"}, clear=True):
+            s1 = Settings(_env_file=None)
+            self.assertEqual(s1.trello_state_strategy, "date_fields")
+
+        # Dotenv
+        self._write_env("TRELLO_STATE_STRATEGY=DATE_FIELDS\n")
+        with patch.dict(os.environ, {}, clear=True):
+            s2 = Settings(_env_file=self.env_file)
+            self.assertEqual(s2.trello_state_strategy, "date_fields")
+
+    def test_trello_state_strategy_yaml_flat_and_nested_parsing(self):
+        """YAML extracts trello_state_strategy both flat and nested under sources.trello.state_strategy."""
+        # Nested sources.trello.state_strategy
+        self._write_yaml(
+            "sources:\n"
+            "  trello:\n"
+            "    state_strategy: date_fields\n"
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            s_nested = Settings.from_env_and_file(config_path=self.yaml_file, _env_file=None)
+            self.assertEqual(s_nested.trello_state_strategy, "date_fields")
+
+        # Flat top-level trello_state_strategy
+        self._write_yaml("trello_state_strategy: date_fields\n")
+        with patch.dict(os.environ, {}, clear=True):
+            s_flat = Settings.from_env_and_file(config_path=self.yaml_file, _env_file=None)
+            self.assertEqual(s_flat.trello_state_strategy, "date_fields")
+
+    def test_trello_state_strategy_invalid_rejected(self):
+        """Invalid, blank, non-string strategies fail validation without leaking values."""
+        from pydantic import ValidationError
+        with patch.dict(os.environ, {}, clear=True):
+            for bad in ["unknown_strategy", "", "   ", 123]:
+                with self.assertRaises((ValidationError, ValueError)):
+                    Settings(_env_file=None, trello_state_strategy=bad)
+
+    def test_trello_state_strategy_precedence(self):
+        """Precedence order: init/override > OS env > dotenv > YAML > default for trello_state_strategy."""
+        self._write_yaml("sources:\n  trello:\n    state_strategy: list_mapping\n")
+        self._write_env("TRELLO_STATE_STRATEGY=date_fields\n")
+
+        # Dotenv beats YAML
+        with patch.dict(os.environ, {}, clear=True):
+            s_dotenv = Settings.from_env_and_file(config_path=self.yaml_file, _env_file=self.env_file)
+            self.assertEqual(s_dotenv.trello_state_strategy, "date_fields")
+
+        # OS beats dotenv
+        with patch.dict(os.environ, {"TRELLO_STATE_STRATEGY": "list_mapping"}, clear=True):
+            s_os = Settings.from_env_and_file(config_path=self.yaml_file, _env_file=self.env_file)
+            self.assertEqual(s_os.trello_state_strategy, "list_mapping")
+
+        # Override beats OS
+        with patch.dict(os.environ, {"TRELLO_STATE_STRATEGY": "list_mapping"}, clear=True):
+            s_ov = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                overrides={"trello_state_strategy": "date_fields"},
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s_ov.trello_state_strategy, "date_fields")
+
     def test_cross_layer_alias_precedence_repo(self):
         """Higher priority source with alias overrides lower priority without false conflict (Defect 3)."""
         self._write_yaml(

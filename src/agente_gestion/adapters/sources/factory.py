@@ -58,6 +58,7 @@ def create_task_source(
         mapping_config=mapping,
         transport=tr,
         timezone_name=settings.timezone,
+        state_strategy=settings.trello_state_strategy,
     )
 
 

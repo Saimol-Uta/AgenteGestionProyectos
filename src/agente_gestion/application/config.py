@@ -86,6 +86,10 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
                 merged["trello_api_key"] = tr["api_key"]
             if "token" in tr:
                 merged["trello_token"] = tr["token"]
+            if "state_strategy" in tr:
+                merged["trello_state_strategy"] = tr["state_strategy"]
+            elif "trello_state_strategy" in tr:
+                merged["trello_state_strategy"] = tr["trello_state_strategy"]
             mapping_sec = tr.get("mapping") if isinstance(tr.get("mapping"), dict) else tr
             if "pending_list_ids" in mapping_sec:
                 merged["trello_pending_list_ids"] = mapping_sec["pending_list_ids"]
@@ -260,6 +264,10 @@ class Settings(BaseSettings):
         default_factory=lambda: ["bloqueada", "blocked"]
     )
     trello_included_list_ids: Optional[list[str]] = Field(default=None)
+    trello_state_strategy: str = Field(
+        default="list_mapping",
+        description="Task state determination strategy for Trello ('list_mapping' or 'date_fields').",
+    )
 
     github_token: Optional[SecretStr] = Field(
         default=None,
@@ -362,6 +370,18 @@ class Settings(BaseSettings):
         cleaned = v.strip().lower()
         if cleaned not in ("fixtures", "real"):
             raise ValueError(f"Invalid source_mode: '{v}'. Must be 'fixtures' or 'real'.")
+        return cleaned
+
+    @field_validator("trello_state_strategy", mode="before")
+    @classmethod
+    def parse_trello_state_strategy(cls, v: Any) -> str:
+        if not isinstance(v, str):
+            raise ValueError("trello_state_strategy must be a string")
+        cleaned = v.strip().lower()
+        if not cleaned:
+            raise ValueError("trello_state_strategy cannot be empty")
+        if cleaned not in ("list_mapping", "date_fields"):
+            raise ValueError(f"Invalid trello_state_strategy: '{v}'. Must be 'list_mapping' or 'date_fields'.")
         return cleaned
 
     @field_validator("allow_remote_ai", mode="before")
