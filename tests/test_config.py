@@ -325,5 +325,256 @@ class ConfigSettingsTestCase(unittest.TestCase):
 
 
 
+    def test_source_mode_default_fixtures(self):
+        """source_mode defaults to 'fixtures' and does not require credentials."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings(_env_file=None)
+            self.assertEqual(settings.source_mode, "fixtures")
+
+    def test_source_mode_validation(self):
+        """source_mode must be 'fixtures' or 'real' (case-insensitive)."""
+        with patch.dict(os.environ, {}, clear=True):
+            s1 = Settings(_env_file=None, source_mode="real")
+            self.assertEqual(s1.source_mode, "real")
+            s2 = Settings(_env_file=None, source_mode="FIXTURES")
+            self.assertEqual(s2.source_mode, "fixtures")
+
+            from pydantic import ValidationError
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings(_env_file=None, source_mode="invalid_mode")
+
+    def test_sources_yaml_parsing(self):
+        """YAML configuration with sources section maps cleanly to Settings."""
+        self._write_yaml(
+            "sources:\n"
+            "  mode: real\n"
+            "  policies_path: custom/policies.yaml\n"
+            "  http_timeout_seconds: 45.0\n"
+            "  http_max_response_bytes: 20971520\n"
+            "  trello:\n"
+            "    board_id: yaml-board\n"
+            "    api_key: yaml-trello-key\n"
+            "    token: yaml-trello-token\n"
+            "    mapping:\n"
+            "      pending_list_ids: ['list-p']\n"
+            "      in_progress_list_ids: ['list-ip']\n"
+            "      completed_list_ids: ['list-c']\n"
+            "      blocked_labels: ['blocked-tag']\n"
+            "  github:\n"
+            "    owner: yaml-owner\n"
+            "    repo: yaml-repo\n"
+            "    branch: yaml-branch\n"
+            "    token: yaml-gh-token\n"
+            "    commit_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            s = Settings.from_env_and_file(config_path=self.yaml_file, _env_file=None)
+            self.assertEqual(s.source_mode, "real")
+            self.assertEqual(s.policies_path, "custom/policies.yaml")
+            self.assertEqual(s.http_timeout_seconds, 45.0)
+            self.assertEqual(s.http_max_response_bytes, 20971520)
+            self.assertEqual(s.trello_board_id, "yaml-board")
+            self.assertEqual(s.trello_api_key.get_secret_value(), "yaml-trello-key")
+            self.assertEqual(s.trello_token.get_secret_value(), "yaml-trello-token")
+            self.assertEqual(s.trello_pending_list_ids, ["list-p"])
+            self.assertEqual(s.trello_in_progress_list_ids, ["list-ip"])
+            self.assertEqual(s.trello_completed_list_ids, ["list-c"])
+            self.assertEqual(s.trello_blocked_labels, ["blocked-tag"])
+            self.assertEqual(s.github_owner, "yaml-owner")
+            self.assertEqual(s.github_repo, "yaml-repo")
+            self.assertEqual(s.github_branch, "yaml-branch")
+            self.assertEqual(s.github_token.get_secret_value(), "yaml-gh-token")
+            self.assertEqual(s.github_commit_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+    def test_sources_precedence_cli_over_env_over_yaml(self):
+        """CLI override > OS env > dotenv > YAML precedence for source configuration."""
+        self._write_yaml(
+            "sources:\n"
+            "  mode: fixtures\n"
+            "  github:\n"
+            "    owner: yaml-owner\n"
+            "    repo: yaml-repo\n"
+        )
+        self._write_env(
+            "SOURCE_MODE=real\n"
+            "GITHUB_OWNER=dotenv-owner\n"
+        )
+        with patch.dict(os.environ, {"GITHUB_OWNER": "os-owner"}, clear=True):
+            # Without CLI overrides
+            s1 = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s1.source_mode, "real")
+            self.assertEqual(s1.github_owner, "os-owner")
+
+            # With CLI override
+            s2 = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                overrides={"source_mode": "fixtures", "github_owner": "cli-owner"},
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s2.source_mode, "fixtures")
+            self.assertEqual(s2.github_owner, "cli-owner")
+
+    def test_github_alias_consistency(self):
+        """Consistent aliases work, but conflicting aliases raise static errors."""
+        with patch.dict(os.environ, {}, clear=True):
+            # Consistent repository alias
+            s = Settings(_env_file=None, github_owner="o", github_repository="repo-1")
+            self.assertEqual(s.github_repo, "repo-1")
+
+            # Conflicting repository alias
+            from pydantic import ValidationError
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings(_env_file=None, github_owner="o", github_repo="r1", github_repository="r2")
+
+            # Conflicting branch / ref alias
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings(_env_file=None, github_owner="o", github_repo="r", github_branch="b1", github_ref="b2")
+
+    def test_github_commit_sha_full_hex_validation(self):
+        """Full 40 or 64 hex characters required for commit SHA."""
+        with patch.dict(os.environ, {}, clear=True):
+            # Valid 40-char SHA
+            s40 = Settings(_env_file=None, github_commit_sha="a" * 40)
+            self.assertEqual(s40.github_commit_sha, "a" * 40)
+
+            # Valid 64-char SHA
+            s64 = Settings(_env_file=None, github_commit_sha="b" * 64)
+            self.assertEqual(s64.github_commit_sha, "b" * 64)
+
+            # Short SHA rejected before HTTP
+            from pydantic import ValidationError
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings(_env_file=None, github_commit_sha="d08bff4")
+
+            # Non-hex SHA rejected
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings(_env_file=None, github_commit_sha="z" * 40)
+
+    def test_sources_secrets_protection_and_known_secrets(self):
+        """Source secrets must be SecretStr, hidden from dumps and repr, and retrievable via get_known_secret_values."""
+        t_key = "trello-super-secret-key"
+        t_tok = "trello-super-secret-token"
+        gh_tok = "github-super-secret-token"
+        gem_key = "gemini-super-secret-key"
+
+        settings = Settings(
+            _env_file=None,
+            trello_api_key=t_key,
+            trello_token=t_tok,
+            github_token=gh_tok,
+            gemini_api_key=gem_key,
+        )
+
+        self.assertIsInstance(settings.trello_api_key, SecretStr)
+        self.assertIsInstance(settings.trello_token, SecretStr)
+        self.assertIsInstance(settings.github_token, SecretStr)
+
+        # Repr and dumps protection
+        dump_str = settings.model_dump_json()
+        repr_str = repr(settings)
+        for sec in (t_key, t_tok, gh_tok, gem_key):
+            self.assertNotIn(sec, dump_str)
+            self.assertNotIn(sec, repr_str)
+
+        # get_known_secret_values
+        known = settings.get_known_secret_values()
+        for sec in (t_key, t_tok, gh_tok, gem_key):
+            self.assertIn(sec, known)
+
+    def test_cross_layer_alias_precedence_repo(self):
+        """Higher priority source with alias overrides lower priority without false conflict (Defect 3)."""
+        self._write_yaml(
+            "sources:\n"
+            "  github:\n"
+            "    repo: yaml_repo\n"
+        )
+        self._write_env(
+            "GITHUB_REPOSITORY=dotenv_repo\n"
+        )
+        # 1. Dotenv GITHUB_REPOSITORY beats YAML repo without ValidationError
+        with patch.dict(os.environ, {}, clear=True):
+            s_dotenv = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s_dotenv.github_repo, "dotenv_repo")
+            self.assertEqual(s_dotenv.github_repository, "dotenv_repo")
+
+        # 2. OS env GITHUB_REPO beats dotenv GITHUB_REPOSITORY
+        with patch.dict(os.environ, {"GITHUB_REPO": "os_repo"}, clear=True):
+            s_os = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s_os.github_repo, "os_repo")
+            self.assertEqual(s_os.github_repository, "os_repo")
+
+        # 3. CLI override with github_repository beats OS env GITHUB_REPO
+        with patch.dict(os.environ, {"GITHUB_REPO": "os_repo"}, clear=True):
+            s_cli = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                overrides={"github_repository": "cli_repo"},
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s_cli.github_repo, "cli_repo")
+            self.assertEqual(s_cli.github_repository, "cli_repo")
+
+    def test_cross_layer_alias_precedence_branch(self):
+        """Higher priority source with ref/branch alias overrides lower priority (Defect 3)."""
+        self._write_yaml(
+            "sources:\n"
+            "  github:\n"
+            "    branch: yaml_branch\n"
+        )
+        self._write_env(
+            "GITHUB_REF=dotenv_ref\n"
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            s = Settings.from_env_and_file(
+                config_path=self.yaml_file,
+                _env_file=self.env_file,
+            )
+            self.assertEqual(s.github_branch, "dotenv_ref")
+            self.assertEqual(s.github_ref, "dotenv_ref")
+
+    def test_same_layer_contradictory_aliases_rejected(self):
+        """Contradictory aliases within the same priority layer must raise validation error (Defect 3)."""
+        from pydantic import ValidationError
+
+        # Contradictory in OS env
+        with patch.dict(os.environ, {"GITHUB_REPO": "repo1", "GITHUB_REPOSITORY": "repo2"}, clear=True):
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings(_env_file=None)
+
+        # Contradictory in YAML
+        self._write_yaml(
+            "sources:\n"
+            "  github:\n"
+            "    repo: r1\n"
+            "    repository: r2\n"
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings.from_env_and_file(config_path=self.yaml_file, _env_file=None)
+
+    def test_invalid_timezone_rejected_statically(self):
+        """Explicit invalid timezone must be rejected statically before HTTP (Defect 4)."""
+        from pydantic import ValidationError
+
+        with patch.dict(os.environ, {}, clear=True):
+            # Invalid timezone in Settings construction
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings(_env_file=None, timezone="Invalid/Nonexistent_TZ")
+
+            # Valid timezones accepted
+            s_utc = Settings(_env_file=None, timezone="UTC")
+            self.assertEqual(s_utc.timezone, "UTC")
+            s_bogota = Settings(_env_file=None, timezone="America/Bogota")
+            self.assertEqual(s_bogota.timezone, "America/Bogota")
+
+
 if __name__ == "__main__":
     unittest.main()

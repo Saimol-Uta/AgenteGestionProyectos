@@ -1,9 +1,12 @@
 """Configuration loading, validation, and environment defaults using pydantic-settings."""
 
+import math
 import os
+import re
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, Tuple, Type
-from pydantic import Field, SecretStr, field_validator
+from zoneinfo import ZoneInfo
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -16,6 +19,8 @@ except ImportError:
     yaml = None
 
 _yaml_file_ctx: ContextVar[Optional[str]] = ContextVar("_yaml_file_ctx", default=None)
+
+FULL_SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 
 
 def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
@@ -62,6 +67,68 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
                 merged["ollama_monitoring_model"] = local_sec["model"]
                 merged["ollama_report_model"] = local_sec["model"]
 
+    if "sources" in file_data and isinstance(file_data["sources"], dict):
+        src_sec = file_data["sources"]
+        if "mode" in src_sec:
+            merged["source_mode"] = src_sec["mode"]
+        if "policies_path" in src_sec:
+            merged["policies_path"] = src_sec["policies_path"]
+        if "http_timeout_seconds" in src_sec:
+            merged["http_timeout_seconds"] = src_sec["http_timeout_seconds"]
+        if "http_max_response_bytes" in src_sec:
+            merged["http_max_response_bytes"] = src_sec["http_max_response_bytes"]
+
+        if "trello" in src_sec and isinstance(src_sec["trello"], dict):
+            tr = src_sec["trello"]
+            if "board_id" in tr:
+                merged["trello_board_id"] = tr["board_id"]
+            if "api_key" in tr:
+                merged["trello_api_key"] = tr["api_key"]
+            if "token" in tr:
+                merged["trello_token"] = tr["token"]
+            mapping_sec = tr.get("mapping") if isinstance(tr.get("mapping"), dict) else tr
+            if "pending_list_ids" in mapping_sec:
+                merged["trello_pending_list_ids"] = mapping_sec["pending_list_ids"]
+            if "in_progress_list_ids" in mapping_sec:
+                merged["trello_in_progress_list_ids"] = mapping_sec["in_progress_list_ids"]
+            if "completed_list_ids" in mapping_sec:
+                merged["trello_completed_list_ids"] = mapping_sec["completed_list_ids"]
+            if "blocked_labels" in mapping_sec:
+                merged["trello_blocked_labels"] = mapping_sec["blocked_labels"]
+            if "included_list_ids" in mapping_sec:
+                merged["trello_included_list_ids"] = mapping_sec["included_list_ids"]
+
+        if "github" in src_sec and isinstance(src_sec["github"], dict):
+            gh = src_sec["github"]
+            if "owner" in gh:
+                merged["github_owner"] = gh["owner"]
+            repo_val = gh.get("repo")
+            repo_alias = gh.get("repository")
+            if repo_val is not None and repo_alias is not None and repo_val != repo_alias:
+                raise ValueError("Contradictory GitHub repository configuration: repo and repository aliases do not match.")
+            eff_repo = repo_val if repo_val is not None else repo_alias
+            if eff_repo is not None:
+                merged["github_repo"] = eff_repo
+                merged["github_repository"] = eff_repo
+
+            branch_val = gh.get("branch")
+            branch_alias = gh.get("ref")
+            if branch_val is not None and branch_alias is not None and branch_val != branch_alias:
+                raise ValueError("Contradictory GitHub branch configuration: branch and ref aliases do not match.")
+            eff_branch = branch_val if branch_val is not None else branch_alias
+            if eff_branch is not None:
+                merged["github_branch"] = eff_branch
+                merged["github_ref"] = eff_branch
+
+            if "token" in gh:
+                merged["github_token"] = gh["token"]
+            if "commit_sha" in gh:
+                merged["github_commit_sha"] = gh["commit_sha"]
+            elif "commit" in gh:
+                merged["github_commit_sha"] = gh["commit"]
+            elif "sha" in gh:
+                merged["github_commit_sha"] = gh["sha"]
+
     # Directly specified top-level keys
     for k, v in file_data.items():
         if v is not None and not isinstance(v, dict):
@@ -83,6 +150,41 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
         if not yaml_path:
             return {}
         return _load_yaml_file(yaml_path)
+
+
+class AliasNormalizingSettingsSource(PydanticBaseSettingsSource):
+    """Normalizes field aliases within each configuration source before layer merging."""
+
+    def __init__(self, settings_cls: Type[BaseSettings], inner: PydanticBaseSettingsSource):
+        super().__init__(settings_cls)
+        self.inner = inner
+
+    def get_field_value(self, field: Any, field_name: str) -> Tuple[Any, str, bool]:
+        return self.inner.get_field_value(field, field_name)
+
+    def __call__(self) -> Dict[str, Any]:
+        data = dict(self.inner())
+        # Reconcile github_repo and github_repository within this source
+        r1 = data.get("github_repo")
+        r2 = data.get("github_repository")
+        if r1 is not None and r2 is not None and r1 != r2:
+            raise ValueError("Contradictory GitHub repository configuration: repo and repository aliases do not match.")
+        resolved_repo = r1 if r1 is not None else r2
+        if resolved_repo is not None:
+            data["github_repo"] = resolved_repo
+            data["github_repository"] = resolved_repo
+
+        # Reconcile github_branch and github_ref within this source
+        b1 = data.get("github_branch")
+        b2 = data.get("github_ref")
+        if b1 is not None and b2 is not None and b1 != b2:
+            raise ValueError("Contradictory GitHub branch configuration: branch and ref aliases do not match.")
+        resolved_branch = b1 if b1 is not None else b2
+        if resolved_branch is not None:
+            data["github_branch"] = resolved_branch
+            data["github_ref"] = resolved_branch
+
+        return data
 
 
 class Settings(BaseSettings):
@@ -126,6 +228,80 @@ class Settings(BaseSettings):
     fixtures_dir: str = Field(default="fixtures")
     is_fake: bool = Field(default=False)
 
+    # Data sources configuration (T5b)
+    source_mode: str = Field(
+        default="fixtures",
+        description="Data source collection mode ('fixtures' or 'real').",
+    )
+    policies_path: str = Field(
+        default="config/policies.yaml",
+        description="Path to local quality policies YAML file.",
+    )
+    trello_api_key: Optional[SecretStr] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="Trello API consumer key. SecretStr excluded from repr and dumps.",
+    )
+    trello_token: Optional[SecretStr] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="Trello OAuth token. SecretStr excluded from repr and dumps.",
+    )
+    trello_board_id: Optional[str] = Field(
+        default=None,
+        description="Target Trello board identifier.",
+    )
+    trello_pending_list_ids: list[str] = Field(default_factory=list)
+    trello_in_progress_list_ids: list[str] = Field(default_factory=list)
+    trello_completed_list_ids: list[str] = Field(default_factory=list)
+    trello_blocked_labels: list[str] = Field(
+        default_factory=lambda: ["bloqueada", "blocked"]
+    )
+    trello_included_list_ids: Optional[list[str]] = Field(default=None)
+
+    github_token: Optional[SecretStr] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="GitHub personal access token. SecretStr excluded from repr and dumps.",
+    )
+    github_owner: Optional[str] = Field(
+        default=None,
+        description="Target GitHub organization or repository owner.",
+    )
+    github_repo: Optional[str] = Field(
+        default=None,
+        description="Target GitHub repository name.",
+    )
+    github_repository: Optional[str] = Field(
+        default=None,
+        description="Alias for github_repo.",
+    )
+    github_branch: Optional[str] = Field(
+        default=None,
+        description="Target repository branch to resolve commit tip.",
+    )
+    github_ref: Optional[str] = Field(
+        default=None,
+        description="Alias for github_branch.",
+    )
+    github_commit_sha: Optional[str] = Field(
+        default=None,
+        description="Optional full 40-char or 64-char hexadecimal commit SHA.",
+    )
+    http_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="Socket/connect HTTP transport timeout in seconds.",
+    )
+    http_max_response_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        gt=0,
+        description="Maximum allowed HTTP response bytes.",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -158,12 +334,35 @@ class Settings(BaseSettings):
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> Tuple[PydanticBaseSettingsSource, ...]:
         # Precedence order: explicit overrides (init) > OS environment > .env > YAML > defaults
-        return (
-            init_settings,
-            env_settings,
-            dotenv_settings,
-            YamlConfigSettingsSource(settings_cls),
+        yaml_src = YamlConfigSettingsSource(settings_cls)
+        return tuple(
+            AliasNormalizingSettingsSource(settings_cls, s)
+            for s in (init_settings, env_settings, dotenv_settings, yaml_src)
         )
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def parse_timezone(cls, v: Any) -> str:
+        if v is None:
+            return "America/Guayaquil"
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("timezone must be a non-empty string.")
+        cleaned = v.strip()
+        try:
+            ZoneInfo(cleaned)
+        except Exception:
+            raise ValueError(f"Invalid timezone: '{cleaned}'.")
+        return cleaned
+
+    @field_validator("source_mode", mode="before")
+    @classmethod
+    def parse_source_mode(cls, v: Any) -> str:
+        if not isinstance(v, str):
+            raise ValueError("source_mode must be a string")
+        cleaned = v.strip().lower()
+        if cleaned not in ("fixtures", "real"):
+            raise ValueError(f"Invalid source_mode: '{v}'. Must be 'fixtures' or 'real'.")
+        return cleaned
 
     @field_validator("allow_remote_ai", mode="before")
     @classmethod
@@ -181,9 +380,15 @@ class Settings(BaseSettings):
             raise ValueError(f"Invalid boolean value for allow_remote_ai: {v!r}")
         return bool(v)
 
-    @field_validator("gemini_api_key", mode="before")
+    @field_validator(
+        "gemini_api_key",
+        "trello_api_key",
+        "trello_token",
+        "github_token",
+        mode="before",
+    )
     @classmethod
-    def parse_gemini_api_key(cls, v: Any) -> Optional[SecretStr]:
+    def parse_secret_fields(cls, v: Any) -> Optional[SecretStr]:
         if v is None:
             return None
         if isinstance(v, SecretStr):
@@ -192,6 +397,69 @@ class Settings(BaseSettings):
             cleaned = v.strip()
             return SecretStr(cleaned) if cleaned else None
         return None
+
+    @model_validator(mode="after")
+    def validate_sources_consistency(self) -> "Settings":
+        # Reconcile github_repo and github_repository aliases
+        repo = self.github_repo
+        repository = self.github_repository
+        if repo and repository and repo != repository:
+            raise ValueError(
+                "Contradictory GitHub repository configuration: repo and repository aliases do not match."
+            )
+        if repository and not repo:
+            object.__setattr__(self, "github_repo", repository)
+        elif repo and not repository:
+            object.__setattr__(self, "github_repository", repo)
+
+        # Reconcile github_branch and github_ref aliases
+        branch = self.github_branch
+        ref = self.github_ref
+        if branch and ref and branch != ref:
+            raise ValueError(
+                "Contradictory GitHub branch configuration: branch and ref aliases do not match."
+            )
+        if ref and not branch:
+            object.__setattr__(self, "github_branch", ref)
+        elif branch and not ref:
+            object.__setattr__(self, "github_ref", branch)
+
+        # Validate commit SHA format if provided
+        if self.github_commit_sha:
+            raw_sha = self.github_commit_sha.strip()
+            if not FULL_SHA_RE.match(raw_sha):
+                raise ValueError(
+                    "Invalid GitHub commit SHA: must be a full 40-character or 64-character hexadecimal SHA."
+                )
+            object.__setattr__(self, "github_commit_sha", raw_sha.lower())
+
+        # Validate budgets
+        if not math.isfinite(self.http_timeout_seconds) or self.http_timeout_seconds <= 0.0:
+            raise ValueError("http_timeout_seconds must be a positive finite number.")
+        if self.http_max_response_bytes <= 0:
+            raise ValueError("http_max_response_bytes must be a positive integer.")
+
+        return self
+
+    def get_trello_mapping(self) -> Any:
+        from agente_gestion.domain.tasks import TaskMappingConfig
+        return TaskMappingConfig(
+            pending_list_ids=list(self.trello_pending_list_ids),
+            in_progress_list_ids=list(self.trello_in_progress_list_ids),
+            completed_list_ids=list(self.trello_completed_list_ids),
+            blocked_labels=list(self.trello_blocked_labels),
+            included_list_ids=list(self.trello_included_list_ids) if self.trello_included_list_ids is not None else None,
+        )
+
+    def get_known_secret_values(self) -> tuple[str, ...]:
+        secrets: list[str] = []
+        for fld in ("gemini_api_key", "trello_api_key", "trello_token", "github_token"):
+            val = getattr(self, fld, None)
+            if isinstance(val, SecretStr):
+                sec = val.get_secret_value().strip()
+                if sec:
+                    secrets.append(sec)
+        return tuple(secrets)
 
     @classmethod
     def from_env_and_file(
@@ -205,7 +473,19 @@ class Settings(BaseSettings):
         kwargs: dict[str, Any] = {}
         if overrides:
             for k, v in overrides.items():
-                if v is not None:
+                if v is None:
+                    continue
+                if k in ("sources", "source_mode"):
+                    kwargs["source_mode"] = v
+                elif k in ("commit", "sha", "commit_sha", "github_commit_sha"):
+                    kwargs["github_commit_sha"] = v
+                elif k in ("branch", "ref", "github_branch", "github_ref"):
+                    kwargs["github_branch"] = v
+                    kwargs["github_ref"] = v
+                elif k in ("repo", "repository", "github_repo", "github_repository"):
+                    kwargs["github_repo"] = v
+                    kwargs["github_repository"] = v
+                else:
                     kwargs[k] = v
 
         if _env_file is not ...:
