@@ -91,6 +91,7 @@ class VerifierAgent:
             json_schema=VerifierOutputSchema.model_json_schema(),
             model=self.model,
             max_generation_tokens=1024,
+            timeout_seconds=220.0,
         )
 
         def validate_payload(data: dict[str, Any]) -> list[str]:
