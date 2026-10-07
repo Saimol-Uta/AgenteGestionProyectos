@@ -217,20 +217,34 @@ class CLISourceCheckTestCase(unittest.TestCase):
         self.assertIn("source-check", out)
         self.assertIn("run", out)
 
-    def test_cli_weekly_real_refuses_intermediate_with_safe_error(self):
-        """CLI run in real mode must refuse early with static error before any API/LLM/fixture load."""
+    def test_cli_run_real_missing_config_fails_safely_exit_2(self):
+        """CLI run in real mode with missing Trello config fails early with exit 2 and safe error."""
         cmd = [
             "run",
             "test-proj",
             "--sources", "real",
             "--config", self.config_path,
+            "--db-path", self.db_path,
+            "--output-dir", self.runs_dir,
         ]
+        fake_tr = FakeTransport()
         stderr_capture = io.StringIO()
-        with patch.object(sys, "argv", ["agente_gestion"] + cmd), patch("sys.stderr", stderr_capture):
-            exit_code = main()
-        self.assertNotEqual(exit_code, 0)
+        with patch("agente_gestion.adapters.sources.factory.BoundedGetTransport", return_value=fake_tr):
+            with patch.object(sys, "argv", ["agente_gestion"] + cmd), patch("sys.stderr", stderr_capture):
+                exit_code = main()
+
+        self.assertEqual(exit_code, 2)
         err = stderr_capture.getvalue()
-        self.assertIn("real report integration pending", err.lower())
+        self.assertIn("source configuration failed for 'trello'", err.lower())
+        self.assertIn("configuration", err.lower())
+        self.assertNotIn("traceback", err.lower())
+        self.assertNotIn("pydantic", err.lower())
+        self.assertEqual(len(fake_tr.calls), 0)
+        self.assertEqual(len(os.listdir(self.runs_dir)), 0)
+        import sqlite3
+        with sqlite3.connect(self.db_path) as conn:
+            run_count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        self.assertEqual(run_count, 0)
 
     def test_cli_explicit_real_and_fixture_contradiction_rejected(self):
         """Conflicting explicit --sources real and --fixture must be rejected early."""

@@ -15,7 +15,9 @@ from agente_gestion.adapters.sources.factory import (
     create_code_source,
     create_ci_source,
     create_policy_source,
+    create_composite_source,
 )
+from agente_gestion.adapters.sources.http_transport import HttpGetTransportPort
 from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
@@ -31,7 +33,103 @@ from agente_gestion.ports.source_errors import (
 )
 
 
-def run_command(args: argparse.Namespace) -> int:
+def _build_orchestrator(
+    config: Settings,
+    effective_mode: str = "fixtures",
+    transport: Optional[HttpGetTransportPort] = None,
+) -> tuple[
+    ProjectOrchestrator,
+    SQLiteStorageAdapter,
+    ArtifactStorageAdapter,
+    Any,
+    Any,
+    Any,
+    Any,
+]:
+    """Factory helper creating orchestrator and storage/provider adapters for a run."""
+    sqlite_storage = SQLiteStorageAdapter(db_path=config.db_path)
+    artifact_storage = ArtifactStorageAdapter(base_dir=config.runs_dir)
+
+    if effective_mode == "real":
+        source_adapter = create_composite_source(
+            config,
+            commit_sha=config.github_commit_sha,
+            transport=transport,
+        )
+    else:
+        source_adapter = FixtureSourcesAdapter(fixtures_dir=config.fixtures_dir)
+
+    if config.is_fake:
+        print("INFO: Mode '--fake' activated. Using clearly simulated deterministic provider.")
+        elaborador = FakeProvider(model="fake-qwen-2b")
+        revisor = FakeProvider(model="fake-qwen-4b")
+        verificador = FakeProvider(model="fake-gemini-flash")
+        aprobador = FakeProvider(model="fake-qwen-2b")
+    else:
+        elaborador = OllamaProvider(
+            base_url=config.ollama_base_url,
+            model=config.ollama_monitoring_model,
+        )
+        revisor = OllamaProvider(
+            base_url=config.ollama_base_url,
+            model=config.ollama_quality_model,
+        )
+        aprobador = OllamaProvider(
+            base_url=config.ollama_base_url,
+            model=config.ollama_report_model,
+        )
+
+        if config.allow_remote_ai and config.gemini_api_key:
+            raw_key = (
+                config.gemini_api_key.get_secret_value()
+                if hasattr(config.gemini_api_key, "get_secret_value")
+                else str(config.gemini_api_key)
+            )
+            verificador = GeminiProvider(
+                api_key=raw_key,
+                model=config.gemini_model,
+                allow_remote_ai=True,
+            )
+        elif config.allow_remote_ai and not config.gemini_api_key:
+            verificador = GeminiProvider(
+                api_key="",
+                model=config.gemini_model,
+                allow_remote_ai=True,
+            )
+        else:
+            verificador = None
+
+    orchestrator_config = OrchestratorConfig(
+        project_id=config.project_id,
+        default_fixture=config.default_fixture,
+        allow_remote_ai=config.allow_remote_ai,
+        max_llm_calls_per_run=config.max_llm_calls_per_run,
+        quality_timeout_seconds=config.quality_timeout_seconds,
+        verifier_timeout_seconds=config.verifier_timeout_seconds,
+        runs_dir=config.runs_dir,
+        fixtures_dir=config.fixtures_dir,
+        db_path=config.db_path,
+        is_simulated=config.is_fake,
+        timezone=config.timezone,
+        commit_sha=config.github_commit_sha,
+        target_commit_sha=config.github_commit_sha,
+    )
+
+    orchestrator = ProjectOrchestrator(
+        sqlite_storage=sqlite_storage,
+        artifact_storage=artifact_storage,
+        elaborador_provider=elaborador,
+        revisor_provider=revisor,
+        verificador_provider=verificador,
+        aprobador_provider=aprobador,
+        source_adapter=source_adapter,
+        config=orchestrator_config,
+    )
+
+    return orchestrator, sqlite_storage, artifact_storage, verificador, elaborador, revisor, aprobador
+
+
+def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPort] = None) -> int:
     """Executes the analysis pipeline on the target project."""
     # Validate conflicting explicit CLI options
     explicit_sources_real = getattr(args, "sources", None) == "real"
@@ -76,90 +174,22 @@ def run_command(args: argparse.Namespace) -> int:
     else:
         effective_mode = config.source_mode
 
-    # CRITICAL SAFE INTERMEDIATE GUARD:
-    # Weekly report in real mode must refuse early until T5c SourceCollectionPort is wired
-    if effective_mode == "real":
-        sys.stderr.write(
-            "ERROR: Real report integration pending (T5c). "
-            "Use 'agente_gestion source-check' for read-only source diagnostics, "
-            "or run with default fixtures / '--sources fixtures'.\n"
-        )
+    try:
+        (
+            orchestrator,
+            sqlite_storage,
+            artifact_storage,
+            verificador,
+            elaborador,
+            revisor,
+            aprobador,
+        ) = _build_orchestrator(config, effective_mode=effective_mode, transport=transport)
+    except SourceError as se:
+        sys.stderr.write(f"ERROR: Source configuration failed for '{se.provider.value}': {se.category.value}\n")
         return 2
-
-    # Initialize persistence adapters
-    sqlite_storage = SQLiteStorageAdapter(db_path=config.db_path)
-    artifact_storage = ArtifactStorageAdapter(base_dir=config.runs_dir)
-
-    # Initialize source adapter
-    fixtures_adapter = FixtureSourcesAdapter(fixtures_dir=config.fixtures_dir)
-
-    # Select LLM providers
-    if config.is_fake:
-        print("INFO: Mode '--fake' activated. Using clearly simulated deterministic provider.")
-        elaborador = FakeProvider(model="fake-qwen-2b")
-        revisor = FakeProvider(model="fake-qwen-4b")
-        verificador = FakeProvider(model="fake-gemini-flash")
-        aprobador = FakeProvider(model="fake-qwen-2b")
-    else:
-        # Real local Ollama default
-        elaborador = OllamaProvider(
-            base_url=config.ollama_base_url,
-            model=config.ollama_monitoring_model,
-        )
-        revisor = OllamaProvider(
-            base_url=config.ollama_base_url,
-            model=config.ollama_quality_model,
-        )
-        aprobador = OllamaProvider(
-            base_url=config.ollama_base_url,
-            model=config.ollama_report_model,
-        )
-
-        # Verifier: Gemini if remote AI enabled and key present; else None or disabled Gemini provider.
-        if config.allow_remote_ai and config.gemini_api_key:
-            raw_key = (
-                config.gemini_api_key.get_secret_value()
-                if hasattr(config.gemini_api_key, "get_secret_value")
-                else str(config.gemini_api_key)
-            )
-            verificador = GeminiProvider(
-                api_key=raw_key,
-                model=config.gemini_model,
-                allow_remote_ai=True,
-            )
-        elif config.allow_remote_ai and not config.gemini_api_key:
-            verificador = GeminiProvider(
-                api_key="",
-                model=config.gemini_model,
-                allow_remote_ai=True,
-            )
-        else:
-            verificador = None
-
-    orchestrator_config = OrchestratorConfig(
-        project_id=config.project_id,
-        default_fixture=config.default_fixture,
-        allow_remote_ai=config.allow_remote_ai,
-        max_llm_calls_per_run=config.max_llm_calls_per_run,
-        quality_timeout_seconds=config.quality_timeout_seconds,
-        verifier_timeout_seconds=config.verifier_timeout_seconds,
-        runs_dir=config.runs_dir,
-        fixtures_dir=config.fixtures_dir,
-        db_path=config.db_path,
-        is_simulated=config.is_fake,
-        timezone=config.timezone,
-    )
-
-    orchestrator = ProjectOrchestrator(
-        sqlite_storage=sqlite_storage,
-        artifact_storage=artifact_storage,
-        elaborador_provider=elaborador,
-        revisor_provider=revisor,
-        verificador_provider=verificador,
-        aprobador_provider=aprobador,
-        source_adapter=fixtures_adapter,
-        config=orchestrator_config,
-    )
+    except Exception:
+        sys.stderr.write("ERROR: Configuration validation failed.\n")
+        return 2
 
     requested_project = args.project or config.project_id
     fixture_name = args.fixture

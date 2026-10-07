@@ -91,6 +91,8 @@ class QualityEvaluator:
         findings: Optional[list[CandidateFinding]] = None,
         extra_facts: Optional[dict[str, Any]] = None,
         unresolved_findings: Optional[list[CandidateFinding]] = None,
+        source_is_complete: bool = True,
+        incomplete_reason: Optional[str] = None,
     ) -> PolicyEvaluationResult:
         """Extracts facts and runs deterministic policy evaluation."""
         unresolved_severe = [
@@ -121,6 +123,25 @@ class QualityEvaluator:
                 res.evaluations.append(unknown_eval)
                 res.unknown_rule_ids.append("Q_UNRESOLVED_CRITICAL")
                 res.mandatory_unknown_ids.append("Q_UNRESOLVED_CRITICAL")
+
+            if not res.mandatory_failed_ids and not res.failed_rule_ids:
+                res.recommended_action = "evidencia_insuficiente"
+
+        if not source_is_complete:
+            from agente_gestion.domain.policies import RuleEvaluation, RuleEvaluationStatus
+            source_eval = RuleEvaluation(
+                rule_id="Q_SOURCE_AVAILABILITY_INCOMPLETE",
+                description="Disponibilidad y completitud de fuentes de datos",
+                status=RuleEvaluationStatus.unknown,
+                observed_value=None,
+                mandatory=True,
+                reason=incomplete_reason or "Una o mas fuentes de datos estan incompletas o no disponibles.",
+            )
+            res.evaluations.append(source_eval)
+            if "Q_SOURCE_AVAILABILITY_INCOMPLETE" not in res.unknown_rule_ids:
+                res.unknown_rule_ids.append("Q_SOURCE_AVAILABILITY_INCOMPLETE")
+            if "Q_SOURCE_AVAILABILITY_INCOMPLETE" not in res.mandatory_unknown_ids:
+                res.mandatory_unknown_ids.append("Q_SOURCE_AVAILABILITY_INCOMPLETE")
 
             if not res.mandatory_failed_ids and not res.failed_rule_ids:
                 res.recommended_action = "evidencia_insuficiente"

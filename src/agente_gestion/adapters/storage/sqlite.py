@@ -14,6 +14,7 @@ from agente_gestion.domain.run import (
     RunStatus,
     StageExecutionRecord,
     StageStatus,
+    compute_sha256,
 )
 from agente_gestion.domain.snapshot import WeeklySnapshot
 from agente_gestion.domain.report import FinalReport, HumanDecisionState
@@ -372,11 +373,47 @@ class SQLiteStorageAdapter(StoragePort):
         finally:
             conn.close()
 
-    def save_evidence(self, run_id: str, evidence_items: list[EvidenceItem]) -> None:
+    def save_evidence(self, run_id: str, evidence_items: list[Any]) -> None:
         conn = self._get_connection()
         try:
             with conn:
                 for ev in evidence_items:
+                    if hasattr(ev, "provenance") and getattr(ev, "provenance", None) is not None:
+                        prov = ev.provenance
+                        ev_id = prov.id
+                        source_val = (
+                            prov.source.value
+                            if hasattr(prov.source, "value")
+                            else str(prov.source)
+                        )
+                        title_val = getattr(ev, "summary", "")
+                        content_hash = compute_sha256(ev)
+                    elif isinstance(ev, dict):
+                        ev_id = ev.get("id", "")
+                        source_obj = ev.get("source", "")
+                        source_val = (
+                            source_obj.value
+                            if hasattr(source_obj, "value")
+                            else str(source_obj)
+                        )
+                        title_val = ev.get("title", ev.get("summary", ""))
+                        content_hash = ev.get("content_hash") or compute_sha256(ev)
+                    else:
+                        ev_id = getattr(ev, "id", "")
+                        source_obj = getattr(ev, "source", "")
+                        source_val = (
+                            source_obj.value
+                            if hasattr(source_obj, "value")
+                            else str(source_obj)
+                        )
+                        title_val = getattr(ev, "title", getattr(ev, "summary", ""))
+                        content_hash = getattr(ev, "content_hash", None) or compute_sha256(ev)
+
+                    data_json = (
+                        ev.model_dump_json()
+                        if hasattr(ev, "model_dump_json")
+                        else json.dumps(ev, default=str)
+                    )
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO evidence (
@@ -384,14 +421,43 @@ class SQLiteStorageAdapter(StoragePort):
                         ) VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            ev.id,
+                            ev_id,
                             run_id,
-                            ev.source.value if hasattr(ev.source, "value") else str(ev.source),
-                            ev.title,
-                            ev.content_hash,
-                            ev.model_dump_json(),
+                            source_val,
+                            title_val,
+                            content_hash,
+                            data_json,
                         ),
                     )
+        finally:
+            conn.close()
+
+    def get_evidence(self, run_id: str) -> list[Any]:
+        conn = self._get_connection()
+        try:
+            cur = conn.execute("SELECT * FROM evidence WHERE run_id = ?", (run_id,))
+            rows = cur.fetchall()
+            items = []
+            for r in rows:
+                data_str = r["data_json"]
+                if data_str:
+                    try:
+                        items.append(EvidenceItem.model_validate_json(data_str))
+                        continue
+                    except Exception:
+                        try:
+                            items.append(json.loads(data_str))
+                            continue
+                        except Exception:
+                            pass
+                items.append({
+                    "id": r["id"],
+                    "run_id": r["run_id"],
+                    "source": r["source"],
+                    "title": r["title"],
+                    "content_hash": r["content_hash"],
+                })
+            return items
         finally:
             conn.close()
 

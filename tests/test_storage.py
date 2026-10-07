@@ -403,6 +403,53 @@ class StorageAdapterTestCase(unittest.TestCase):
         # Full report should not be present
         self.assertFalse(os.path.exists(os.path.join(run_path, "report.json")))
 
+    def test_sqlite_evidence_save_and_retrieve_roundtrip(self):
+        """Verify save_evidence and get_evidence handle EvidenceItem and legacy structures."""
+        from agente_gestion.domain.evidence import EvidenceProvenance
+
+        run_id = "run-ev-test"
+        # 1. EvidenceItem instance
+        ev_item = EvidenceItem(
+            provenance=EvidenceProvenance(
+                id="ev-item-1",
+                source=EvidenceSource.github,
+                project_id="test-project",
+                timestamp=self.now,
+                payload={"sha": "c0ffee1", "files_count": 1},
+            ),
+            category="diff",
+            summary="GitHub commit diff",
+        )
+
+        # 2. Legacy dict structure
+        legacy_dict = {
+            "id": "ev-legacy-2",
+            "source": "trello",
+            "title": "Trello card",
+            "data_json": '{"id": "card-1", "name": "Task"}',
+        }
+
+        self.sqlite_storage.save_evidence(run_id, [ev_item, legacy_dict])
+
+        retrieved = self.sqlite_storage.get_evidence(run_id)
+        self.assertEqual(len(retrieved), 2)
+
+        # Verify EvidenceItem restored
+        ev_restored = next((e for e in retrieved if hasattr(e, "provenance") and e.provenance.id == "ev-item-1"), None)
+        self.assertIsNotNone(ev_restored)
+        self.assertEqual(ev_restored.provenance.source, EvidenceSource.github)
+        self.assertEqual(ev_restored.summary, "GitHub commit diff")
+        self.assertEqual(ev_restored.provenance.payload["sha"], "c0ffee1")
+
+        # Verify legacy item restored
+        legacy_restored = next(
+            (e for e in retrieved if (e.get("id") if isinstance(e, dict) else getattr(e, "id", None)) == "ev-legacy-2"),
+            None,
+        )
+        self.assertIsNotNone(legacy_restored)
+        self.assertEqual(legacy_restored["source"] if isinstance(legacy_restored, dict) else legacy_restored.source, "trello")
+        self.assertEqual(legacy_restored["title"] if isinstance(legacy_restored, dict) else legacy_restored.title, "Trello card")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 """Modular project analysis orchestrator with stage sequencing, budget tracking, and persistence."""
 
+import json
 import os
 import time
 import uuid
@@ -41,6 +42,7 @@ from agente_gestion.domain.run import (
     compute_sha256,
 )
 from agente_gestion.ports.sources import TaskSourcePort, CodeSourcePort, CISourcePort
+from agente_gestion.ports.source_collection import SourceCollectionPort
 from agente_gestion.ports.storage import StoragePort
 from agente_gestion.ports.llm import LLMProviderPort
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
@@ -80,6 +82,8 @@ class OrchestratorConfig:
         policy_version: str = "v1",
         is_simulated: bool = False,
         timezone: str = "America/Guayaquil",
+        commit_sha: Optional[str] = None,
+        target_commit_sha: Optional[str] = None,
     ):
         if verifier_timeout_seconds <= 0:
             raise ValueError("verifier_timeout_seconds must be positive")
@@ -95,6 +99,8 @@ class OrchestratorConfig:
         self.policy_version = policy_version
         self.is_simulated = is_simulated
         self.timezone = timezone
+        self.commit_sha = commit_sha or target_commit_sha
+        self.target_commit_sha = self.commit_sha
 
     def to_hash(self) -> str:
         return compute_sha256({
@@ -104,6 +110,7 @@ class OrchestratorConfig:
             "max_llm_calls_per_run": self.max_llm_calls_per_run,
             "policy_version": self.policy_version,
             "timezone": self.timezone,
+            "commit_sha": self.commit_sha,
         })
 
 
@@ -135,6 +142,8 @@ class ProjectOrchestrator:
         self.source_adapter = source_adapter
         self.escalation_gate = escalation_gate or EscalationGate()
         self.config = config or OrchestratorConfig()
+        self._last_collection_result: Optional[Any] = None
+        self._last_target_commit_sha: Optional[str] = None
 
     def execute(
         self,
@@ -142,6 +151,9 @@ class ProjectOrchestrator:
         snapshot: Optional[WeeklySnapshot] = None,
         fixture_name: Optional[str] = None,
     ) -> ExecutionRun:
+        self._last_collection_result = None
+        self._last_target_commit_sha = None
+
         proj_id = project_id or (snapshot.project_id if snapshot else self.config.project_id)
         start_time = time.time()
         now = datetime.now(DEFAULT_TIMEZONE)
@@ -191,6 +203,33 @@ class ProjectOrchestrator:
         self.sqlite.save_run(run)
         self.sqlite.save_snapshot(snapshot, content_hash=snapshot_hash)
 
+        # Persist normalized evidence if composite collection occurred
+        if self._last_collection_result and getattr(self._last_collection_result, "evidence", None):
+            self.sqlite.save_evidence(run_id, self._last_collection_result.evidence)
+
+        # Record source_collection stage if composite collection occurred
+        if self._last_collection_result:
+            collection_records_dump = [
+                r.model_dump() for r in getattr(self._last_collection_result, "records", [])
+            ]
+            source_summary = json.dumps({
+                "target_commit_sha": self._last_collection_result.target_commit_sha,
+                "is_complete": self._last_collection_result.snapshot.is_complete,
+                "records": collection_records_dump,
+            })
+            total_coll_duration = sum(
+                r.duration_seconds for r in getattr(self._last_collection_result, "records", [])
+            )
+            run.stages["source_collection"] = StageExecutionRecord(
+                stage_name="source_collection",
+                status=StageStatus.completed,
+                duration_seconds=total_coll_duration,
+                output_summary=source_summary,
+                data_hash=compute_sha256(collection_records_dump),
+                completed_at=datetime.now(ZoneInfo("UTC")),
+            )
+            self.sqlite.save_stage_result(run_id, run.stages["source_collection"])
+
         # Initialize shared budget and attempt coordinator
         budget_tracker = GlobalBudgetTracker(max_calls=self.config.max_llm_calls_per_run)
         coordinator = StageInvocationCoordinator(
@@ -226,8 +265,15 @@ class ProjectOrchestrator:
             timezone_name=self.config.timezone,
         )
 
-        # CI commit matching: evaluate CI only for exact commit matching code diffs
-        eval_commit_sha = snapshot.code_diffs[0].commit_sha if snapshot.code_diffs else None
+        # CI commit matching: evaluate CI only for exact commit matching code diffs or pinned target SHA
+        eval_commit_sha = None
+        if self._last_collection_result and getattr(self._last_collection_result, "target_commit_sha", None):
+            eval_commit_sha = self._last_collection_result.target_commit_sha
+        elif snapshot.code_diffs:
+            eval_commit_sha = snapshot.code_diffs[0].commit_sha
+        elif getattr(self.config, "commit_sha", None):
+            eval_commit_sha = self.config.commit_sha
+
         matching_ci: Optional[CIRunResult] = None
         if eval_commit_sha:
             matching_ci = match_ci_for_commit(snapshot.ci_runs, eval_commit_sha)
@@ -505,9 +551,11 @@ class ProjectOrchestrator:
             ci_run=matching_ci,
             findings=confirmed_findings,
             unresolved_findings=unresolved_findings,
+            source_is_complete=snapshot.is_complete,
+            incomplete_reason=snapshot.incomplete_reason,
         )
 
-        # Assemble all sources evidence IDs (tasks + code diffs/commits + CI runs)
+        # Assemble all sources evidence IDs (tasks + code diffs/commits + CI runs + audit evidence)
         all_sources_evidence_ids: list[str] = []
         for t in snapshot.tasks:
             if t.id not in all_sources_evidence_ids:
@@ -518,6 +566,13 @@ class ProjectOrchestrator:
         for ci in snapshot.ci_runs:
             if ci.id not in all_sources_evidence_ids:
                 all_sources_evidence_ids.append(ci.id)
+        if eval_commit_sha and eval_commit_sha not in all_sources_evidence_ids:
+            all_sources_evidence_ids.append(eval_commit_sha)
+        if self._last_collection_result and getattr(self._last_collection_result, "evidence", None):
+            for ev in self._last_collection_result.evidence:
+                ev_id = ev.provenance.id if hasattr(ev, "provenance") and hasattr(ev.provenance, "id") else getattr(ev, "id", None)
+                if ev_id and ev_id not in all_sources_evidence_ids:
+                    all_sources_evidence_ids.append(ev_id)
 
         try:
             report_agent = ReportAgent(
@@ -595,6 +650,12 @@ class ProjectOrchestrator:
             "escalations": escalation_map,
             "total_llm_calls": budget_tracker.total_calls_made,
         }
+        if self._last_collection_result:
+            exec_metrics_payload["source_collection"] = {
+                "target_commit_sha": self._last_collection_result.target_commit_sha,
+                "is_complete": self._last_collection_result.snapshot.is_complete,
+                "records": [r.model_dump() for r in getattr(self._last_collection_result, "records", [])],
+            }
         report_md = generate_report_markdown(
             report=final_report,
             execution_metrics=exec_metrics_payload,
@@ -628,6 +689,20 @@ class ProjectOrchestrator:
     def _collect_snapshot(
         self, project_id: str, now: datetime, source_fixture: Optional[str] = None
     ) -> WeeklySnapshot:
+        # Early SourceCollectionPort branch BEFORE ANY legacy fixture lookup
+        if isinstance(self.source_adapter, SourceCollectionPort) or (
+            hasattr(self.source_adapter, "collect_snapshot") and callable(getattr(self.source_adapter, "collect_snapshot"))
+        ):
+            target_sha = getattr(self.config, "target_commit_sha", None) or getattr(self.config, "commit_sha", None)
+            res = self.source_adapter.collect_snapshot(
+                project_id=project_id,
+                cutoff_datetime=now,
+                commit_sha=target_sha,
+            )
+            self._last_collection_result = res
+            self._last_target_commit_sha = res.target_commit_sha
+            return res.snapshot
+
         source_id = source_fixture or project_id
         fixtures_dir = getattr(self.config, "fixtures_dir", "fixtures")
         source_file = os.path.join(fixtures_dir, f"{source_id}.json")
@@ -698,6 +773,15 @@ class ProjectOrchestrator:
             "provider_errors": provider_errors,
             "error_message": error_message,
         }
+        if self._last_collection_result:
+            exec_metrics["source_collection"] = {
+                "target_commit_sha": self._last_collection_result.target_commit_sha,
+                "is_complete": self._last_collection_result.snapshot.is_complete,
+                "records": [r.model_dump() for r in getattr(self._last_collection_result, "records", [])],
+            }
+            if getattr(self._last_collection_result, "evidence", None):
+                self.sqlite.save_evidence(run.run_id, self._last_collection_result.evidence)
+
         # Persist diagnostic partial artifacts only; do not write report.json/report.md as complete
         self.artifacts.save_partial_artifacts(
             run_id=run.run_id,
