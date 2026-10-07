@@ -12,6 +12,7 @@ from agente_gestion.domain.findings import (
 from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.llm import GenerationRequest
 from agente_gestion.ports.llm import LLMProviderPort
+from agente_gestion.agents.context import ContextBuilder
 from agente_gestion.application.generation import StageInvocationCoordinator
 from agente_gestion.application.validation import SemanticValidator
 
@@ -48,9 +49,11 @@ class VerifierAgent:
         model: Optional[str] = None,
         coordinator: Optional[StageInvocationCoordinator] = None,
         timeout_seconds: float = 120.0,
+        context_builder: Optional[ContextBuilder] = None,
     ):
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        self.context_builder = context_builder or ContextBuilder()
         self.provider = provider
         self.model = model or getattr(provider, "model", "gemini-2.5-flash")
         self.coordinator = coordinator or StageInvocationCoordinator()
@@ -79,13 +82,22 @@ class VerifierAgent:
             "- Los veredictos validos son: 'confirmed', 'rejected', 'insufficient'.\n"
         )
 
-        evidences_payload: dict[str, Any] = {
-            "project_id": project_id,
-            "findings": [f.model_dump() for f in findings],
-            "code_snippets": [s.model_dump() for s in snippets],
-            "rules": [r.model_dump() for r in rules] if rules else [],
-            "available_evidence_ids": list(valid_ev_ids),
-        }
+        instructions += (
+            "\nLIMITES DE EVIDENCIA:\n"
+            "- No infieras codigo fuera de las lineas visibles; el fin del fragmento no es el fin del archivo.\n"
+            "- snippet, diff y truncated son parciales; no afirman ausencia ni implementacion incompleta fuera del rango visible.\n"
+            "- Solo full_file con is_complete=true y truncated=false permite conclusiones de ausencia dentro del archivo completo.\n"
+            "- Si faltan lineas necesarias, declara evidencia insuficiente y solicita contexto adicional; no reportes ausencia como defecto.\n"
+            "- El verificador debe usar insufficient cuando confirmar dependa de contenido no visible.\n"
+        )
+
+        context = self.context_builder.build_verifier_context(
+            project_id, findings, snippets, rules or [], sorted(valid_ev_ids), strict_budget=True,
+        )
+        evidences_payload = self.context_builder.runtime_payload(
+            context, instructions, VerifierOutputSchema.model_json_schema(), 1024,
+            self.provider.get_capabilities().context_tokens,
+        )
 
         request = GenerationRequest(
             role="verificador",

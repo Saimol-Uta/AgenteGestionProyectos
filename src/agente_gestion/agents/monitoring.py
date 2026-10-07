@@ -8,6 +8,7 @@ from agente_gestion.domain.code import CIRunResult
 from agente_gestion.domain.report import MonitoringDraft
 from agente_gestion.domain.llm import GenerationRequest
 from agente_gestion.ports.llm import LLMProviderPort
+from agente_gestion.agents.context import ContextBuilder
 from agente_gestion.application.generation import StageInvocationCoordinator
 from agente_gestion.application.validation import SemanticValidator, ValidationError
 
@@ -34,7 +35,9 @@ class ProjectMonitoringAgent:
         provider: LLMProviderPort,
         model: str = "qwen3.5:2b-q4_K_M",
         coordinator: Optional[StageInvocationCoordinator] = None,
+        context_builder: Optional[ContextBuilder] = None,
     ):
+        self.context_builder = context_builder or ContextBuilder()
         self.provider = provider
         self.model = model
         self.coordinator = coordinator or StageInvocationCoordinator()
@@ -57,15 +60,17 @@ class ProjectMonitoringAgent:
             "- No inventes identificadores de tareas ni evidencias; cita unicamente IDs existentes en el contexto.\n"
             "- Las metricas de avance son calculadas de forma autoritativa por el backend; no calcules ni modifiques conteos finales.\n"
             "- Si el CI ha fallado, destaca el riesgo correspondiente.\n"
+            "- TaskCard.state es autoritativo: solo in_progress significa en curso; no inventes estados.\n"
+            "- Toda tarea mencionada debe citarse en referenced_task_ids y evidence_ids.\n"
         )
 
-        evidences_payload: dict[str, Any] = {
-            "project_id": project_id,
-            "metrics": metrics.model_dump(),
-            "tasks": [{"id": t.id, "title": t.title, "state": t.state.value} for t in tasks],
-            "ci_result": ci_result.model_dump() if ci_result else None,
-            "available_evidence_ids": list(valid_ev_ids),
-        }
+        context = self.context_builder.build_monitoring_context(
+            project_id, metrics, tasks, ci_result, sorted(valid_ev_ids), strict_budget=True,
+        )
+        evidences_payload = self.context_builder.runtime_payload(
+            context, instructions, MonitoringDraftSchema.model_json_schema(), 512,
+            self.provider.get_capabilities().context_tokens,
+        )
 
         request = GenerationRequest(
             role="elaborador",

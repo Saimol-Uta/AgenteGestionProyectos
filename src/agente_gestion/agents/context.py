@@ -21,7 +21,8 @@ class BoundedContextType(str, Enum):
 
 class ContextBudgetExceededError(Exception):
     """Raised when critical context data exceeds the configured token budget."""
-    pass
+    status = "incomplete"
+    context_request = "Request additional context or increase the explicit context budget."
 
 
 class ContextPayload(BaseModel):
@@ -52,6 +53,8 @@ class ContextBuilder:
     """Builds explicit bounded contexts without silent truncation of critical evidence."""
 
     def __init__(self, default_budget_tokens: int = 4096):
+        if default_budget_tokens <= 0:
+            raise ValueError("Context budget must be positive")
         self.default_budget_tokens = default_budget_tokens
 
     def _check_budget(
@@ -62,14 +65,17 @@ class ContextBuilder:
         budget_tokens: Optional[int],
         strict_budget: bool,
     ) -> ContextPayload:
-        budget = budget_tokens or self.default_budget_tokens
+        budget = self.default_budget_tokens if budget_tokens is None else budget_tokens
+        if budget <= 0:
+            raise ContextBudgetExceededError("No input context budget remains. Request additional context or increase the explicit context budget.")
         estimated = estimate_tokens_from_data(data)
 
         if estimated > budget:
             msg = (
                 f"Context budget exceeded for {context_type.value}: "
                 f"estimated {estimated} tokens > budget {budget} tokens. "
-                "Silent truncation rejected per architectural policy."
+                "Silent truncation rejected per architectural policy. "
+                "Request additional context or increase the explicit context budget."
             )
             if strict_budget:
                 raise ContextBudgetExceededError(msg)
@@ -93,6 +99,22 @@ class ContextBuilder:
             status="complete",
             data=data,
         )
+
+    def runtime_payload(self, context: ContextPayload, instructions: str, schema: dict,
+                        output_tokens: int, context_tokens: int) -> dict[str, Any]:
+        """Bound the complete provider envelope, reserving generation space.
+
+        Token estimates are conservative estimates, not tokenizer guarantees. No
+        evidence is clipped to fit; a failed bound prevents provider invocation.
+        """
+        payload = dict(context.data)
+        payload["available_evidence_ids"] = payload.pop("evidence_ids", [])
+        payload["context_metadata"] = context.model_dump(exclude={"data"})
+        overhead = estimate_tokens_from_data({"instructions": instructions, "schema": schema})
+        available = context_tokens - output_tokens - overhead
+        self._check_budget(context.context_type, context.project_id, payload,
+                           min(context.budget_tokens, available), True)
+        return payload
 
     def build_monitoring_context(
         self,

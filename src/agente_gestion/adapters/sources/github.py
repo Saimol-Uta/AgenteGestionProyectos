@@ -691,6 +691,8 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
                         commit_sha=pinned_sha,
                         file_path=filename,
                         diff_side="NEW",
+                        evidence_scope="diff",
+                        is_complete=False,
                         lines=lines_list,
                         content=content_str,
                     )

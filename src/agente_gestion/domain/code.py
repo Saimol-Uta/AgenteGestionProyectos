@@ -1,8 +1,8 @@
 """Code diff snippets and CI run entities with exact commit matching."""
 
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, model_validator
 
 
 class CodeDiffSnippet(BaseModel):
@@ -14,6 +14,37 @@ class CodeDiffSnippet(BaseModel):
     diff_side: Optional[str] = Field(default="NEW", description="Diff side: NEW or OLD")
     lines: list[int] = Field(description="Line numbers included in the snippet")
     content: str = Field(description="Content lines of the snippet")
+    evidence_scope: Literal["full_file", "snippet", "diff", "truncated"] = "snippet"
+    is_complete: bool = Field(default=False, description="True only for a verified complete file")
+    start_line: Optional[int] = Field(default=None, ge=1)
+    end_line: Optional[int] = Field(default=None, ge=1)
+    total_lines: Optional[int] = Field(default=None, ge=0)
+    truncated: bool = False
+
+    @model_validator(mode="after")
+    def validate_coverage(self):
+        # Diff line sets may be disjoint: the range is only an envelope, not coverage.
+        if any(line < 1 for line in self.lines) or self.lines != sorted(set(self.lines)):
+            raise ValueError("Evidence lines must be positive, unique and ordered")
+        first = min(self.lines) if self.lines else None
+        last = max(self.lines) if self.lines else None
+        if self.start_line is not None and self.start_line != first:
+            raise ValueError("start_line must match visible lines")
+        if self.end_line is not None and self.end_line != last:
+            raise ValueError("end_line must match visible lines")
+        self.start_line, self.end_line = first, last
+        if self.total_lines is not None and last is not None and last > self.total_lines:
+            raise ValueError("Visible lines exceed total_lines")
+        if self.evidence_scope == "truncated":
+            self.truncated = True
+        if self.is_complete or self.evidence_scope == "full_file":
+            if (self.evidence_scope != "full_file" or not self.is_complete or self.truncated
+                    or self.total_lines is None
+                    or self.lines != list(range(1, self.total_lines + 1))
+                    or len(self.content.splitlines()) != self.total_lines):
+                raise ValueError("Complete file requires untruncated content and every file line")
+        return self
+
 
 
 class CIRunResult(BaseModel):

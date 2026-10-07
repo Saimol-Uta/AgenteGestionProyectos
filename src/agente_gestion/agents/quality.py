@@ -9,6 +9,7 @@ from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.report import MonitoringDraft
 from agente_gestion.domain.llm import GenerationRequest
 from agente_gestion.ports.llm import LLMProviderPort
+from agente_gestion.agents.context import ContextBuilder
 from agente_gestion.application.generation import StageInvocationCoordinator
 from agente_gestion.application.validation import SemanticValidator
 
@@ -62,7 +63,9 @@ class CodeQualityAgent:
         model: str = "qwen3.5:4b-q4_K_M",
         coordinator: Optional[StageInvocationCoordinator] = None,
         timeout_seconds: float = 120.0,
+        context_builder: Optional[ContextBuilder] = None,
     ):
+        self.context_builder = context_builder or ContextBuilder()
         self.provider = provider
         self.model = model
         self.coordinator = coordinator or StageInvocationCoordinator()
@@ -130,14 +133,22 @@ class CodeQualityAgent:
             "}\n"
         )
 
-        evidences_payload: dict[str, Any] = {
-            "project_id": project_id,
-            "draft_summary": draft.summary,
-            "review_criteria": criteria or [],
-            "code_snippets": [s.model_dump() for s in snippets],
-            "rules": [r.model_dump() for r in rules] if rules else [],
-            "available_evidence_ids": sorted(code_ev_ids),
-        }
+        instructions += (
+            "\nLIMITES DE EVIDENCIA:\n"
+            "- No infieras codigo fuera de las lineas visibles; el fin del fragmento no es el fin del archivo.\n"
+            "- snippet, diff y truncated son parciales; no afirman ausencia ni implementacion incompleta fuera del rango visible.\n"
+            "- Solo full_file con is_complete=true y truncated=false permite conclusiones de ausencia dentro del archivo completo.\n"
+            "- Si faltan lineas necesarias, declara evidencia insuficiente y solicita contexto adicional; no reportes ausencia como defecto.\n"
+            "- El verificador debe usar insufficient cuando confirmar dependa de contenido no visible.\n"
+        )
+
+        context = self.context_builder.build_code_context(
+            project_id, draft, criteria or [], snippets, rules, sorted(code_ev_ids), strict_budget=True,
+        )
+        evidences_payload = self.context_builder.runtime_payload(
+            context, instructions, CodeFindingsSchema.model_json_schema(), 768,
+            self.provider.get_capabilities().context_tokens,
+        )
 
         request = GenerationRequest(
             role="revisor",

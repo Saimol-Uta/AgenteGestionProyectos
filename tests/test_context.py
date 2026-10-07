@@ -434,3 +434,62 @@ class ContextAndValidationTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class EvidenceScopeRegressionTests(unittest.TestCase):
+    def snippet(self, **kwargs):
+        return CodeDiffSnippet(repository="r", commit_sha="sha", file_path="store.ts",
+                               lines=[151], content="return transaction(pool, async (client) => {", **kwargs)
+
+    def test_partial_function_opener_is_not_file_end(self):
+        snippet = self.snippet()
+        self.assertEqual(snippet.evidence_scope, "snippet")
+        self.assertFalse(snippet.is_complete)
+        self.assertEqual(snippet.start_line, 151)
+        self.assertEqual(snippet.end_line, 151)
+        self.assertIsNone(snippet.total_lines)
+
+    def test_full_file_requires_all_lines_and_explicit_completeness(self):
+        snippet = CodeDiffSnippet(repository="r", commit_sha="sha", file_path="f",
+                                 lines=[1, 2], content="def f():\n    pass\n",
+                                 evidence_scope="full_file", is_complete=True, total_lines=2)
+        self.assertTrue(snippet.is_complete)
+        self.assertEqual(snippet.evidence_scope, "full_file")
+        for overrides in ({"total_lines": 3}, {"lines": [2, 3]}, {"truncated": True},
+                          {"evidence_scope": "diff"}, {"content": "only one line"}):
+            data = snippet.model_dump()
+            data.update(overrides)
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                CodeDiffSnippet.model_validate(data)
+
+    def test_truncated_evidence_cannot_be_complete(self):
+        snippet = self.snippet(evidence_scope="truncated", truncated=True)
+        self.assertFalse(snippet.is_complete)
+        with self.assertRaises(ValueError):
+            self.snippet(is_complete=True)
+
+    def test_budget_failure_preserves_boundaries_without_silent_omission(self):
+        builder = ContextBuilder(default_budget_tokens=1)
+        snippet = self.snippet()
+        ctx = builder.build_code_context("p", MonitoringDraft(summary="draft"), [], [snippet])
+        self.assertEqual(ctx.status, "incomplete")
+        self.assertTrue(ctx.is_truncated)
+        self.assertIn("Request additional context", ctx.incomplete_reason)
+        self.assertEqual(ctx.data["code_snippets"][0]["content"], snippet.content)
+        with self.assertRaises(ContextBudgetExceededError):
+            builder.runtime_payload(ctx, "instructions", {}, 10, 100)
+
+    def test_runtime_budget_reserves_instructions_schema_and_output(self):
+        builder = ContextBuilder(default_budget_tokens=4096)
+        ctx = builder.build_code_context("p", MonitoringDraft(summary="draft"), [], [self.snippet()])
+        with self.assertRaises(ContextBudgetExceededError):
+            builder.runtime_payload(ctx, "instructions" * 100, {}, 512, 600)
+
+    def test_full_file_metadata_reaches_provider_payload(self):
+        snippet = CodeDiffSnippet(repository="r", commit_sha="sha", file_path="f",
+                                 diff_side="OLD", lines=[1], content="pass\n",
+                                 evidence_scope="full_file", is_complete=True, total_lines=1)
+        builder = ContextBuilder()
+        ctx = builder.build_code_context("p", MonitoringDraft(summary="draft"), [], [snippet])
+        payload = builder.runtime_payload(ctx, "instructions", {}, 512, 8192)
+        self.assertTrue(payload["code_snippets"][0]["is_complete"])
+        self.assertEqual(payload["code_snippets"][0]["diff_side"], "OLD")

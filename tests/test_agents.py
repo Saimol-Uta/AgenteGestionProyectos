@@ -588,3 +588,48 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+class RuntimeContextRegressionTests(unittest.TestCase):
+    setUp = AgentsAndGenerationTestCase.setUp
+    def test_all_roles_use_bounded_context_and_partial_evidence_instructions(self):
+        from agente_gestion.agents.context import ContextBuilder
+        from unittest.mock import Mock
+        builder = ContextBuilder()
+        for method in ("build_monitoring_context", "build_code_context", "build_verifier_context"):
+            setattr(builder, method, Mock(wraps=getattr(builder, method)))
+        class Capture(FakeProvider):
+            def generate(self, request):
+                self.request = request
+                return super().generate(request)
+        provider = Capture()
+        draft = ProjectMonitoringAgent(provider, context_builder=builder).run("p", self.metrics, self.tasks, evidence_ids=["ev-1"])
+        rule = QualityRule(id="Q3", description="Review", source="review", metric_key="open_critical_findings", operator="==", threshold=0)
+        findings = CodeQualityAgent(provider, context_builder=builder).run("p", draft, self.snippets, rules=[rule])
+        quality_request = provider.request
+        VerifierAgent(provider, context_builder=builder).run("p", findings, self.snippets, rules=[rule], evidence_ids=["c0ffee1"])
+        for method in ("build_monitoring_context", "build_code_context", "build_verifier_context"):
+            getattr(builder, method).assert_called_once()
+        for request in (quality_request, provider.request):
+            self.assertEqual(request.evidences["context_metadata"]["status"], "complete")
+            self.assertFalse(request.evidences["code_snippets"][0]["is_complete"])
+            self.assertIn("fin del fragmento no es el fin del archivo", request.instructions)
+            self.assertIn("contexto adicional", request.instructions)
+            self.assertIn("full_file", request.instructions)
+
+    def test_context_overflow_stops_all_roles_before_provider(self):
+        from agente_gestion.agents.context import ContextBuilder, ContextBudgetExceededError
+        from unittest.mock import Mock
+        provider = FakeProvider()
+        provider.generate = Mock(side_effect=AssertionError("provider must not be invoked"))
+        builder = ContextBuilder(default_budget_tokens=1)
+        draft = MonitoringDraft(summary="draft")
+        finding = CandidateFinding(id="C1", rule_id="Q3", claim="claim", severity="high",
+                                   evidence_ids=["c0ffee1"], commit_sha="c0ffee1", file_path="src/service.py", line=14, confidence=.8)
+        calls = [lambda: ProjectMonitoringAgent(provider, context_builder=builder).run("p", self.metrics, self.tasks),
+                 lambda: CodeQualityAgent(provider, context_builder=builder).run("p", draft, self.snippets),
+                 lambda: VerifierAgent(provider, context_builder=builder).run("p", [finding], self.snippets)]
+        for call in calls:
+            with self.assertRaises(ContextBudgetExceededError) as caught:
+                call()
+            self.assertIn("Request additional context", str(caught.exception))
+        provider.generate.assert_not_called()

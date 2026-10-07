@@ -1179,6 +1179,14 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         crlf_snippets = adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
         self.assertEqual(len(crlf_snippets), 1)
         self.assertEqual(crlf_snippets[0].lines, [1, 2, 21])
+        self.assertEqual(crlf_snippets[0].evidence_scope, "diff")
+        self.assertFalse(crlf_snippets[0].is_complete)
+        self.assertFalse(crlf_snippets[0].truncated)
+        self.assertIsNone(crlf_snippets[0].total_lines)
+        self.assertEqual(crlf_snippets[0].commit_sha, self.valid_sha_1)
+        self.assertEqual(crlf_snippets[0].diff_side, "NEW")
+        self.assertEqual((crlf_snippets[0].start_line, crlf_snippets[0].end_line), (1, 21))
+
         self.assertEqual(
             crlf_snippets[0].content,
             "context line 1\r\nadded line 2\r\nadded line 21\r\n",
