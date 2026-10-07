@@ -10,6 +10,7 @@ from agente_gestion.ports.sources import (
     TaskSourcePort,
     CodeSourcePort,
     CISourcePort,
+    PolicySourcePort,
 )
 from agente_gestion.domain.tasks import TaskCard, TaskState
 from agente_gestion.domain.code import CodeDiffSnippet, CIRunResult
@@ -18,7 +19,7 @@ from agente_gestion.domain.policies import QualityRule
 DEFAULT_TIMEZONE = ZoneInfo("America/Guayaquil")
 
 
-class FixtureSourcesAdapter(TaskSourcePort, CodeSourcePort, CISourcePort):
+class FixtureSourcesAdapter(TaskSourcePort, CodeSourcePort, CISourcePort, PolicySourcePort):
     """Loads tasks, diffs, CI runs, and policies from JSON fixture files."""
 
     def __init__(self, fixtures_dir: str | Path = "fixtures"):

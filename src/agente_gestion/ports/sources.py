@@ -5,6 +5,7 @@ from typing import Optional
 
 from agente_gestion.domain.tasks import TaskCard
 from agente_gestion.domain.code import CodeDiffSnippet, CIRunResult
+from agente_gestion.domain.policies import QualityRule
 
 
 class TaskSourcePort(ABC):
@@ -31,4 +32,13 @@ class CISourcePort(ABC):
     @abstractmethod
     def get_ci_results(self, project_id: str, commit_sha: Optional[str] = None) -> list[CIRunResult]:
         """Retrieve CI execution runs and quality reports."""
+        raise NotImplementedError
+
+
+class PolicySourcePort(ABC):
+    """Port interface for quality policies configuration."""
+
+    @abstractmethod
+    def get_policies(self, project_id: str) -> list[QualityRule]:
+        """Retrieve quality policy rules for the specified project."""
         raise NotImplementedError

@@ -1,0 +1,30 @@
+# Reglas de políticas de calidad del proyecto
+# Origen: Migrado semánticamente desde fixtures/fixture_1_standard.json para uso en modo real y desacoplado.
+# Consulta local independiente; el cargador no realiza fallback a fixtures en tiempo de ejecución.
+# Si el reporte de CI no provee cobertura de código (coverage_percentage), la regla Q2 permanece como
+# desconocida ('unknown') y la evaluación resultante se clasifica estrictamente como 'evidencia_insuficiente'.
+
+policies:
+  - id: Q1
+    description: "Todas las pruebas unitarias deben pasar"
+    metric_key: failed_tests
+    operator: "=="
+    threshold: 0
+    source: ci
+    mandatory: true
+
+  - id: Q2
+    description: "Cobertura de código mínima 80%"
+    metric_key: coverage_percentage
+    operator: ">="
+    threshold: 80.0
+    source: ci
+    mandatory: true
+
+  - id: Q3
+    description: "Cero hallazgos críticos abiertos"
+    metric_key: open_critical_findings
+    operator: "=="
+    threshold: 0
+    source: review
+    mandatory: true
