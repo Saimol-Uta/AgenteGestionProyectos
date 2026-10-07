@@ -370,7 +370,8 @@ class OrchestratorTestCase(unittest.TestCase):
                     "findings": [
                         {
                             "id": "f-sql-esc",
-                            "rule_id": "Q1",
+                            # No review policy exists here: do not misuse CI test-count Q1.
+                            "rule_id": None,
                             "claim": "Vulnerabilidad de inyeccion SQL en servicio",
                             "severity": "critical",
                             "evidence_ids": ["c0ffee1"],
@@ -436,7 +437,8 @@ class OrchestratorTestCase(unittest.TestCase):
                     "findings": [
                         {
                             "id": "f-sql-cloud",
-                            "rule_id": "Q1",
+                            # No review policy exists here: do not misuse CI test-count Q1.
+                            "rule_id": None,
                             "claim": "Vulnerabilidad critica en servicio",
                             "severity": "critical",
                             "evidence_ids": ["c0ffee1"],

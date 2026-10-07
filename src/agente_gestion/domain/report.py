@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from agente_gestion.domain.tasks import DeterministicTaskMetrics
+from agente_gestion.domain.tasks import TaskState, DeterministicTaskMetrics
 from agente_gestion.domain.code import CIRunResult
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.policies import PolicyEvaluationResult
@@ -19,9 +19,16 @@ class HumanDecisionState(str, Enum):
     postponed = "postponed"
 
 
+class TaskStateClaim(BaseModel):
+    """Structured task assertions checked against the deterministic snapshot."""
+    task_id: str = Field(min_length=1)
+    state: TaskState
+
+
 class MonitoringDraft(BaseModel):
     """Initial progress assessment drafted by monitoring agent (elaborador)."""
     summary: str = Field(description="Narrative progress summary")
+    task_state_claims: list[TaskStateClaim] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list, description="Identified project risks")
     suggested_actions: list[str] = Field(default_factory=list, description="Actionable recommendations")
     referenced_task_ids: list[str] = Field(default_factory=list, description="Task IDs explicitly referenced")

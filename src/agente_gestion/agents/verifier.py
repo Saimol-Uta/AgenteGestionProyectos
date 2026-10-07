@@ -79,6 +79,7 @@ class VerifierAgent:
             "- Cada verificacion debe usar el finding_id EXACTO del hallazgo evaluado.\n"
             "- No confirmes automaticamente ningun hallazgo candidato; exige justificacion tecnica objetiva.\n"
             "- Los evidence_ids deben ser un subconjunto estricto de las evidencias asociadas al hallazgo candidato.\n"
+            "- No confirmes asociaciones incompatibles de politica; cobertura desconocida no demuestra ausencia de pruebas.\n"
             "- Los veredictos validos son: 'confirmed', 'rejected', 'insufficient'.\n"
         )
 
@@ -134,6 +135,8 @@ class VerifierAgent:
                 verifications=parsed_verifs,
                 candidate_findings=findings,
                 available_evidence_ids=valid_ev_ids,
+                available_snippets=snippets,
+                rules=rules,
             )
 
         _, validated_dict = self.coordinator.invoke_stage(

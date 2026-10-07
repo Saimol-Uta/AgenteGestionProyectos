@@ -1,6 +1,7 @@
 """CodeQualityAgent: reviews draft and code changes to report candidate defect findings."""
 
-from typing import Any, Optional
+import json
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from agente_gestion.domain.code import CodeDiffSnippet
@@ -17,7 +18,7 @@ from agente_gestion.application.validation import SemanticValidator
 class GeneratedFindingSchema(BaseModel):
     """Schema strictly defining required fields for generated findings from LLM."""
     id: str = Field(min_length=1, description="Unique finding identifier (e.g. 'CQ-001')")
-    rule_id: str = Field(min_length=1, description="Associated existing quality rule ID from available policy")
+    rule_id: Optional[str] = Field(min_length=1, description="Existing applicable policy ID or explicit null; this key is required")
     claim: str = Field(min_length=1, description="Concrete technical assertion or defect description")
     severity: FindingSeverity = Field(description="Severity: low, medium, high, critical")
     evidence_ids: list[str] = Field(min_length=1, description="Nonempty evidence IDs from code context")
@@ -26,6 +27,9 @@ class GeneratedFindingSchema(BaseModel):
     line: int = Field(description="Exact line number within snippet")
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0.0-1.0")
     requires_verification: bool = Field(default=True, description="Must be true for candidate findings")
+    claim_basis: Literal["visible_code", "file_absence", "policy_metric"] = "visible_code"
+    metric_key: Optional[str] = None
+    observed_value: Optional[float] = None
     category: Optional[str] = Field(default="otros", description="Defect category")
     evidence: Optional[str] = Field(default="", description="Snippet excerpt")
     suggested_fix: Optional[str] = Field(default="", description="Suggested fix proposal")
@@ -88,7 +92,8 @@ class CodeQualityAgent:
         rules_list_str = ", ".join(sorted(valid_rules)) if valid_rules else "ninguna"
         ev_list_str = ", ".join(sorted(code_ev_ids)) if code_ev_ids else "ninguna"
 
-        example_rule = sorted(valid_rules)[0] if valid_rules else "Q3"
+        example_rule = next((rule.id for rule in rules or []
+                             if rule.source == "review" or rule.metric_key == "open_critical_findings"), None)
         example_ev = sorted(code_ev_ids)[0] if code_ev_ids else (snippets[0].commit_sha if snippets else "a1b2c3d4e5f6")
         example_sha = snippets[0].commit_sha if snippets else "a1b2c3d4e5f6"
         example_file = snippets[0].file_path if snippets else "src/auth/service.py"
@@ -101,7 +106,7 @@ class CodeQualityAgent:
             "- Cada hallazgo es estrictamente CANDIDATO (requires_verification: true); no asumas confirmacion.\n"
             "- Cada hallazgo DEBE incluir OBLIGATORIAMENTE:\n"
             "  * id: identificador unico no vacio (ej. 'CQ-001').\n"
-            f"  * rule_id: ID exacto de la regla de calidad aplicable de la lista [{rules_list_str}]. NUNCA null ni vacio.\n"
+            f"  * rule_id: ID exacto de la regla de calidad aplicable de la lista [{rules_list_str}]. Usa null explicito si ninguna regla aplica; nunca vacio.\n"
             "  * claim: afirmacion tecnica concreta del defecto identificado. NUNCA vacio.\n"
             "  * severity: 'low', 'medium', 'high', o 'critical'. NUNCA null.\n"
             f"  * evidence_ids: lista NO vacia citando los IDs de evidencia de codigo disponibles [{ev_list_str}]. NUNCA vacia ni null.\n"
@@ -116,7 +121,7 @@ class CodeQualityAgent:
             '  "findings": [\n'
             '    {\n'
             '      "id": "CQ-001",\n'
-            f'      "rule_id": "{example_rule}",\n'
+            f'      "rule_id": {json.dumps(example_rule)},\n'
             '      "claim": "Consulta SQL concatenada con entrada de usuario susceptible a inyeccion SQL",\n'
             '      "severity": "critical",\n'
             f'      "evidence_ids": ["{example_ev}"],\n'
@@ -134,6 +139,9 @@ class CodeQualityAgent:
         )
 
         instructions += (
+            "- claim_basis: visible_code, file_absence o policy_metric; nunca disfraces ausencia como defecto visible.\n"
+            "- Una regla CI de cobertura no aplica a defectos de implementacion; usa rule_id=null si no hay regla aplicable.\n"
+            "- policy_metric exige metric_key y observed_value respaldados por hechos reportados, no inferidos de codigo.\n"
             "\nLIMITES DE EVIDENCIA:\n"
             "- No infieras codigo fuera de las lineas visibles; el fin del fragmento no es el fin del archivo.\n"
             "- snippet, diff y truncated son parciales; no afirman ausencia ni implementacion incompleta fuera del rango visible.\n"
@@ -176,6 +184,7 @@ class CodeQualityAgent:
                 available_snippets=snippets,
                 valid_rule_ids=valid_rules,
                 available_evidence_ids=code_ev_ids,
+                rules=rules or [],
             )
 
         _, validated_dict = self.coordinator.invoke_stage(

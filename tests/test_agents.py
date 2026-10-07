@@ -216,6 +216,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
         agent = VerifierAgent(provider=fake, model="gemini-2.5-flash")
         finding = CandidateFinding(
             id="f-1",
+            rule_id=None,  # No policy supplied: explicitly unassociated.
             category="division_cero",
             file_path="src/service.py",
             line=15,
@@ -254,6 +255,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
 
         finding = CandidateFinding(
             id="f-1",
+            rule_id=None,  # No policy supplied: explicitly unassociated.
             category="division_cero",
             file_path="src/service.py",
             line=15,
@@ -294,6 +296,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
 
         finding = CandidateFinding(
             id="f-1",
+            rule_id=None,  # No policy supplied: explicitly unassociated.
             category="division_cero",
             file_path="src/service.py",
             line=15,

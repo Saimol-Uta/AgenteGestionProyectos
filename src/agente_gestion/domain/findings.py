@@ -1,7 +1,7 @@
 """Code defect findings, categories, and verification contracts."""
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -22,7 +22,7 @@ class FindingSeverity(str, Enum):
 class CandidateFinding(BaseModel):
     """Potential issue reported during code review stage with strict contract."""
     id: str = Field(min_length=1, description="Unique finding identifier (nonempty)")
-    rule_id: str = Field(default="Q3", min_length=1, description="Related quality rule ID from available policy (nonempty)")
+    rule_id: Optional[str] = Field(default="Q3", min_length=1, description="Existing policy rule, or explicit null when unassociated")
     claim: str = Field(default="Posible defecto de codigo identificado", min_length=1, description="Technical assertion or defect claim (nonempty)")
     severity: FindingSeverity = Field(default=FindingSeverity.low, description="Finding severity: low, medium, high, critical")
     evidence_ids: list[str] = Field(default_factory=lambda: ["c0ffee1"], description="Associated evidence IDs citing exact snippet or CI (nonempty)")
@@ -32,12 +32,25 @@ class CandidateFinding(BaseModel):
     confidence: float = Field(default=0.85, ge=0.0, le=1.0, description="Model confidence score 0.0-1.0")
     requires_verification: bool = Field(default=True, description="Whether finding requires independent verification")
 
+    claim_basis: Literal["visible_code", "file_absence", "policy_metric"] = "visible_code"
+    metric_key: Optional[str] = None
+    observed_value: Optional[float] = None
+
+    @field_validator("rule_id", mode="before")
+    @classmethod
+    def validate_optional_rule(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("rule_id must be an existing nonempty ID or explicit null")
+        return value.strip()
+
     # Compatibility fields maintained
     category: str = Field(default="otros", description="Finding category e.g. inyeccion_sql, manejo_recursos")
     evidence: str = Field(default="", description="Exact snippet or excerpt of problematic code")
     suggested_fix: str = Field(default="", description="Actionable proposal to fix the defect")
 
-    @field_validator("id", "rule_id", "claim", "commit_sha", "file_path", mode="before")
+    @field_validator("id", "claim", "commit_sha", "file_path", mode="before")
     @classmethod
     def validate_nonempty_str(cls, v: Any) -> str:
         if v is None:

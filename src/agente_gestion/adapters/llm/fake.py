@@ -75,8 +75,6 @@ class FakeProvider(LLMProviderPort):
                 if r.get("source") == "review" or r.get("metric_key") == "open_critical_findings":
                     applicable_rule_id = r.get("id")
                     break
-            if not applicable_rule_id and rules_in_ev:
-                applicable_rule_id = rules_in_ev[0].get("id")
 
             snippets_in_ev = request.evidences.get("code_snippets", [])
             file_path = snippets_in_ev[0].get("file_path", "src/service.py") if snippets_in_ev else "src/service.py"
@@ -94,7 +92,7 @@ class FakeProvider(LLMProviderPort):
                 "findings": [
                     {
                         "id": "f-fake-1",
-                        "rule_id": applicable_rule_id or "Q3",
+                        "rule_id": applicable_rule_id,
                         "claim": "Riesgo de division por cero en calculo de metricas",
                         "severity": "high",
                         "evidence_ids": evidence_ids,
