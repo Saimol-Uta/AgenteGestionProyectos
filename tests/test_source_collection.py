@@ -529,8 +529,114 @@ class TestCompositeSourcesAdapter(unittest.TestCase):
         self.assertNotIn(SourceProvider.github_actions, {r.provider for r in result.records})
         code_rec = next(r for r in result.records if r.provider == SourceProvider.github)
         self.assertEqual(code_rec.status, SourceExecutionStatus.failed)
+        self.assertIsNone(result.target_commit_sha)
+        self.assertIsNone(adapter.last_resolved_commit_sha)
+        self.assertNotIn(secret, result.model_dump_json())
         self.assertEqual(len(result.snapshot.tasks), 1)
         self.assertEqual(len(result.snapshot.policies), 1)
+
+    def test_known_secret_in_resolved_commit_sha_fails_code_and_skips_ci(self) -> None:
+        """When resolved commit SHA contains a known secret, code fails, target SHA is cleared, and CI is skipped."""
+        secret = "c0ffee" * 5 + "12"  # 32 hex chars
+        secret_sha = secret + "00000000"  # 40 hex chars
+        task, task_ev = _make_sample_task(self.project_id)
+        ci, ci_ev = _make_sample_ci(self.project_id, secret_sha)
+        policy = _make_sample_policy()
+
+        tasks_src = FakeTaskSource([task], [task_ev])
+        code_src = FakeCodeSource(diffs=[], evidence=[], resolved_sha=secret_sha)
+        ci_src = FakeCISource([ci], [ci_ev])
+        policy_src = FakePolicySource([policy])
+
+        adapter = CompositeSourcesAdapter(
+            task_source=tasks_src,
+            code_source=code_src,
+            ci_source=ci_src,
+            policy_source=policy_src,
+            known_secret_values=[secret],
+        )
+
+        result = adapter.collect_snapshot(self.project_id, self.cutoff)
+        self.assertFalse(result.snapshot.is_complete)
+        self.assertEqual(len(ci_src.calls), 0)
+        self.assertNotIn(SourceProvider.github_actions, {r.provider for r in result.records})
+        code_rec = next(r for r in result.records if r.provider == SourceProvider.github)
+        self.assertEqual(code_rec.status, SourceExecutionStatus.failed)
+        self.assertEqual(code_rec.error.category, SourceErrorCategory.malformed_payload)
+        self.assertIsNone(result.target_commit_sha)
+        self.assertIsNone(adapter.last_resolved_commit_sha)
+        dump = result.model_dump_json()
+        self.assertNotIn(secret, dump)
+        self.assertNotIn(secret, code_rec.error.message)
+
+    def test_known_secret_in_fallback_commit_sha_fails_code_and_skips_ci(self) -> None:
+        """When fallback/target commit SHA contains a known secret, code fails, target SHA is cleared, and CI is skipped."""
+        secret = "c0ffee" * 5 + "12"  # 32 hex chars
+        secret_sha = secret + "00000000"  # 40 hex chars
+        task, task_ev = _make_sample_task(self.project_id)
+        ci, ci_ev = _make_sample_ci(self.project_id, secret_sha)
+        policy = _make_sample_policy()
+
+        tasks_src = FakeTaskSource([task], [task_ev])
+        code_src = FakeCodeSource(diffs=[], evidence=[], resolved_sha=None)
+        ci_src = FakeCISource([ci], [ci_ev])
+        policy_src = FakePolicySource([policy])
+
+        adapter = CompositeSourcesAdapter(
+            task_source=tasks_src,
+            code_source=code_src,
+            ci_source=ci_src,
+            policy_source=policy_src,
+            default_commit_sha=secret_sha,
+            known_secret_values=[secret],
+        )
+
+        result = adapter.collect_snapshot(self.project_id, self.cutoff)
+        self.assertFalse(result.snapshot.is_complete)
+        self.assertEqual(len(ci_src.calls), 0)
+        self.assertNotIn(SourceProvider.github_actions, {r.provider for r in result.records})
+        code_rec = next(r for r in result.records if r.provider == SourceProvider.github)
+        self.assertEqual(code_rec.status, SourceExecutionStatus.failed)
+        self.assertEqual(code_rec.error.category, SourceErrorCategory.malformed_payload)
+        self.assertIsNone(result.target_commit_sha)
+        self.assertIsNone(adapter.last_resolved_commit_sha)
+        dump = result.model_dump_json()
+        self.assertNotIn(secret, dump)
+
+    def test_known_secret_in_code_evidence_skips_ci_and_clears_target_sha(self) -> None:
+        """Safe SHA with empty diffs but metadata evidence containing known secret fails code and clears target SHA."""
+        secret = "SECRET_METADATA_TOKEN"
+        safe_sha = SAMPLE_SHA
+        task, task_ev = _make_sample_task(self.project_id)
+        ci, ci_ev = _make_sample_ci(self.project_id, safe_sha)
+        policy = _make_sample_policy()
+        _, diff_ev = _make_sample_diff(self.project_id, safe_sha)
+        diff_ev.summary = f"Evidence containing secret {secret}"
+
+        tasks_src = FakeTaskSource([task], [task_ev])
+        code_src = FakeCodeSource(diffs=[], evidence=[diff_ev], resolved_sha=safe_sha)
+        ci_src = FakeCISource([ci], [ci_ev])
+        policy_src = FakePolicySource([policy])
+
+        adapter = CompositeSourcesAdapter(
+            task_source=tasks_src,
+            code_source=code_src,
+            ci_source=ci_src,
+            policy_source=policy_src,
+            known_secret_values=[secret],
+        )
+
+        result = adapter.collect_snapshot(self.project_id, self.cutoff)
+        self.assertFalse(result.snapshot.is_complete)
+        self.assertEqual(len(ci_src.calls), 0)
+        self.assertNotIn(SourceProvider.github_actions, {r.provider for r in result.records})
+        code_rec = next(r for r in result.records if r.provider == SourceProvider.github)
+        self.assertEqual(code_rec.status, SourceExecutionStatus.failed)
+        self.assertEqual(code_rec.error.category, SourceErrorCategory.malformed_payload)
+        self.assertIsNone(result.target_commit_sha)
+        self.assertIsNone(adapter.last_resolved_commit_sha)
+        dump = result.model_dump_json()
+        self.assertNotIn(secret, dump)
 
     def test_code_evidence_helper_failure_skips_ci(self) -> None:
         """When code evidence retrieval fails after diff resolution, CI is skipped with 0 calls."""

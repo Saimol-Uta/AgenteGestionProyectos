@@ -380,6 +380,93 @@ class RealSourcePipelineTestCase(unittest.TestCase):
         self.assertEqual(report.recommendation, "evidencia_insuficiente")
         self.assertIn("Q_SOURCE_AVAILABILITY_INCOMPLETE", report.policy_evaluations.mandatory_unknown_ids)
 
+    def test_pipeline_github_postresolution_failure_omits_target_sha_and_sanitizes_audit(self):
+        """When GitHub diff retrieval encounters a known secret post-resolution, target commit SHA is omitted and audit is sanitized."""
+        secret = "key-123"  # Configured in self.settings.trello_api_key
+        echo_commit_resp = {
+            "sha": TARGET_SHA,
+            "files": [{
+                "filename": "src/module.py",
+                "status": "modified",
+                "patch": f"@@ -1,2 +1,3 @@\n def func():\n+    api_key = '{secret}'\n     pass\n",
+            }],
+        }
+        transport = MockPipelineTransport({
+            f"https://api.github.com/repos/test-owner/test-repo/commits/{TARGET_SHA}": HttpResponse(
+                status_code=200, body=echo_commit_resp
+            ),
+        })
+        composite = create_composite_source(self.settings, commit_sha=TARGET_SHA, transport=transport)
+
+        config = OrchestratorConfig(
+            project_id="test-proj",
+            commit_sha=TARGET_SHA,
+            target_commit_sha=TARGET_SHA,
+            db_path=self.db_path,
+            runs_dir=self.runs_dir,
+            is_simulated=True,
+            timezone="America/Guayaquil",
+        )
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            source_adapter=composite,
+            config=config,
+        )
+
+        run = orchestrator.execute(project_id="test-proj")
+
+        self.assertEqual(run.status, RunStatus.awaiting_human)
+        self.assertIn("source_collection", run.stages)
+        source_stage = run.stages["source_collection"]
+        self.assertEqual(source_stage.status, StageStatus.completed)
+
+        # Stage summary has target_commit_sha null and no secret
+        summary_data = json.loads(source_stage.output_summary)
+        self.assertIsNone(summary_data["target_commit_sha"])
+        self.assertFalse(summary_data["is_complete"])
+        self.assertNotIn(secret, source_stage.output_summary)
+
+        # SQLite persisted stage execution record has target_commit_sha null
+        persisted_stages = self.sqlite.get_stage_results(run.run_id)
+        persisted_stage = persisted_stages["source_collection"]
+        persisted_summary = json.loads(persisted_stage.output_summary)
+        self.assertIsNone(persisted_summary["target_commit_sha"])
+        self.assertNotIn(secret, persisted_stage.output_summary)
+
+        # execution_metrics.json artifact has source_collection.target_commit_sha null and no secret
+        metrics_file = os.path.join(self.runs_dir, run.run_id, "execution_metrics.json")
+        self.assertTrue(os.path.exists(metrics_file))
+        with open(metrics_file, "r", encoding="utf-8") as f:
+            metrics_raw = f.read()
+            exec_metrics = json.loads(metrics_raw)
+        self.assertIn("source_collection", exec_metrics)
+        self.assertIsNone(exec_metrics["source_collection"]["target_commit_sha"])
+        self.assertNotIn(secret, metrics_raw)
+
+        # Snapshot in SQLite has code_diffs empty, is incomplete, and contains no secret
+        snapshot = self.sqlite.get_snapshot(run.snapshot_id)
+        self.assertIsNotNone(snapshot)
+        self.assertFalse(snapshot.is_complete)
+        self.assertEqual(len(snapshot.code_diffs), 0)
+        self.assertNotIn(secret, snapshot.model_dump_json())
+
+        # Persisted evidence in SQLite contains no secret
+        stored_ev = self.sqlite.get_evidence(run.run_id)
+        for ev in stored_ev:
+            self.assertNotIn(secret, ev.model_dump_json())
+
+        # Report in SQLite has human_decision pending and recommendation evidencia_insuficiente
+        report = self.sqlite.get_latest_report("test-proj")
+        self.assertIsNotNone(report)
+        self.assertEqual(report.human_decision, HumanDecisionState.pending)
+        self.assertEqual(report.recommendation, "evidencia_insuficiente")
+        self.assertNotIn(secret, report.model_dump_json())
+
     def test_quality_evaluator_mandatory_fail_plus_incomplete_retains_solicitar_cambios(self):
         """Mandatory policy failure takes precedence over incomplete source availability (never hides failure)."""
         from agente_gestion.domain.policies import QualityRule

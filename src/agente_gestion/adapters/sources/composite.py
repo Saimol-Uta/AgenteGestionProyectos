@@ -309,6 +309,9 @@ class CompositeSourcesAdapter(SourceCollectionPort):
                     SourceErrorCategory.malformed_payload,
                 )
 
+            if pinned_sha:
+                self._check_no_secrets(pinned_sha, SourceProvider.github)
+
             # Check code completeness (e.g. missing patch metadata for binary/large files)
             if hasattr(self._code_source, "last_collection_complete"):
                 if not self._code_source.last_collection_complete:
