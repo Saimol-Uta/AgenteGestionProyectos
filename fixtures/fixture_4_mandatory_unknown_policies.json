@@ -1,0 +1,82 @@
+{
+  "project_id": "fixture_4_mandatory_unknown_policies",
+  "name": "Project with passing CI but mandatory policy with unknown/missing evidence",
+  "cutoff_datetime": "2026-10-02T17:00:00-05:00",
+  "tasks": [
+    {
+      "id": "T30",
+      "title": "Implementar módulo de reportes",
+      "state": "completada",
+      "due_date": "2026-10-01T12:00:00-05:00",
+      "is_included": true
+    },
+    {
+      "id": "T31",
+      "title": "Validación con cliente",
+      "state": "pending",
+      "due_date": "2026-10-05T12:00:00-05:00",
+      "is_included": true
+    }
+  ],
+  "code_diffs": [
+    {
+      "repository": "org/reporting-tool",
+      "pull_request_id": "PR-88",
+      "commit_sha": "d3f4a5b6c7d8",
+      "file_path": "src/reports/generator.py",
+      "diff_side": "NEW",
+      "lines": [1, 2, 3, 4, 5],
+      "content": "def generate_pdf():\n    return 'PDF binary'\n"
+    }
+  ],
+  "ci_runs": [
+    {
+      "id": "run-ci-88",
+      "workflow_name": "ci-suite",
+      "commit_sha": "d3f4a5b6c7d8",
+      "status": "success",
+      "total_tests": 30,
+      "failed_tests": 0,
+      "coverage_percentage": 92.0,
+      "timestamp": "2026-10-02T15:00:00-05:00"
+    }
+  ],
+  "policies": [
+    {
+      "id": "Q1",
+      "description": "Todas las pruebas deben pasar",
+      "metric_key": "failed_tests",
+      "operator": "==",
+      "threshold": 0,
+      "source": "ci",
+      "mandatory": true
+    },
+    {
+      "id": "Q2",
+      "description": "Cobertura mínima 80%",
+      "metric_key": "coverage_percentage",
+      "operator": ">=",
+      "threshold": 80.0,
+      "source": "ci",
+      "mandatory": true
+    },
+    {
+      "id": "Q3",
+      "description": "Cero hallazgos criticos abiertos",
+      "metric_key": "open_critical_findings",
+      "operator": "==",
+      "threshold": 0,
+      "source": "review",
+      "mandatory": true
+    },
+    {
+      "id": "Q4_MANDATORY",
+      "description": "Aprobación formal de arquitectura por el gestor",
+      "metric_key": "architecture_signoff",
+      "operator": "is_true",
+      "threshold": true,
+      "source": "manual",
+      "mandatory": true
+    }
+  ]
+}

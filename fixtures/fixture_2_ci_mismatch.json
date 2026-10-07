@@ -1,0 +1,73 @@
+{
+  "project_id": "fixture_2_ci_mismatch",
+  "name": "Project demonstrating exact matching commit CI enforcement",
+  "cutoff_datetime": "2026-10-02T17:00:00-05:00",
+  "tasks": [
+    {
+      "id": "T10",
+      "title": "Migración de base de datos",
+      "state": "en_curso",
+      "due_date": "2026-10-01T12:00:00-05:00",
+      "is_included": true
+    },
+    {
+      "id": "T11",
+      "title": "Rutas de API v2",
+      "state": "completada",
+      "due_date": "2026-09-30T12:00:00-05:00",
+      "is_included": true
+    }
+  ],
+  "code_diffs": [
+    {
+      "repository": "org/api-service",
+      "pull_request_id": "PR-55",
+      "commit_sha": "feature_sha_999",
+      "file_path": "src/api/routes.py",
+      "diff_side": "NEW",
+      "lines": [20, 21, 22, 23, 24],
+      "content": "@app.get('/items')\ndef get_items():\n    return db.query_all()\n"
+    },
+    {
+      "repository": "org/api-service",
+      "pull_request_id": "PR-55",
+      "commit_sha": "feature_sha_999",
+      "file_path": "src/core/calc.py",
+      "diff_side": "NEW",
+      "lines": [5, 6, 7, 8],
+      "content": "def divide(a, b):\n    return a / b\n"
+    }
+  ],
+  "ci_runs": [
+    {
+      "id": "run-ci-old",
+      "workflow_name": "build-and-test",
+      "commit_sha": "old_main_sha_111",
+      "status": "success",
+      "total_tests": 15,
+      "failed_tests": 0,
+      "coverage_percentage": 90.0,
+      "timestamp": "2026-09-25T10:00:00-05:00"
+    }
+  ],
+  "policies": [
+    {
+      "id": "Q1",
+      "description": "Pruebas del commit actual deben pasar",
+      "metric_key": "failed_tests",
+      "operator": "==",
+      "threshold": 0,
+      "source": "ci",
+      "mandatory": true
+    },
+    {
+      "id": "Q3",
+      "description": "Cero hallazgos criticos de revision de codigo",
+      "metric_key": "open_critical_findings",
+      "operator": "==",
+      "threshold": 0,
+      "source": "review",
+      "mandatory": true
+    }
+  ]
+}

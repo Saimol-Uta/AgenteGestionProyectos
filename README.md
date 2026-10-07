@@ -1,0 +1,287 @@
+# Pruebas locales para el asistente de gestión de proyectos
+
+La [arquitectura propuesta del agente](ARCHITECTURA.md) define el flujo de Trello,
+GitHub y calidad, los roles y la compatibilidad con Ollama y APIs externas de IA.
+Es un diseño para implementar; los conectores y el backend aún no existen.
+
+Ya se ejecutaron las pruebas en esta laptop. Consulta el
+[informe de resultados](INFORME_PRUEBAS.md) para ver velocidades, memoria,
+errores observados y diferencias entre configuraciones.
+
+Preparado a partir de la conversación «Revisa El Audio». El objetivo es comparar
+modelos en la Lenovo IdeaPad Gaming 3, Ryzen 5 6600H, 16 GB de RAM y RTX 3050 de
+4 GB. Las pruebas usan datos simulados; no requieren credenciales de Trello ni GitHub.
+
+## Modelos
+
+| Orden | Modelo exacto | Descarga publicada aproximada |
+|---|---|---:|
+| 1 | `qwen3.5:2b-q4_K_M` | 1,9 GB |
+| 2 | `qwen3:4b-instruct-2507-q4_K_M` | 2,5 GB |
+| 3 | `qwen3.5:4b-q4_K_M` | 3,4 GB |
+
+Etiquetas verificadas en la biblioteca oficial el 2 de octubre de 2026.
+El tamaño descargado no equivale a la VRAM necesaria. Los modelos 3.5 incluyen
+componentes de visión, pero estos casos solo envían texto. La elección del mejor
+modelo se hará con las mediciones de esta laptop y la revisión de las respuestas.
+
+## Preparación
+
+Desde esta carpeta, usando tu shell fish o bash:
+
+```sh
+python3 pruebas/instalar_ollama.py
+bash pruebas/ollama-local.sh serve
+```
+
+Mantén esa terminal abierta. Ollama 0.35.1 se descarga desde su release oficial,
+se verifica con SHA-256 y se extrae en `.runtime/ollama`. El instalador reanuda
+descargas parciales. Necesita `curl`, `tar` y `zstd`; el comparador usa Python 3.10+
+sin paquetes adicionales. El archivo del runtime ocupa 1,4 GB comprimido, además
+del espacio al extraerlo y el de los modelos.
+
+El servidor escucha solo en `127.0.0.1:11435`, guarda los modelos en
+`.runtime/models`, permite una petición y un modelo cargado a la vez, y desactiva
+las funciones cloud. Ollama crea sus propias claves locales en `~/.ollama` al
+arrancar por primera vez. No se instala un servicio del sistema. Para detenerlo,
+pulsa Ctrl+C en su terminal. No necesitas `prime-run` para el backend CUDA de Ollama.
+
+En una segunda terminal:
+
+```sh
+python3 pruebas/benchmark.py doctor
+python3 pruebas/benchmark.py pull
+python3 pruebas/benchmark.py run
+```
+
+Para empezar solo con el modelo más pequeño:
+
+```sh
+python3 pruebas/benchmark.py pull --models qwen3.5:2b-q4_K_M
+python3 pruebas/benchmark.py run --models qwen3.5:2b-q4_K_M
+```
+
+Con un Ollama existente en el puerto habitual, usa `--host http://127.0.0.1:11434`
+en el comparador. Sus ajustes de concurrencia dependen de cómo iniciaste ese servidor.
+El comparador se detiene si encuentra un modelo ya cargado para no alterar otro trabajo.
+
+## Qué se compara
+
+1. **Seguimiento:** calcula avance, retrasos y bloqueos a partir de Trello y CI;
+   incluye una descripción maliciosa que intenta cambiar el reporte.
+2. **Revisión de código:** detecta inyección SQL, una conexión sin cierre y división
+   por cero usando criterios explícitos, con líneas de evidencia.
+3. **Aprobación:** contrasta un reporte incorrecto con pruebas fallidas, baja cobertura,
+   un hallazgo crítico y una revisión documental sin evidencia. Conserva al gestor
+   como responsable de la decisión final. Un cuarto caso de control cumple todos
+   los requisitos y debe recibir una recomendación favorable.
+
+La comparación inicial se realizó con 4096 tokens de contexto, hasta 768 tokens
+de salida, temperatura 0, semilla 42, seis hilos de CPU, razonamiento desactivado cuando el
+modelo lo soporta, y tres repeticiones. Un calentamiento inicial separado permite
+medir la carga del modelo sin mezclarla con las respuestas habituales. Los roles
+se ejecutan por turnos. Son casos independientes: no prueban todavía el flujo
+completo entre agentes ni llamadas a herramientas.
+
+El comparador ahora usa por defecto el perfil `--sampling qwen`: temperatura
+0,7, top_p 0,8, top_k 20, min_p 0 y repeat_penalty 1. En Qwen3.5 aplica
+presence_penalty 1,5. Si activas razonamiento, el perfil general de Qwen3.5 usa
+temperatura 1 y top_p 0,95. Las repeticiones usan semillas 42, 43 y 44. Estos
+ajustes siguen las fichas de los modelos; no todas las configuraciones equivalen
+a los valores recomendados para todas las tareas, especialmente código preciso.
+La comparación inicial con temperatura 0 se conserva como referencia. Para
+repetir esa variante, añade `--sampling greedy`.
+
+No se fijan velocidades esperadas antes de medir. Revisa `bash pruebas/ollama-local.sh ps`
+y `nvidia-smi` para comprobar la carga efectiva en GPU. Usa el equipo conectado
+a corriente y con una carga de otras aplicaciones parecida entre comparaciones.
+
+## Pruebas de contexto
+
+Primero compara los casos cortos en 4096. Después prueba más datos con 8192:
+
+```sh
+python3 pruebas/benchmark.py run --context 8192 --extra-cards 60 --cases seguimiento
+```
+
+`--context` fija la ventana; `--extra-cards` aumenta la entrada real. Cambiar solo
+la ventana no demuestra que el modelo maneje una entrada larga. El CSV registra
+los tokens de entrada efectivos. Las tarjetas añadidas son pendientes futuras,
+por lo que el total y el porcentaje esperado se recalculan.
+
+Si el prompt más la reserva de salida alcanza la ventana, el resultado se marca
+como no comparable y obtiene cero puntos. Evita subir la cantidad de tarjetas
+sin revisar ese aviso: Ollama puede truncar entradas que no caben.
+
+## Comparar el razonamiento
+
+Para comprobar si el razonamiento mejora la precisión de Qwen3.5 4B:
+
+```sh
+python3 pruebas/benchmark.py run --models qwen3.5:4b-q4_K_M --thinking on --context 8192 --max-tokens 2048 --repeats 1 --cases seguimiento revision_codigo
+```
+
+El límite de salida incluye los tokens de razonamiento. El CSV mide también el
+tiempo hasta la primera respuesta visible; `tokens_s` incluye todo lo generado.
+Si se agota el límite antes de completar el JSON, se conserva el resultado con
+su advertencia. Esta prueba es independiente de la comparación principal con
+razonamiento desactivado; no mezcles sus latencias o puntos en una misma tabla.
+
+## Resultados e interpretación
+
+Cada ejecución crea una carpeta en `resultados/` con fecha y hora de Guayaquil:
+
+- `resumen.md`: comparación de latencia, velocidad, formato y aciertos.
+- `resultados.csv`: mediciones por caso y repetición.
+- `respuestas.jsonl`: respuestas completas, puntuación, muestras de memoria y temperatura,
+  métricas de la API y asignación de memoria del modelo en `/api/ps`.
+- `entorno.json`, `configuracion.json`, `casos.json`: entorno y condiciones de la ejecución.
+- Archivos por modelo: detalles, cuantización y calentamiento separado.
+
+`tokens_s` se calcula como tokens generados / duración de generación de la API.
+También se mide el tiempo al primer texto de respuesta y la latencia completa.
+La VRAM de `nvidia-smi` y la RAM usada corresponden a toda la GPU y el sistema,
+no solo al proceso. Las muestras de un segundo pueden omitir picos breves.
+Una respuesta válida en JSON todavía puede ser incorrecta: se valida el esquema
+y se puntúan campos concretos contra resultados conocidos.
+
+La puntuación no evalúa por sí sola la calidad de recomendaciones y correcciones.
+Lee las respuestas y revisa claridad, evidencia, información inventada y falsos
+positivos. Cuatro casos y repeticiones con temperatura cero sirven como primera
+comparación local; no son una certificación ni una evaluación estadística amplia.
+
+## Prototipo funcional del agente (`agente_gestion`)
+
+Implementación del pipeline de análisis semanal modular y determinista según [ARCHITECTURA.v1.md](ARCHITECTURA.v1.md).
+
+### Ruta rápida (Quick Path)
+
+1. **Ejecutar demo simulada determinista (sin consumo de LLM real):**
+   ```bash
+   PYTHONPATH=src python3 -m agente_gestion run fixture_1_standard --fake --fixture fixture_1_standard
+   ```
+2. **Registrar decisión del gestor humano sobre el reporte:**
+   ```bash
+   PYTHONPATH=src python3 -m agente_gestion decide <RUN_ID> --decision approved --reason "Aprobado en revisión técnica"
+   ```
+3. **Ejecutar todas las pruebas deterministas:**
+   ```bash
+   PYTHONPATH=src python3 -m unittest discover -s tests -v
+   python3 -m unittest discover -s pruebas -v
+   ```
+
+### Requisitos e instalación
+
+1. **Entorno virtual e instalación del paquete:**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e .
+   ```
+
+2. **Inicio del runtime local de Ollama (opcional para modo real):**
+   ```bash
+   bash pruebas/ollama-local.sh serve
+   ```
+   El script inicia Ollama local escuchando en `http://127.0.0.1:11435`.
+
+- **Python:** 3.10+ (con `pydantic`, `pydantic-settings`, `pyyaml`, `requests`).
+- **Ollama local (Opcional para modo real):** escuchando en `http://127.0.0.1:11435`.
+- **Modelos recomendados:** `qwen3.5:2b-q4_K_M` (monitoreo y reporte) y `qwen3.5:4b-q4_K_M` (calidad de código).
+- **Gemini remoto (Verificación independiente):** requiere variable `GEMINI_API_KEY` y flag explícito `--allow-remote-ai`. No existe fallback automático a Ollama para verificación: si hay hallazgos que escalan y el verificador remoto no está habilitado o no cuenta con credenciales, la etapa pasa a `needs_attention` y los hallazgos permanecen pendientes (nunca se inventan veredictos ni se confirma automáticamente).
+
+### Opciones de ejecución CLI
+
+| Comando / Opción | Descripción |
+|---|---|
+| `python -m agente_gestion run <PROYECTO>` | Ejecución del pipeline (por defecto utiliza `proyecto-demo` y fixture configurable `fixture_1_standard`). |
+| `--fake` | Modo simulado determinista con `FakeProvider`. No requiere servicios ni claves; simula el flujo E2E completo listo para decisión humana. |
+| `--fixture <NOMBRE>` | Carga datos desde `fixtures/<NOMBRE>.json` preservando la identidad del proyecto solicitado. |
+| `--allow-remote-ai` | Autoriza llamadas al verificador remoto (Gemini). |
+| `--ollama-base-url <URL>` | URL personalizada para el runtime de Ollama. |
+| `--db-path <PATH>` | Ruta del archivo SQLite (por defecto `.runtime/agente.db`). |
+| `--output-dir <PATH>` | Carpeta de artefactos (por defecto `runs/`). |
+| `--env-file <PATH>` | Ruta a archivo `.env` personalizado (por defecto lee `.env`). |
+| `python -m agente_gestion decide <RUN_ID>` | Registra la decisión humana (`approved`, `rejected`, `changes_requested`, `postponed`). |
+
+### Configuración de entorno y precedencia de fuentes
+
+El proyecto utiliza un módulo centralizado de configuración (`Settings`) basado en `pydantic-settings`.
+
+1. **Copiar plantilla de variables de entorno:**
+   ```bash
+   cp .env.example .env
+   ```
+2. **Seguridad de credenciales:**
+   - **Nunca commitee credenciales reales** ni archivos `.env` (el archivo `.gitignore` ya excluye `.env` y `.env.*`).
+   - `GEMINI_API_KEY` se procesa como `SecretStr`, excluyéndose de representaciones (`repr`), dumps JSON y metadatos persistentes de corrida. Solo se revela al instanciar el adaptador de Gemini. Si la clave está ausente o vacía, se evalúa como `None` impidiendo bypass de seguridad remota.
+
+#### Jerarquía de precedencia (de mayor a menor prioridad)
+
+| Prioridad | Fuente | Descripción |
+|---|---|---|
+| **1 (Mayor)** | **Parámetros explícitos (CLI / overrides)** | Argumentos pasados al comando o diccionario `overrides`. |
+| **2** | **Variables de entorno del SO (OS)** | Variables exportadas en el shell; sobrescriben `.env` (incluso `ALLOW_REMOTE_AI=false`). |
+| **3** | **Archivo `.env`** | Valores leídos de `.env` (o archivo indicado vía `--env-file`). |
+| **4** | **Archivo YAML (`config/config.yaml`)** | Configuración base estructurada del proyecto. |
+| **5 (Menor)** | **Valores por defecto de `Settings`** | Valores predeterminados seguros definidos en el código. |
+
+### Variables de entorno soportadas
+
+- `ALLOW_REMOTE_AI`: Habilitación estricta de proveedores remotos (`false` o `true`, por defecto `false`).
+- `OLLAMA_BASE_URL`: URL base de Ollama (por defecto `http://127.0.0.1:11435`).
+- `GEMINI_API_KEY`: Clave de API de Google Gemini (requerida únicamente para verificación remota en modo real).
+- `GEMINI_MODEL`: Modelo de Gemini (por defecto `gemini-2.5-flash`).
+- `QUALITY_TIMEOUT_SECONDS`: Timeout para revisión de calidad en el agente revisor (por defecto `120.0` s).
+- `RUN_REAL_LLM_TESTS`: Establecer en `1` para ejecutar pruebas con modelos reales (opt-in).
+
+### Limitaciones conocidas y comportamiento por defecto
+
+- **Verificación sin credenciales remotas:** Por defecto (`allow_remote_ai: false` o sin `GEMINI_API_KEY`), cuando existen hallazgos de código que escalan (por ejemplo, categorías severas como inyección SQL o seguridad), la corrida finaliza con estado esperado `needs_attention`. No se sustituye localmente ni se asume veredicto favorable. Para una demostración determinista completa sin servicios externos, utilice la bandera `--fake`.
+- **Tiempo de respuesta en calidad:** La revisión exhaustiva de diffs en modelos locales de 4B puede tomar más de 60 segundos. Se configura por defecto un timeout acotado de 120 segundos (`quality_timeout_seconds: 120`).
+
+### Ubicación de artefactos y persistencia
+
+Cada ejecución persiste su trazabilidad completa en SQLite (`.runtime/agente.db`) y genera los siguientes archivos en `runs/<RUN_ID>/`:
+- `snapshot.json`: Snapshot de datos de entrada (tareas, diffs, CI y políticas).
+- `metrics.json`: Métricas deterministas calculadas por el motor del backend.
+- `monitoring.json`: Borrador redactado por el Elaborador (`ProjectMonitoringAgent`).
+- `code_findings.json`: Hallazgos candidatos del Revisor (`CodeQualityAgent`).
+- `verification.json`: Verificaciones independientes del Verificador (`VerifierAgent`).
+- `report.json`: Reporte estructurado final.
+- `report.md`: Reporte legible en Markdown (en español).
+- `execution_metrics.json`: Métricas de ejecución, modelos, errores y latencias.
+
+En caso de fallo, se guardan artefactos parciales de diagnóstico sin presentar el reporte como completo.
+
+### Alcance: Implementado vs Futuro
+
+| Componente | Estado Prototipo | Futuro / Producción |
+|---|---|---|
+| **Orquestador** | Secuencial síncrono modular con reanudación acotada e idempotencia por hash | Worker distribuido / Celery / Temporal |
+| **Fuentes de datos** | Adaptador de fixtures normalizadas JSON (`fixtures/`) | Conectores REST en vivo a Trello y GitHub |
+| **Persistencia** | SQLite con transacciones atómicas y archivos locales en `runs/` | PostgreSQL / Blob Storage |
+| **Modelos de IA** | FakeProvider determinista + Ollama local + Gemini opt-in | Adaptadores adicionales (OpenAI Responses, Anthropic) |
+| **Aprobación** | Decisión humana registrada por CLI | UI Web interactiva con panel para el gestor |
+| **Límites** | Presupuesto compartido de 8 llamadas y 1 intento de reparación | Cuotas dinámicas configurables por organización |
+
+## Comprobación del comparador
+
+```sh
+python3 -m unittest discover -s pruebas -p 'test_*.py' -v
+```
+
+## Fuentes oficiales
+
+- [Qwen3.5 2B Q4_K_M](https://ollama.com/library/qwen3.5:2b-q4_K_M)
+- [Qwen3 4B Instruct 2507 Q4_K_M](https://ollama.com/library/qwen3:4b-instruct-2507-q4_K_M)
+- [Qwen3.5 4B Q4_K_M](https://ollama.com/library/qwen3.5:4b-q4_K_M)
+- [Instalación de Ollama en Linux](https://docs.ollama.com/linux)
+- [Release Ollama 0.35.1](https://github.com/ollama/ollama/releases/tag/v0.35.1)
+- [API de chat y formato estructurado](https://docs.ollama.com/api/chat)
+- [Métricas de uso](https://docs.ollama.com/api/usage)
+- [Modelos cargados y memoria asignada](https://docs.ollama.com/api/ps)
+- [Concurrencia y contexto](https://docs.ollama.com/faq)
+- [Soporte de GPU](https://docs.ollama.com/gpu)
+- [Ajustes de generación Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-4B#best-practices)
+- [Ajustes de generación Qwen3 Instruct](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507#best-practices)

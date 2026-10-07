@@ -1,0 +1,665 @@
+"""Unit tests for modular Orchestrator routing, stage sequencing, and invariants."""
+
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from agente_gestion.domain.snapshot import WeeklySnapshot
+from agente_gestion.domain.tasks import TaskCard, TaskState
+from agente_gestion.domain.code import CodeDiffSnippet, CIRunResult
+from agente_gestion.domain.policies import QualityRule
+from agente_gestion.domain.findings import CandidateFinding, FindingCategory
+from agente_gestion.domain.run import RunStatus, StageStatus
+from agente_gestion.domain.report import HumanDecisionState
+from agente_gestion.domain.llm import GenerationResult, GenerationStatus
+from agente_gestion.adapters.llm.fake import FakeProvider
+from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
+from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
+from agente_gestion.application.orchestrator import ProjectOrchestrator, OrchestratorConfig
+from agente_gestion.application.escalation import EscalationGate, EscalationPolicy
+
+
+class OrchestratorTestCase(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.temp_dir, "test.db")
+        self.runs_dir = os.path.join(self.temp_dir, "runs")
+        self.tz = ZoneInfo("America/Guayaquil")
+        self.now = datetime(2026, 10, 2, 17, 0, 0, tzinfo=self.tz)
+
+        self.sqlite = SQLiteStorageAdapter(db_path=self.db_path)
+        self.artifacts = ArtifactStorageAdapter(base_dir=self.runs_dir)
+
+        # Reusable Fake Provider
+        self.fake_provider = FakeProvider()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _sample_snapshot_with_code(self) -> WeeklySnapshot:
+        return WeeklySnapshot(
+            id="snap-code",
+            project_id="test-proj",
+            cutoff_datetime=self.now,
+            captured_at=self.now,
+            tasks=[
+                TaskCard(id="T1", title="Task 1", state=TaskState.completed, is_included=True),
+                TaskCard(id="T2", title="Task 2", state=TaskState.in_progress, is_included=True),
+            ],
+            code_diffs=[
+                CodeDiffSnippet(
+                    repository="org/repo",
+                    commit_sha="c0ffee1",
+                    file_path="src/service.py",
+                    lines=[15],
+                    content="return 1 / total",
+                )
+            ],
+            ci_runs=[
+                CIRunResult(
+                    id="ci-1",
+                    workflow_name="tests",
+                    commit_sha="c0ffee1",
+                    status="success",
+                    total_tests=10,
+                    failed_tests=0,
+                )
+            ],
+            policies=[
+                QualityRule(id="Q1", description="Tests pass", metric_key="failed_tests", operator="==", threshold=0)
+            ],
+            is_complete=True,
+        )
+
+    def _sample_snapshot_no_code(self) -> WeeklySnapshot:
+        return WeeklySnapshot(
+            id="snap-no-code",
+            project_id="test-no-code",
+            cutoff_datetime=self.now,
+            captured_at=self.now,
+            tasks=[
+                TaskCard(id="T1", title="Task 1", state=TaskState.completed, is_included=True),
+            ],
+            code_diffs=[],  # No code diffs
+            ci_runs=[],
+            policies=[],
+            is_complete=True,
+        )
+
+    def test_orchestrator_happy_path_positive_flow(self):
+        snapshot = self._sample_snapshot_with_code()
+        config = OrchestratorConfig(project_id="test-proj", allow_remote_ai=True)
+
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+
+        self.assertEqual(run.status, RunStatus.awaiting_human)
+        self.assertIn("monitoring", run.stages)
+        self.assertEqual(run.stages["monitoring"].status, StageStatus.completed)
+        self.assertIn("quality", run.stages)
+        self.assertEqual(run.stages["quality"].status, StageStatus.completed)
+        self.assertIn("verifier", run.stages)
+        self.assertEqual(run.stages["verifier"].status, StageStatus.completed)
+        self.assertIn("report", run.stages)
+        self.assertEqual(run.stages["report"].status, StageStatus.completed)
+
+        # Authoritative metrics: progress_percentage computed by engine (50.0%), completed_cards = 1
+        report = self.sqlite.get_latest_report("test-proj")
+        self.assertIsNotNone(report)
+        self.assertEqual(report.metrics.completed_cards, 1)
+        self.assertEqual(report.metrics.progress_percentage, 50.0)
+        self.assertEqual(report.human_decision, HumanDecisionState.pending)
+
+    def test_orchestrator_skips_code_quality_and_verifier_when_no_code(self):
+        snapshot = self._sample_snapshot_no_code()
+        config = OrchestratorConfig(project_id="test-no-code", allow_remote_ai=False)
+
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+
+        self.assertEqual(run.status, RunStatus.awaiting_human)
+        self.assertEqual(run.stages["quality"].status, StageStatus.skipped)
+        self.assertEqual(run.stages["verifier"].status, StageStatus.skipped)
+        self.assertEqual(run.stages["monitoring"].status, StageStatus.completed)
+        self.assertEqual(run.stages["report"].status, StageStatus.completed)
+
+    def test_orchestrator_skips_verifier_when_no_findings_escalate(self):
+        # Configure EscalationGate that does not escalate routine findings
+        snapshot = self._sample_snapshot_with_code()
+        config = OrchestratorConfig(project_id="test-proj", allow_remote_ai=True)
+
+        gate_policy = EscalationPolicy(
+            severe_categories=set(),  # No category severe
+            confidence_threshold=0.5,  # Fake provider gives 0.85 > 0.5
+            escalate_on_contradiction=False,
+            escalate_on_insufficient_evidence=False,
+            escalate_mandatory_rule_findings=False,
+            auto_escalate_all=False,
+        )
+        gate = EscalationGate(policy=gate_policy)
+
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            escalation_gate=gate,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+
+        self.assertEqual(run.status, RunStatus.awaiting_human)
+        self.assertEqual(run.stages["quality"].status, StageStatus.completed)
+        # Verifier should be skipped because no findings escalated
+        self.assertEqual(run.stages["verifier"].status, StageStatus.skipped)
+        self.assertEqual(run.stages["report"].status, StageStatus.completed)
+
+    def test_orchestrator_cloud_unavailable_sets_needs_attention(self):
+        """
+        When verifier provider fails or is unavailable:
+        run status => needs_attention with pending verification,
+        never invent confirmed verdict, do not mark mandatory failed stages complete.
+        """
+        snapshot = self._sample_snapshot_with_code()
+        # Set config without remote AI enabled or failing provider
+        config = OrchestratorConfig(project_id="test-proj", allow_remote_ai=False)
+
+        class FailingCloudProvider(FakeProvider):
+            def generate(self, request):
+                raise RuntimeError("Cloud provider unavailable: network connection refused")
+
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=FailingCloudProvider(),
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+
+        self.assertEqual(run.status, RunStatus.needs_attention)
+        self.assertEqual(run.stages["verifier"].status, StageStatus.needs_attention)
+
+        report = self.sqlite.get_latest_report("test-proj")
+        self.assertIsNotNone(report)
+        # Escalated finding must remain in pending_findings, never confirmed
+        self.assertEqual(len(report.confirmed_findings), 0)
+        self.assertGreater(len(report.pending_findings), 0)
+
+    def test_orchestrator_single_run_idempotence_and_bounded_resume(self):
+        snapshot = self._sample_snapshot_with_code()
+        config = OrchestratorConfig(project_id="test-proj", allow_remote_ai=True)
+
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run_1 = orchestrator.execute(snapshot=snapshot)
+        run_1_id = run_1.run_id
+
+        # Second execute with identical snapshot and config -> idempotent return of existing completed run
+        run_2 = orchestrator.execute(snapshot=snapshot)
+        self.assertEqual(run_2.run_id, run_1_id)
+        self.assertEqual(run_2.status, RunStatus.awaiting_human)
+
+        # Modifying config hash creates a new run version
+        config_changed = OrchestratorConfig(project_id="test-proj", allow_remote_ai=False)
+        orchestrator_changed = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            config=config_changed,
+        )
+        run_3 = orchestrator_changed.execute(snapshot=snapshot)
+        self.assertNotEqual(run_3.run_id, run_1_id)
+
+    def test_orchestrator_unresolved_severe_findings_forces_mandatory_unknown_and_insufficient(self):
+        # Snapshot has mandatory Q3 rule
+        snapshot = self._sample_snapshot_with_code()
+        snapshot.policies = [
+            QualityRule(
+                id="Q1",
+                description="Tests pass",
+                metric_key="failed_tests",
+                operator="==",
+                threshold=0,
+                mandatory=True,
+            ),
+            QualityRule(
+                id="Q3",
+                description="Zero open critical findings",
+                metric_key="open_critical_findings",
+                operator="==",
+                threshold=0,
+                mandatory=True,
+            ),
+        ]
+
+        # Revisor outputs a severe SQL injection finding
+        revisor_fake = FakeProvider()
+        revisor_fake.enqueue_responses([
+            GenerationResult(
+                status=GenerationStatus.complete,
+                structured_data={
+                    "findings": [
+                        {
+                            "id": "f-sql-1",
+                            "rule_id": "Q3",
+                            "claim": "Inyeccion SQL detectada en concatenacion de consulta",
+                            "severity": "critical",
+                            "evidence_ids": ["c0ffee1"],
+                            "commit_sha": "c0ffee1",
+                            "file_path": "src/service.py",
+                            "line": 15,
+                            "confidence": 0.9,
+                            "requires_verification": True,
+                            "category": "inyeccion_sql",
+                            "evidence": "SELECT * FROM users WHERE id = " + "x",
+                            "suggested_fix": "Use parameterized queries",
+                        }
+                    ]
+                },
+                provider="fake_simulated",
+                model="qwen3.5:4b-q4_K_M",
+                duration_seconds=0.05,
+            )
+        ])
+
+        # Verifier returns insufficient verdict
+        verifier_fake = FakeProvider()
+        verifier_fake.enqueue_responses([
+            GenerationResult(
+                status=GenerationStatus.complete,
+                structured_data={
+                    "verifications": [
+                        {
+                            "finding_id": "f-sql-1",
+                            "verdict": "insufficient",
+                            "reason": "Needs further human security audit",
+                            "evidence_ids": ["c0ffee1"],
+                        }
+                    ]
+                },
+                provider="fake_simulated",
+                model="fake-gemini-flash",
+                duration_seconds=0.05,
+            )
+        ])
+
+        config = OrchestratorConfig(project_id="test-proj", allow_remote_ai=True)
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=revisor_fake,
+            verificador_provider=verifier_fake,
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+
+        # Insufficient verification => needs_attention
+        self.assertEqual(run.stages["verifier"].status, StageStatus.needs_attention)
+        self.assertEqual(run.status, RunStatus.needs_attention)
+
+        report = self.sqlite.get_latest_report("test-proj")
+        self.assertIsNotNone(report)
+        self.assertEqual(len(report.confirmed_findings), 0)
+        self.assertEqual(len(report.insufficient_findings), 1)
+
+        # Policy Q3 must NOT be evaluated as pass / 0 critical findings!
+        q3_eval = next((e for e in report.policy_evaluations.evaluations if e.rule_id == "Q3"), None)
+        self.assertIsNotNone(q3_eval)
+        self.assertEqual(q3_eval.status.value, "unknown")
+        self.assertIn("Q3", report.policy_evaluations.mandatory_unknown_ids)
+        self.assertEqual(report.policy_evaluations.recommended_action, "evidencia_insuficiente")
+        self.assertIn("insuficiente", report.recommendation.lower())
+
+    def test_no_key_or_default_disabled_not_invoking_local_verifier(self):
+        """
+        Regression RED/GREEN:
+        When remote AI is disabled or no key provided, local verifier must NOT be invoked,
+        explicit reason recorded, findings remain pending, and status is needs_attention.
+        """
+        snapshot = self._sample_snapshot_with_code()
+        # Revisor outputs a finding that triggers escalation
+        revisor_fake = FakeProvider()
+        revisor_fake.enqueue_responses([
+            GenerationResult(
+                status=GenerationStatus.complete,
+                structured_data={
+                    "findings": [
+                        {
+                            "id": "f-sql-esc",
+                            "rule_id": "Q1",
+                            "claim": "Vulnerabilidad de inyeccion SQL en servicio",
+                            "severity": "critical",
+                            "evidence_ids": ["c0ffee1"],
+                            "commit_sha": "c0ffee1",
+                            "file_path": "src/service.py",
+                            "line": 15,
+                            "confidence": 0.9,
+                            "requires_verification": True,
+                            "category": "inyeccion_sql",
+                            "evidence": "return 1 / total",
+                            "suggested_fix": "fix",
+                        }
+                    ]
+                },
+                provider="fake_simulated",
+                model="qwen3.5:4b-q4_K_M",
+                duration_seconds=0.01,
+            )
+        ])
+
+        # Verifier is None (local fallback completely removed) and allow_remote_ai=False
+        config = OrchestratorConfig(project_id="test-proj", allow_remote_ai=False)
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=revisor_fake,
+            verificador_provider=None,  # No local fallback!
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+
+        self.assertEqual(run.status, RunStatus.needs_attention)
+        self.assertEqual(run.stages["verifier"].status, StageStatus.needs_attention)
+        self.assertIn(
+            "Remote AI verifier disabled by project configuration",
+            run.stages["verifier"].error_message,
+        )
+
+        report = self.sqlite.get_latest_report("test-proj")
+        self.assertIsNotNone(report)
+        # Findings must remain pending, NOT confirmed or invented
+        self.assertEqual(len(report.confirmed_findings), 0)
+        self.assertEqual(len(report.pending_findings), 1)
+        self.assertEqual(report.pending_findings[0].id, "f-sql-esc")
+        # Models used reflects unavailable
+        self.assertEqual(report.providers_used.get("verificador"), "unavailable")
+
+    def test_explicit_cloud_path_configured_model(self):
+        """
+        Regression RED/GREEN:
+        When remote AI is enabled, VerifierAgent must use the actual configured
+        provider model instead of hardcoding default gemini-2.5-flash.
+        """
+        snapshot = self._sample_snapshot_with_code()
+        revisor_fake = FakeProvider()
+        revisor_fake.enqueue_responses([
+            GenerationResult(
+                status=GenerationStatus.complete,
+                structured_data={
+                    "findings": [
+                        {
+                            "id": "f-sql-cloud",
+                            "rule_id": "Q1",
+                            "claim": "Vulnerabilidad critica en servicio",
+                            "severity": "critical",
+                            "evidence_ids": ["c0ffee1"],
+                            "commit_sha": "c0ffee1",
+                            "file_path": "src/service.py",
+                            "line": 15,
+                            "confidence": 0.9,
+                            "requires_verification": True,
+                            "category": "inyeccion_sql",
+                            "evidence": "return 1 / total",
+                            "suggested_fix": "fix",
+                        }
+                    ]
+                },
+                provider="fake_simulated",
+                model="qwen3.5:4b-q4_K_M",
+                duration_seconds=0.01,
+            )
+        ])
+
+        # Custom configured cloud provider
+        class MockConfiguredCloudProvider(FakeProvider):
+            def __init__(self):
+                super().__init__(model="gemini-1.5-pro-custom")
+                self.api_key = "test-api-key"
+                self.captured_requests = []
+
+            def generate(self, request):
+                self.captured_requests.append(request)
+                return GenerationResult(
+                    status=GenerationStatus.complete,
+                    structured_data={
+                        "verifications": [
+                            {
+                                "finding_id": "f-sql-cloud",
+                                "verdict": "confirmed",
+                                "reason": "Verified security flaw",
+                                "evidence_ids": ["c0ffee1"],
+                            }
+                        ]
+                    },
+                    provider="gemini",
+                    model=request.model or self.model,
+                    duration_seconds=0.05,
+                )
+
+        cloud_provider = MockConfiguredCloudProvider()
+        config = OrchestratorConfig(
+            project_id="test-proj",
+            allow_remote_ai=True,
+            quality_timeout_seconds=120.0,
+        )
+
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=revisor_fake,
+            verificador_provider=cloud_provider,
+            aprobador_provider=self.fake_provider,
+            config=config,
+        )
+
+        run = orchestrator.execute(snapshot=snapshot)
+
+        self.assertEqual(run.stages["verifier"].status, StageStatus.completed)
+        self.assertEqual(len(cloud_provider.captured_requests), 1)
+        # VerifierAgent must have used configured model "gemini-1.5-pro-custom"
+        self.assertEqual(cloud_provider.captured_requests[0].model, "gemini-1.5-pro-custom")
+
+        report = self.sqlite.get_latest_report("test-proj")
+        self.assertIsNotNone(report)
+        self.assertEqual(len(report.confirmed_findings), 1)
+        self.assertEqual(report.providers_used.get("verificador"), "gemini-1.5-pro-custom")
+
+    def test_monitoring_cites_matching_ci_accepted_and_wrong_sha_rejected(self):
+        """
+        Regression RED/GREEN:
+        Monitoring draft citing exact matching CI is accepted as valid evidence,
+        while citing wrong-SHA unrelated CI is rejected by semantic validation.
+        """
+        class FakeMonitoringCitingProvider(FakeProvider):
+            def __init__(self, cited_ci_id: str):
+                super().__init__()
+                self.cited_ci_id = cited_ci_id
+
+            def generate(self, request):
+                role = request.role.lower()
+                if "elaborador" in role or "monitoring" in role:
+                    structured = {
+                        "summary": f"Resumen citando CI {self.cited_ci_id}",
+                        "risks": [],
+                        "suggested_actions": [],
+                        "referenced_task_ids": ["T1"],
+                        "evidence_ids": ["T1", self.cited_ci_id],
+                    }
+                    return GenerationResult(
+                        status=GenerationStatus.complete,
+                        structured_data=structured,
+                        raw_text=json.dumps(structured),
+                        finish_reason="stop",
+                        provider=self.provider_name,
+                        model=request.model or self.model,
+                        duration_seconds=0.01,
+                    )
+                return super().generate(request)
+
+        # Snapshot with a code commit, matching CI, and an unrelated CI with wrong SHA
+        snapshot = WeeklySnapshot(
+            id="snap-ci-test",
+            project_id="test-ci-proj",
+            cutoff_datetime=self.now,
+            captured_at=self.now,
+            tasks=[
+                TaskCard(id="T1", title="Task 1", state=TaskState.completed, is_included=True),
+            ],
+            code_diffs=[
+                CodeDiffSnippet(
+                    repository="org/repo",
+                    commit_sha="c0ffee1",
+                    file_path="src/service.py",
+                    lines=[15],
+                    content="return 1 / total",
+                )
+            ],
+            ci_runs=[
+                CIRunResult(
+                    id="run-ci-101",
+                    workflow_name="tests",
+                    commit_sha="c0ffee1",
+                    status="success",
+                    total_tests=10,
+                    failed_tests=0,
+                ),
+                CIRunResult(
+                    id="run-ci-wrong-sha",
+                    workflow_name="tests",
+                    commit_sha="deadbeef",
+                    status="failure",
+                    total_tests=10,
+                    failed_tests=2,
+                ),
+            ],
+            policies=[
+                QualityRule(id="Q1", description="Tests pass", metric_key="failed_tests", operator="==", threshold=0)
+            ],
+            is_complete=True,
+        )
+
+        config_matching = OrchestratorConfig(project_id="test-ci-proj", allow_remote_ai=True)
+
+        # Case 1: Elaborador cites matching CI ("run-ci-101") -> must be accepted
+        elaborador_matching = FakeMonitoringCitingProvider("run-ci-101")
+        orchestrator_matching = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=elaborador_matching,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            config=config_matching,
+        )
+        run_matching = orchestrator_matching.execute(snapshot=snapshot)
+        self.assertEqual(run_matching.stages["monitoring"].status, StageStatus.completed)
+        self.assertEqual(run_matching.status, RunStatus.awaiting_human)
+
+        # Case 2: Elaborador cites wrong-SHA unrelated CI ("run-ci-wrong-sha") -> must be rejected
+        elaborador_wrong = FakeMonitoringCitingProvider("run-ci-wrong-sha")
+        config_wrong = OrchestratorConfig(project_id="test-ci-proj-wrong", allow_remote_ai=True)
+        snapshot_wrong = WeeklySnapshot(
+            id="snap-ci-test-wrong",
+            project_id="test-ci-proj-wrong",
+            cutoff_datetime=self.now,
+            captured_at=self.now,
+            tasks=[
+                TaskCard(id="T1", title="Task 1", state=TaskState.completed, is_included=True),
+            ],
+            code_diffs=[
+                CodeDiffSnippet(
+                    repository="org/repo",
+                    commit_sha="c0ffee1",
+                    file_path="src/service.py",
+                    lines=[15],
+                    content="return 1 / total",
+                )
+            ],
+            ci_runs=[
+                CIRunResult(
+                    id="run-ci-101",
+                    workflow_name="tests",
+                    commit_sha="c0ffee1",
+                    status="success",
+                    total_tests=10,
+                    failed_tests=0,
+                ),
+                CIRunResult(
+                    id="run-ci-wrong-sha",
+                    workflow_name="tests",
+                    commit_sha="deadbeef",
+                    status="failure",
+                    total_tests=10,
+                    failed_tests=2,
+                ),
+            ],
+            policies=[
+                QualityRule(id="Q1", description="Tests pass", metric_key="failed_tests", operator="==", threshold=0)
+            ],
+            is_complete=True,
+        )
+        orchestrator_wrong = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=elaborador_wrong,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            config=config_wrong,
+        )
+        run_wrong = orchestrator_wrong.execute(snapshot=snapshot_wrong)
+        self.assertEqual(run_wrong.stages["monitoring"].status, StageStatus.failed)
+        self.assertEqual(run_wrong.status, RunStatus.failed)
+        self.assertIn("run-ci-wrong-sha", run_wrong.stages["monitoring"].error_message)
+
+
+if __name__ == "__main__":
+    unittest.main()

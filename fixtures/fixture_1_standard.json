@@ -1,0 +1,129 @@
+{
+  "project_id": "fixture_1_standard",
+  "name": "Standard project with diverse task states, multiple diffs, matching failing CI",
+  "cutoff_datetime": "2026-10-02T17:00:00-05:00",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Diseño de arquitectura",
+      "list_id": "list-done",
+      "list_name": "Terminado",
+      "state": "completada",
+      "due_date": "2026-09-28T18:00:00-05:00",
+      "labels": ["doc"],
+      "is_included": true
+    },
+    {
+      "id": "T2",
+      "title": "Autenticación de usuarios",
+      "list_id": "list-prog",
+      "list_name": "En curso",
+      "state": "en_curso",
+      "due_date": "2026-10-01T12:00:00-05:00",
+      "labels": ["backend"],
+      "is_included": true
+    },
+    {
+      "id": "T3",
+      "title": "Integración con API",
+      "list_id": "list-block",
+      "list_name": "Bloqueadas",
+      "state": "bloqueada",
+      "due_date": "2026-10-01T15:00:00-05:00",
+      "detail": "Falta credencial de prueba",
+      "labels": ["bloqueada", "api"],
+      "is_included": true
+    },
+    {
+      "id": "T4",
+      "title": "Reporte de auditoría",
+      "list_id": "list-pend",
+      "list_name": "Pendiente",
+      "state": "pending",
+      "due_date": "2026-10-05T18:00:00-05:00",
+      "labels": ["reportes"],
+      "is_included": true
+    },
+    {
+      "id": "T5",
+      "title": "Configuración de pipeline CI",
+      "list_id": "list-done",
+      "list_name": "Terminado",
+      "state": "completada",
+      "due_date": null,
+      "labels": ["devops"],
+      "is_included": true
+    },
+    {
+      "id": "T6",
+      "title": "Tarjeta no mapeada / backlog externo",
+      "list_id": "list-unk",
+      "list_name": "Ideas",
+      "state": "desconocido",
+      "due_date": "2026-09-20T10:00:00-05:00",
+      "labels": ["external"],
+      "is_included": false
+    }
+  ],
+  "code_diffs": [
+    {
+      "repository": "org/repo-main",
+      "pull_request_id": "PR-101",
+      "commit_sha": "a1b2c3d4e5f6",
+      "file_path": "src/auth/service.py",
+      "diff_side": "NEW",
+      "lines": [10, 11, 12, 13, 14, 15],
+      "content": "def authenticate(user, password):\n    conn = get_db()\n    query = f\"SELECT * FROM users WHERE u = '{user}'\"\n    return conn.execute(query)\n"
+    },
+    {
+      "repository": "org/repo-main",
+      "pull_request_id": "PR-101",
+      "commit_sha": "a1b2c3d4e5f6",
+      "file_path": "src/db/repo.py",
+      "diff_side": "NEW",
+      "lines": [40, 41, 42, 43, 44, 45],
+      "content": "def calculate_average(items):\n    if not items:\n        return 0\n    return sum(items) / len(items)\n"
+    }
+  ],
+  "ci_runs": [
+    {
+      "id": "run-ci-101",
+      "workflow_name": "test-and-coverage",
+      "commit_sha": "a1b2c3d4e5f6",
+      "status": "failure",
+      "total_tests": 20,
+      "failed_tests": 2,
+      "coverage_percentage": 72.0,
+      "timestamp": "2026-10-02T16:30:00-05:00"
+    }
+  ],
+  "policies": [
+    {
+      "id": "Q1",
+      "description": "Todas las pruebas unitarias deben pasar",
+      "metric_key": "failed_tests",
+      "operator": "==",
+      "threshold": 0,
+      "source": "ci",
+      "mandatory": true
+    },
+    {
+      "id": "Q2",
+      "description": "Cobertura de código mínima 80%",
+      "metric_key": "coverage_percentage",
+      "operator": ">=",
+      "threshold": 80.0,
+      "source": "ci",
+      "mandatory": true
+    },
+    {
+      "id": "Q3",
+      "description": "Cero hallazgos críticos abiertos",
+      "metric_key": "open_critical_findings",
+      "operator": "==",
+      "threshold": 0,
+      "source": "review",
+      "mandatory": true
+    }
+  ]
+}

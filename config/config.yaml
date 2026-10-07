@@ -1,0 +1,31 @@
+project:
+  id: proyecto-demo
+  default_fixture: fixture_1_standard
+  timezone: America/Guayaquil
+  allow_remote_ai: false
+
+execution:
+  max_concurrent_runs: 1
+  max_local_requests: 1
+  max_llm_calls_per_run: 8
+  max_revision_rounds: 1
+  quality_timeout_seconds: 120
+
+providers:
+  local:
+    adapter: ollama
+    base_url: http://127.0.0.1:11435
+    model: qwen3.5:2b-q4_K_M
+    context_tokens: 4096
+    max_generation_tokens: 768
+    thinking: false
+  remote:
+    adapter: gemini
+    api_key_env: GEMINI_API_KEY
+    model_env: GEMINI_MODEL
+    max_generation_tokens: 1024
+
+roles:
+  elaborador: local
+  revisor: local
+  aprobador: local

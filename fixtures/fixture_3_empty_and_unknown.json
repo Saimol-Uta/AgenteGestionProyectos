@@ -1,0 +1,41 @@
+{
+  "project_id": "fixture_3_empty_and_unknown",
+  "name": "Project with zero included tasks, unknown states, and cards without due dates",
+  "cutoff_datetime": "2026-10-02T17:00:00-05:00",
+  "tasks": [
+    {
+      "id": "T20",
+      "title": "Nota informativa de backlog",
+      "state": "desconocido",
+      "due_date": "2026-09-15T10:00:00-05:00",
+      "is_included": false
+    },
+    {
+      "id": "T21",
+      "title": "Idea preliminar sin fecha",
+      "state": "desconocido",
+      "due_date": null,
+      "is_included": false
+    },
+    {
+      "id": "T22",
+      "title": "Tarea excluida del conteo",
+      "state": "completada",
+      "due_date": null,
+      "is_included": false
+    }
+  ],
+  "code_diffs": [],
+  "ci_runs": [],
+  "policies": [
+    {
+      "id": "Q1",
+      "description": "Pruebas deben existir y pasar",
+      "metric_key": "failed_tests",
+      "operator": "==",
+      "threshold": 0,
+      "source": "ci",
+      "mandatory": true
+    }
+  ]
+}

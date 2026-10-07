@@ -1,0 +1,117 @@
+"""Abstract port for persistence storage."""
+
+from abc import ABC, abstractmethod
+from typing import Any, Optional
+
+from agente_gestion.domain.snapshot import WeeklySnapshot
+from agente_gestion.domain.report import FinalReport, HumanDecisionState
+from agente_gestion.domain.run import ExecutionRun, StageExecutionRecord
+from agente_gestion.domain.findings import CandidateFinding, FindingVerification
+from agente_gestion.domain.llm import LLMCallAttempt
+from agente_gestion.domain.evidence import EvidenceItem
+
+
+class StoragePort(ABC):
+    """Storage interface for persisting runs, snapshots, stages, reports, and decisions."""
+
+    @abstractmethod
+    def save_run(self, run: ExecutionRun) -> None:
+        """Persist an execution run."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_run(self, run_id: str) -> Optional[ExecutionRun]:
+        """Retrieve an execution run by ID."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def find_run_by_fingerprint(self, snapshot_hash: str, config_hash: str) -> Optional[ExecutionRun]:
+        """Find an existing run by snapshot and config hashes for idempotency."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_stage_result(self, run_id: str, stage: StageExecutionRecord) -> None:
+        """Persist a stage execution record."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_stage_results(self, run_id: str) -> dict[str, StageExecutionRecord]:
+        """Retrieve all recorded stage results for a run."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_snapshot(self, snapshot: WeeklySnapshot, content_hash: Optional[str] = None) -> None:
+        """Persist a captured weekly snapshot."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_snapshot(self, snapshot_id: str) -> Optional[WeeklySnapshot]:
+        """Retrieve a persisted weekly snapshot by ID."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_evidence(self, run_id: str, evidence_items: list[EvidenceItem]) -> None:
+        """Persist normalized evidence records associated with a run."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_findings(
+        self,
+        run_id: str,
+        findings: list[CandidateFinding],
+        escalation_decisions: Optional[list[Any]] = None,
+    ) -> None:
+        """Persist candidate findings and their escalation decisions."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_findings(self, run_id: str) -> list[dict[str, Any]]:
+        """Retrieve findings recorded for a run."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_verifications(self, run_id: str, verifications: list[FindingVerification]) -> None:
+        """Persist finding verifications for a run."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_verifications(self, run_id: str) -> list[dict[str, Any]]:
+        """Retrieve verifications recorded for a run."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_llm_attempts(self, run_id: str, attempts: list[LLMCallAttempt]) -> None:
+        """Persist individual LLM call and repair attempts for audit."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_report(
+        self,
+        report: FinalReport,
+        report_id: Optional[str] = None,
+        report_md: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> None:
+        """Persist a generated weekly report."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_latest_report(self, project_id: str) -> Optional[FinalReport]:
+        """Retrieve the latest report for a project."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_report(self, report_id: str) -> Optional[FinalReport]:
+        """Retrieve a specific report by report_id."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def register_human_decision(
+        self,
+        report_id: str,
+        decision: HumanDecisionState,
+        reason: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> FinalReport:
+        """Register a human manager decision against a report version."""
+        raise NotImplementedError

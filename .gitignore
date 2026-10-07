@@ -1,0 +1,9 @@
+.runtime/
+__pycache__/
+*.pyc
+resultados/
+runs/
+*.db
+.env
+.env.*
+!.env.example
