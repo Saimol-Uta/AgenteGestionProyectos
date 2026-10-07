@@ -203,6 +203,16 @@ class CLISourceCheckTestCase(unittest.TestCase):
                 "sources:\n"
                 "  mode: fixtures\n"
             )
+        self.empty_env = os.path.join(self.temp_dir, "empty.env")
+        open(self.empty_env, "w").close()
+        orig_main = main
+        def safe_main(*args: Any, **kwargs: Any) -> int:
+            if "--env-file" not in sys.argv and "--help" not in sys.argv and "-h" not in sys.argv:
+                sys.argv.extend(["--env-file", self.empty_env])
+            return orig_main(*args, **kwargs)
+        self.patcher = patch(f"{__name__}.main", side_effect=safe_main)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)

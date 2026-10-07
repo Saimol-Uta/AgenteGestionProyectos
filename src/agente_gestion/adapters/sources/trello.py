@@ -4,7 +4,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
 from agente_gestion.adapters.sources.http_transport import (
@@ -93,6 +93,9 @@ class TrelloSourceAdapter(TaskSourcePort):
         max_lists: int = DEFAULT_MAX_LISTS,
         max_text_length: int = DEFAULT_MAX_TEXT_LENGTH,
         timezone_name: str = "America/Guayaquil",
+        state_strategy: str = "list_mapping",
+        *,
+        clock: Optional[Callable[[], datetime]] = None,
     ):
         self._api_key = _validate_safe_string(api_key)
         self._token = _validate_safe_string(token)
@@ -100,6 +103,14 @@ class TrelloSourceAdapter(TaskSourcePort):
 
         if self._api_key in self._board_id or self._token in self._board_id:
             raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
+
+        if state_strategy not in ("list_mapping", "date_fields"):
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
+        self._state_strategy = state_strategy
+
+        if clock is not None and not callable(clock):
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
+        self._clock = clock
 
         if mapping_config is not None and not isinstance(mapping_config, TaskMappingConfig):
             raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
@@ -137,6 +148,11 @@ class TrelloSourceAdapter(TaskSourcePort):
     def mapping_config(self) -> TaskMappingConfig:
         """Current task state and list mapping configuration."""
         return self._mapping_config
+
+    @property
+    def state_strategy(self) -> str:
+        """Configured task state determination strategy ('list_mapping' or 'date_fields')."""
+        return self._state_strategy
 
     def __repr__(self) -> str:
         """Safe representation hiding credentials."""
@@ -345,6 +361,31 @@ class TrelloSourceAdapter(TaskSourcePort):
                 self._assert_no_credential_echo(mem)
                 member_ids.append(mem)
 
+            # Validate dueComplete (optional; if present, strictly bool)
+            due_complete: Optional[bool] = None
+            if "dueComplete" in item:
+                dc_raw = item["dueComplete"]
+                if type(dc_raw) is not bool:
+                    raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                due_complete = dc_raw
+
+            # Validate start date (optional; missing or None allowed; if present, non-empty ISO string with tz)
+            start_raw: Optional[str] = None
+            parsed_start: Optional[datetime] = None
+            if "start" in item:
+                st_val = item["start"]
+                if st_val is not None:
+                    if not isinstance(st_val, str) or not st_val.strip():
+                        raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                    self._assert_no_credential_echo(st_val)
+                    try:
+                        parsed_start = datetime.fromisoformat(st_val)
+                    except Exception:
+                        raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                    if parsed_start.tzinfo is None:
+                        raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                    start_raw = st_val
+
             validated_cards.append({
                 "id": card_id,
                 "name": name,
@@ -356,6 +397,9 @@ class TrelloSourceAdapter(TaskSourcePort):
                 "last_activity": act_dt_str,
                 "labels": card_labels,
                 "idMembers": member_ids,
+                "dueComplete": due_complete,
+                "start": start_raw,
+                "start_dt": parsed_start,
             })
 
         return validated_cards
@@ -372,7 +416,13 @@ class TrelloSourceAdapter(TaskSourcePort):
             self._cache.move_to_end(project_id)
             return self._cache[project_id]
 
-        collection_time = datetime.now(timezone.utc)
+        if self._clock is not None:
+            collection_time = self._clock()
+            if collection_time.tzinfo is None:
+                raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
+            collection_time = collection_time.astimezone(timezone.utc)
+        else:
+            collection_time = datetime.now(timezone.utc)
 
         # Retrieve both responses; fail-fast without modifying cache on any error
         raw_lists = self._fetch_lists()
@@ -403,33 +453,59 @@ class TrelloSourceAdapter(TaskSourcePort):
             sanitized_list_name = self._sanitize_text(list_name)
             sanitized_labels = [self._sanitize_text(lbl) or "" for lbl in c["labels"]]
 
-            # State mapping
-            is_completed_list = list_id in cfg.completed_list_ids
-            is_in_progress_list = list_id in cfg.in_progress_list_ids
-            is_pending_list = list_id in cfg.pending_list_ids
-
             has_blocked_label = any(lbl.strip().lower() in blocked_labels_set for lbl in sanitized_labels)
 
-            if is_completed_list:
-                state = TaskState.completed
-                has_contradiction = has_blocked_label
-            elif is_in_progress_list:
-                if has_blocked_label:
-                    state = TaskState.blocked
-                    has_contradiction = False
+            # State mapping based on configured strategy
+            if self._state_strategy == "date_fields":
+                due_complete = c["dueComplete"]
+                start_dt = c["start_dt"]
+                is_future_start = (start_dt is not None and start_dt > collection_time)
+
+                if due_complete is True:
+                    state = TaskState.completed
+                    has_contradiction = (has_blocked_label or is_future_start)
+                elif due_complete is False:
+                    if has_blocked_label:
+                        state = TaskState.blocked
+                        has_contradiction = False
+                    elif start_dt is not None:
+                        if is_future_start:
+                            state = TaskState.pending
+                            has_contradiction = False
+                        else:
+                            state = TaskState.in_progress
+                            has_contradiction = False
+                    else:
+                        state = TaskState.unknown
+                        has_contradiction = False
                 else:
-                    state = TaskState.in_progress
-                    has_contradiction = False
-            elif is_pending_list:
-                if has_blocked_label:
-                    state = TaskState.blocked
-                    has_contradiction = False
-                else:
-                    state = TaskState.pending
+                    state = TaskState.unknown
                     has_contradiction = False
             else:
-                state = TaskState.unknown
-                has_contradiction = False
+                is_completed_list = list_id in cfg.completed_list_ids
+                is_in_progress_list = list_id in cfg.in_progress_list_ids
+                is_pending_list = list_id in cfg.pending_list_ids
+
+                if is_completed_list:
+                    state = TaskState.completed
+                    has_contradiction = has_blocked_label
+                elif is_in_progress_list:
+                    if has_blocked_label:
+                        state = TaskState.blocked
+                        has_contradiction = False
+                    else:
+                        state = TaskState.in_progress
+                        has_contradiction = False
+                elif is_pending_list:
+                    if has_blocked_label:
+                        state = TaskState.blocked
+                        has_contradiction = False
+                    else:
+                        state = TaskState.pending
+                        has_contradiction = False
+                else:
+                    state = TaskState.unknown
+                    has_contradiction = False
 
             # Included status: closed cards and cards in closed lists are excluded from progress
             if c["closed"] or list_obj["closed"]:
@@ -480,6 +556,12 @@ class TrelloSourceAdapter(TaskSourcePort):
             }
             if c.get("last_activity") is not None:
                 payload["last_activity"] = c["last_activity"]
+            if c.get("dueComplete") is not None:
+                payload["due_complete"] = c["dueComplete"]
+            if c.get("start") is not None:
+                norm_start = normalize_datetime_to_tz(c["start_dt"], self._tz) if c.get("start_dt") else None
+                payload["start_date"] = norm_start.isoformat() if norm_start else None
+                payload["start_raw"] = self._sanitize_text(c["start"])
 
             provenance = EvidenceProvenance(
                 id=f"trello-task-{card_id}",

@@ -631,6 +631,9 @@ class TestTrelloSourceAdapter(unittest.TestCase):
             "has_contradiction",
             "detail",
             "url",
+            "due_complete",
+            "start_date",
+            "start_raw",
         }
         self.assertTrue(set(ev.provenance.payload.keys()).issubset(allowed_keys))
 
@@ -843,6 +846,239 @@ class TestTrelloSourceAdapter(unittest.TestCase):
             self.assertEqual(ctx.exception.category, SourceErrorCategory.configuration)
             self.assertEqual(len(transport.calls), 0)
             self.assertEqual(len(adapter._cache), 0)
+
+    def test_state_strategy_init_validation(self):
+        """Accepted strategies are list_mapping and date_fields; others raise configuration error."""
+        transport = FakeTransport()
+        adapter = self._make_adapter(state_strategy="list_mapping", transport=transport)
+        self.assertEqual(adapter.state_strategy, "list_mapping")
+        adapter2 = self._make_adapter(state_strategy="date_fields", transport=transport)
+        self.assertEqual(adapter2.state_strategy, "date_fields")
+        for bad_strategy in ["invalid", "", "other", None, 123]:
+            with self.assertRaises(SourceError) as ctx:
+                self._make_adapter(state_strategy=bad_strategy, transport=transport)
+            self.assertEqual(ctx.exception.category, SourceErrorCategory.configuration)
+
+    def test_strategy_a_list_mapping_preserves_existing_behavior_with_dates(self):
+        """A: list_mapping preserves existing list-based status regardless of dueComplete or start dates."""
+        cards = [
+            {"id": "c1", "name": "C1", "idList": "list_todo", "idBoard": self.board_id, "closed": False,
+             "dueComplete": True, "start": "2026-10-01T00:00:00Z"},
+            {"id": "c2", "name": "C2", "idList": "list_done", "idBoard": self.board_id, "closed": False,
+             "dueComplete": False, "start": "2026-10-10T00:00:00Z"},
+            {"id": "c3", "name": "C3", "idList": "list_doing", "idBoard": self.board_id, "closed": False,
+             "dueComplete": False, "labels": [{"name": "blocked"}], "start": "2026-10-01T00:00:00Z"},
+        ]
+        adapter = self._make_adapter(transport=self._make_transport(cards=cards), state_strategy="list_mapping")
+        t_map = {t.id: t for t in adapter.get_tasks("test_proj")}
+        self.assertEqual(t_map["c1"].state, TaskState.pending)
+        self.assertFalse(t_map["c1"].has_contradiction)
+        self.assertEqual(t_map["c2"].state, TaskState.completed)
+        self.assertFalse(t_map["c2"].has_contradiction)
+        self.assertEqual(t_map["c3"].state, TaskState.blocked)
+        self.assertFalse(t_map["c3"].has_contradiction)
+
+    def test_strategy_b_date_fields_phase_and_true_completed(self):
+        """B: date_fields with dueComplete=True maps to completed regardless of list phase."""
+        cards = [
+            {"id": "c_comp", "name": "C Comp", "idList": "list_todo", "idBoard": self.board_id, "closed": False,
+             "dueComplete": True, "start": "2026-10-01T00:00:00Z"},
+        ]
+        adapter = self._make_adapter(transport=self._make_transport(cards=cards), state_strategy="date_fields")
+        t = adapter.get_tasks("test_proj")[0]
+        self.assertEqual(t.state, TaskState.completed)
+        self.assertFalse(t.has_contradiction)
+
+    def test_strategy_c_date_fields_false_future_pending(self):
+        """C: date_fields with dueComplete=False and aware start > collection_time maps to pending."""
+        frozen_now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        cards = [
+            {"id": "c_pend", "name": "C Pend", "idList": "list_doing", "idBoard": self.board_id, "closed": False,
+             "dueComplete": False, "start": "2026-10-07T13:00:00Z"},
+        ]
+        adapter = self._make_adapter(
+            transport=self._make_transport(cards=cards),
+            state_strategy="date_fields",
+            clock=lambda: frozen_now,
+        )
+        t = adapter.get_tasks("test_proj")[0]
+        self.assertEqual(t.state, TaskState.pending)
+        self.assertFalse(t.has_contradiction)
+
+    def test_strategy_d_date_fields_false_start_past_equality_offset_in_progress(self):
+        """D: date_fields with dueComplete=False and start <= collection_time maps to in_progress."""
+        frozen_now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        test_cases = [
+            ("past", "2026-10-07T11:00:00Z"),
+            ("equal", "2026-10-07T12:00:00Z"),
+            ("offset_equal", "2026-10-07T07:00:00-05:00"),
+        ]
+        for name, start_val in test_cases:
+            with self.subTest(case=name):
+                cards = [
+                    {"id": f"c_{name}", "name": "Card", "idList": "list_todo", "idBoard": self.board_id,
+                     "closed": False, "dueComplete": False, "start": start_val},
+                ]
+                adapter = self._make_adapter(
+                    transport=self._make_transport(cards=cards),
+                    state_strategy="date_fields",
+                    clock=lambda: frozen_now,
+                )
+                t = adapter.get_tasks("test_proj")[0]
+                self.assertEqual(t.state, TaskState.in_progress)
+                self.assertFalse(t.has_contradiction)
+
+    def test_strategy_e_date_fields_false_blocked_is_blocked(self):
+        """E: date_fields with dueComplete=False and configured blocked label maps to blocked."""
+        frozen_now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        for start_val in ["2026-10-07T10:00:00Z", "2026-10-07T14:00:00Z", None]:
+            with self.subTest(start=start_val):
+                card = {
+                    "id": "c_blk", "name": "Card", "idList": "list_todo", "idBoard": self.board_id,
+                    "closed": False, "dueComplete": False, "labels": [{"name": "bloqueada"}],
+                }
+                if start_val is not None:
+                    card["start"] = start_val
+                adapter = self._make_adapter(
+                    transport=self._make_transport(cards=[card]),
+                    state_strategy="date_fields",
+                    clock=lambda: frozen_now,
+                )
+                t = adapter.get_tasks("test_proj")[0]
+                self.assertEqual(t.state, TaskState.blocked)
+                self.assertFalse(t.has_contradiction)
+
+    def test_strategy_f_date_fields_true_blocked_contradiction(self):
+        """F: date_fields with dueComplete=True and blocked label stays completed with contradiction."""
+        cards = [
+            {"id": "c_f", "name": "Card", "idList": "list_todo", "idBoard": self.board_id, "closed": False,
+             "dueComplete": True, "labels": [{"name": "blocked"}]},
+        ]
+        adapter = self._make_adapter(transport=self._make_transport(cards=cards), state_strategy="date_fields")
+        t = adapter.get_tasks("test_proj")[0]
+        self.assertEqual(t.state, TaskState.completed)
+        self.assertTrue(t.has_contradiction)
+
+    def test_strategy_g_date_fields_true_future_start_contradiction(self):
+        """G: date_fields with dueComplete=True and future start stays completed with contradiction."""
+        frozen_now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        cards = [
+            {"id": "c_g", "name": "Card", "idList": "list_todo", "idBoard": self.board_id, "closed": False,
+             "dueComplete": True, "start": "2026-10-07T15:00:00Z"},
+        ]
+        adapter = self._make_adapter(
+            transport=self._make_transport(cards=cards),
+            state_strategy="date_fields",
+            clock=lambda: frozen_now,
+        )
+        t = adapter.get_tasks("test_proj")[0]
+        self.assertEqual(t.state, TaskState.completed)
+        self.assertTrue(t.has_contradiction)
+
+    def test_strategy_h_date_fields_no_three_groups_and_phase_filtering(self):
+        """H: date_fields does not require 3 status groups and applies included_list_ids filter."""
+        mapping = TaskMappingConfig(
+            pending_list_ids=[],
+            in_progress_list_ids=[],
+            completed_list_ids=[],
+            included_list_ids=["list_todo"],
+        )
+        cards = [
+            {"id": "c_inc", "name": "Included", "idList": "list_todo", "idBoard": self.board_id, "closed": False,
+             "dueComplete": True},
+            {"id": "c_exc", "name": "Excluded", "idList": "list_doing", "idBoard": self.board_id, "closed": False,
+             "dueComplete": True},
+        ]
+        adapter = self._make_adapter(
+            transport=self._make_transport(cards=cards),
+            mapping=mapping,
+            state_strategy="date_fields",
+        )
+        t_map = {t.id: t for t in adapter.get_tasks("test_proj")}
+        self.assertEqual(t_map["c_inc"].state, TaskState.completed)
+        self.assertTrue(t_map["c_inc"].is_included)
+        self.assertEqual(t_map["c_exc"].state, TaskState.completed)
+        self.assertFalse(t_map["c_exc"].is_included)
+
+    def test_strategy_i_evidence_fields_and_provenance_clock(self):
+        """I: EvidenceItem preserves due_complete, start_date, and provenance timestamp matches collection."""
+        frozen_now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        cards = [
+            {"id": "c_ev", "name": "Ev Card", "idList": "list_todo", "idBoard": self.board_id, "closed": False,
+             "dueComplete": True, "start": "2026-10-07T10:00:00Z"},
+        ]
+        adapter = self._make_adapter(
+            transport=self._make_transport(cards=cards),
+            state_strategy="date_fields",
+            clock=lambda: frozen_now,
+        )
+        evidence = adapter.get_evidence("test_proj")
+        self.assertEqual(len(evidence), 1)
+        ev = evidence[0]
+        self.assertEqual(ev.provenance.timestamp, frozen_now)
+        self.assertIs(ev.provenance.payload.get("due_complete"), True)
+        self.assertIsNotNone(ev.provenance.payload.get("start_date"))
+        self.assertEqual(ev.provenance.payload.get("start_raw"), "2026-10-07T10:00:00Z")
+
+    def test_strategy_j_strict_payload_validation_and_atomicity(self):
+        """J: Invalid start or non-boolean dueComplete fails as malformed_payload in both modes without cache."""
+        bad_cards = [
+            ("dueComplete_null", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                                  "closed": False, "dueComplete": None}),
+            ("dueComplete_0", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                               "closed": False, "dueComplete": 0}),
+            ("dueComplete_1", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                               "closed": False, "dueComplete": 1}),
+            ("dueComplete_str", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                                 "closed": False, "dueComplete": "true"}),
+            ("dueComplete_list", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                                  "closed": False, "dueComplete": []}),
+            ("start_empty", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                             "closed": False, "start": ""}),
+            ("start_whitespace", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                                  "closed": False, "start": "   "}),
+            ("start_malformed", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                                 "closed": False, "start": "not-a-date"}),
+            ("start_naive", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                             "closed": False, "start": "2026-10-07T12:00:00"}),
+            ("start_int", {"id": "c_bad", "name": "C", "idList": "list_todo", "idBoard": self.board_id,
+                           "closed": False, "start": 12345}),
+        ]
+        for strat in ["list_mapping", "date_fields"]:
+            for label, card in bad_cards:
+                with self.subTest(strategy=strat, label=label):
+                    adapter = self._make_adapter(
+                        transport=self._make_transport(cards=[card]),
+                        state_strategy=strat,
+                    )
+                    with self.assertRaises(SourceError) as ctx:
+                        adapter.get_tasks("test_proj")
+                    self.assertEqual(ctx.exception.category, SourceErrorCategory.malformed_payload)
+                    self.assertEqual(len(adapter._cache), 0)
+
+    def test_strategy_unknown_signals_never_invent_states(self):
+        """date_fields returns unknown on missing dueComplete or insufficient signals, never inventing states."""
+        frozen_now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        cases = [
+            ("false_missing_start", {"id": "c_u1", "name": "U1", "idList": "list_todo", "idBoard": self.board_id,
+                                     "closed": False, "dueComplete": False}),
+            ("false_null_start", {"id": "c_u2", "name": "U2", "idList": "list_todo", "idBoard": self.board_id,
+                                  "closed": False, "dueComplete": False, "start": None}),
+            ("missing_dueComplete_start_past", {"id": "c_u3", "name": "U3", "idList": "list_todo", "idBoard": self.board_id,
+                                                "closed": False, "start": "2026-10-07T10:00:00Z"}),
+            ("missing_dueComplete_blocked_label", {"id": "c_u4", "name": "U4", "idList": "list_todo", "idBoard": self.board_id,
+                                                   "closed": False, "labels": [{"name": "blocked"}]}),
+        ]
+        for name, card in cases:
+            with self.subTest(case=name):
+                adapter = self._make_adapter(
+                    transport=self._make_transport(cards=[card]),
+                    state_strategy="date_fields",
+                    clock=lambda: frozen_now,
+                )
+                t = adapter.get_tasks("test_proj")[0]
+                self.assertEqual(t.state, TaskState.unknown)
+                self.assertFalse(t.has_contradiction)
 
 
 if __name__ == "__main__":

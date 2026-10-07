@@ -524,6 +524,9 @@ class RealSourcePipelineTestCase(unittest.TestCase):
                 f"  policies_path: {self.policies_path}\n"
             )
 
+        empty_env = os.path.join(self.temp_dir, "empty.env")
+        open(empty_env, "w").close()
+
         cmd = [
             "run",
             "test-proj",
@@ -533,6 +536,7 @@ class RealSourcePipelineTestCase(unittest.TestCase):
             "--config", config_path,
             "--db-path", self.db_path,
             "--output-dir", self.runs_dir,
+            "--env-file", empty_env,
         ]
         stdout_capture = io.StringIO()
         with patch("agente_gestion.adapters.sources.factory.BoundedGetTransport", return_value=fake_tr):
