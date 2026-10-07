@@ -93,7 +93,8 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
             evidence_ids=["ev-1"],
         )
         self.assertIsInstance(draft, MonitoringDraft)
-        self.assertIn("T1", draft.referenced_task_ids)
+        # Priority order exposes active/blocked signals before completed tasks.
+        self.assertIn("T2", draft.referenced_task_ids)
 
     def test_code_quality_agent_uses_qwen_4b_default(self):
         fake = FakeProvider()
@@ -361,6 +362,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
 
     def test_repair_attempt_for_invalid_output_max_one(self):
         fake = FakeProvider()
+        # T2 is selected active evidence; completed T1 is intentionally omitted.
         # Enqueue: 1st call returns invalid data, 2nd call (repair) returns valid data
         fake.enqueue_responses([
             GenerationResult(
@@ -372,7 +374,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
             ),
             GenerationResult(
                 status=GenerationStatus.complete,
-                structured_data={"summary": "Fixed", "referenced_task_ids": ["T1"]},
+                structured_data={"summary": "Fixed", "referenced_task_ids": ["T2"]},
                 provider="fake_simulated",
                 model="qwen3.5:2b-q4_K_M",
                 duration_seconds=0.1,
@@ -438,6 +440,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
 
     def test_transient_error_retry_succeeds(self):
         fake = FakeProvider()
+        # T2 is selected active evidence; completed T1 is intentionally omitted.
         # 1st call transient error, 2nd call succeeds
         fake.enqueue_responses([
             GenerationResult(
@@ -449,7 +452,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
             ),
             GenerationResult(
                 status=GenerationStatus.complete,
-                structured_data={"summary": "Recovered", "referenced_task_ids": ["T1"]},
+                structured_data={"summary": "Recovered", "referenced_task_ids": ["T2"]},
                 provider="fake_simulated",
                 model="qwen3.5:2b-q4_K_M",
                 duration_seconds=0.1,
@@ -630,7 +633,7 @@ class RuntimeContextRegressionTests(unittest.TestCase):
                                    evidence_ids=["c0ffee1"], commit_sha="c0ffee1", file_path="src/service.py", line=14, confidence=.8)
         calls = [lambda: ProjectMonitoringAgent(provider, context_builder=builder).run("p", self.metrics, self.tasks),
                  lambda: CodeQualityAgent(provider, context_builder=builder).run("p", draft, self.snippets),
-                 lambda: VerifierAgent(provider, context_builder=builder).run("p", [finding], self.snippets)]
+                 lambda: VerifierAgent(provider, context_builder=builder).run("p", [finding], self.snippets, evidence_ids=["c0ffee1"])]
         for call in calls:
             with self.assertRaises(ContextBudgetExceededError) as caught:
                 call()

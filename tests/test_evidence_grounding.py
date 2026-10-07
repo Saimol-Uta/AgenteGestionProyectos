@@ -222,7 +222,9 @@ class EvidenceGroundingTests(unittest.TestCase):
                 self.assertEqual(ProjectMonitoringAgent(provider).run("p", self.metrics, [task], evidence_ids=["T1"]).summary, summary)
 
     def test_ambiguous_followup_state_requests_attribution(self):
-        tasks = [TaskCard(id="T1", title="Build migration", state=TaskState.completed),
+        # Both are active and selected: ambiguity must still fail attribution,
+        # independently of the separate omitted-task assertion guard.
+        tasks = [TaskCard(id="T1", title="Build migration", state=TaskState.in_progress),
                  TaskCard(id="T2", title="Deploy service", state=TaskState.in_progress)]
         provider = self.queued({"summary": "Build migration and Deploy service are listed. It is in progress.",
                                 "referenced_task_ids": ["T1", "T2"], "evidence_ids": ["T1", "T2"]})

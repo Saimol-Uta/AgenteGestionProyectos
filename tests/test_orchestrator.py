@@ -729,5 +729,32 @@ class OrchestratorTestCase(unittest.TestCase):
         self.assertEqual(verificador.captured_requests[0].timeout_seconds, 88.0)
 
 
+    def test_large_diffs_do_not_enter_monitoring_and_snapshot_scope_is_preserved(self):
+        snapshot = self._sample_snapshot_with_code()
+        snapshot.is_complete = False
+        for task in snapshot.tasks:
+            task.detail = "irrelevant detail" * 5000
+        snapshot.code_diffs[0].content = "unrelated large diff" * 10000
+        class Capture(FakeProvider):
+            def __init__(self):
+                super().__init__(context_tokens=4096)
+                self.requests = []
+            def generate(self, request):
+                self.requests.append(request)
+                return super().generate(request)
+        provider = Capture()
+        orchestrator = ProjectOrchestrator(sqlite_storage=self.sqlite, artifact_storage=self.artifacts,
+            elaborador_provider=provider, revisor_provider=provider, verificador_provider=provider,
+            aprobador_provider=provider, config=OrchestratorConfig(project_id="test-proj"))
+        run = orchestrator.execute(snapshot=snapshot)
+        self.assertEqual(run.stages["monitoring"].status, StageStatus.completed)
+        self.assertEqual(run.stages["quality"].status, StageStatus.failed)
+        self.assertEqual(len(provider.requests), 1)
+        payload = provider.requests[0].evidences
+        self.assertNotIn("code_snippets", payload)
+        self.assertFalse(payload["source_context"]["is_complete"])
+        self.assertEqual(payload["source_context"]["commit_sha"], "c0ffee1")
+
+
 if __name__ == "__main__":
     unittest.main()

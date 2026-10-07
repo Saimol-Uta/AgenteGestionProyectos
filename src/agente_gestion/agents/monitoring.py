@@ -1,5 +1,6 @@
 """ProjectMonitoringAgent: drafts weekly status and highlights risks based on verified facts."""
 
+import re
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 
@@ -50,6 +51,8 @@ class ProjectMonitoringAgent:
         tasks: list[TaskCard],
         ci_result: Optional[CIRunResult] = None,
         evidence_ids: Optional[list[str]] = None,
+        source_is_complete: Optional[bool] = None,
+        source_commit_sha: Optional[str] = None,
     ) -> MonitoringDraft:
         available_task_ids = {t.id for t in tasks}
         valid_ev_ids = (set(evidence_ids) if evidence_ids else set()) | available_task_ids
@@ -58,6 +61,7 @@ class ProjectMonitoringAgent:
             "Eres el agente Elaborador de Gestion de Proyectos. "
             "Tu tarea es redactar un borrador de estado semanal objetivo y conciso.\n"
             "REGLAS ESTRICTAS:\n"
+            "- selection declara alcance relevante y cantidad omitida; si solo hay un ejemplo representativo no es una lista exhaustiva. Usa metrics para progreso global, no infieras detalles omitidos.\n"
             "- No inventes identificadores de tareas ni evidencias; cita unicamente IDs existentes en el contexto.\n"
             "- Las metricas de avance son calculadas de forma autoritativa por el backend; no calcules ni modifiques conteos finales.\n"
             "- Si el CI ha fallado, destaca el riesgo correspondiente.\n"
@@ -69,11 +73,22 @@ class ProjectMonitoringAgent:
 
         context = self.context_builder.build_monitoring_context(
             project_id, metrics, tasks, ci_result, sorted(valid_ev_ids), strict_budget=True,
+            source_is_complete=source_is_complete, source_commit_sha=source_commit_sha,
         )
+        capabilities = self.provider.get_capabilities()
         evidences_payload = self.context_builder.runtime_payload(
             context, instructions, MonitoringDraftSchema.model_json_schema(), 512,
-            self.provider.get_capabilities().context_tokens,
+            capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
+            request_fields={"role": "elaborador", "model": self.model, "schema_name": "monitoring_draft_v1"},
         )
+
+        selected_ids = {row["id"] for row in evidences_payload["tasks"]}
+        omitted_tasks = [task for task in tasks if task.id not in selected_ids]
+        tasks = [task for task in tasks if task.id in selected_ids]
+        available_task_ids = selected_ids
+        valid_ev_ids = set(evidences_payload["available_evidence_ids"])
+        if evidences_payload["ci_result"] is None:
+            ci_result = None
 
         request = GenerationRequest(
             role="elaborador",
@@ -98,6 +113,13 @@ class ProjectMonitoringAgent:
                 )
             except Exception as e:
                 return [f"Schema validation error: {str(e)}"]
+
+            narrative = "\n".join([candidate.summary, *candidate.risks, *candidate.suggested_actions,
+                                   candidate.ci_status_note or ""])
+            for task in omitted_tasks:
+                if any(name and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", narrative, re.IGNORECASE)
+                       for name in (task.id, task.title)):
+                    return ["Narrative references an omitted task outside selected evidence; request additional context."]
 
             return SemanticValidator.validate_monitoring_draft(
                 draft=candidate,

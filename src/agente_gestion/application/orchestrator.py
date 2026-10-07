@@ -309,6 +309,8 @@ class ProjectOrchestrator:
                 tasks=snapshot.tasks,
                 ci_result=matching_ci,
                 evidence_ids=monitoring_evidence_ids,
+                source_is_complete=snapshot.is_complete,
+                source_commit_sha=eval_commit_sha,
             )
             run.stages["monitoring"] = StageExecutionRecord(
                 stage_name="monitoring",

@@ -95,10 +95,19 @@ class VerifierAgent:
         context = self.context_builder.build_verifier_context(
             project_id, findings, snippets, rules or [], sorted(valid_ev_ids), strict_budget=True,
         )
+        capabilities = self.provider.get_capabilities()
+        output_tokens = min(1024, capabilities.max_output_tokens)
         evidences_payload = self.context_builder.runtime_payload(
-            context, instructions, VerifierOutputSchema.model_json_schema(), 1024,
-            self.provider.get_capabilities().context_tokens,
+            context, instructions, VerifierOutputSchema.model_json_schema(), output_tokens,
+            capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
+            request_fields={"role": "verificador", "model": self.model, "schema_name": "verifier_output_v1", "timeout_seconds": self.timeout_seconds},
         )
+
+        snippets = [CodeDiffSnippet.model_validate(row) for row in evidences_payload["code_snippets"]]
+        selected_rule_ids = {row["id"] for row in evidences_payload["rules"]}
+        if rules is not None:
+            rules = [rule for rule in rules if rule.id in selected_rule_ids]
+        valid_ev_ids = set(evidences_payload["available_evidence_ids"])
 
         request = GenerationRequest(
             role="verificador",
@@ -107,7 +116,7 @@ class VerifierAgent:
             schema_name="verifier_output_v1",
             json_schema=VerifierOutputSchema.model_json_schema(),
             model=self.model,
-            max_generation_tokens=1024,
+            max_generation_tokens=output_tokens,
             timeout_seconds=self.timeout_seconds,
         )
 

@@ -153,9 +153,11 @@ class CodeQualityAgent:
         context = self.context_builder.build_code_context(
             project_id, draft, criteria or [], snippets, rules, sorted(code_ev_ids), strict_budget=True,
         )
+        capabilities = self.provider.get_capabilities()
         evidences_payload = self.context_builder.runtime_payload(
             context, instructions, CodeFindingsSchema.model_json_schema(), 768,
-            self.provider.get_capabilities().context_tokens,
+            capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
+            request_fields={"role": "revisor", "model": self.model, "schema_name": "code_findings_v1", "timeout_seconds": self.timeout_seconds},
         )
 
         request = GenerationRequest(

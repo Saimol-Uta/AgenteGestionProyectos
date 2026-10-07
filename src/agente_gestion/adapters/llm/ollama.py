@@ -98,8 +98,18 @@ class OllamaProvider(LLMProviderPort):
             body["format"] = "json"
 
         # Token limit option
-        num_predict = request.max_generation_tokens or self.max_output_tokens
-        body["options"] = {"num_predict": num_predict}
+        num_predict = request.max_generation_tokens
+        body["options"] = {"num_ctx": self.context_tokens, "num_predict": num_predict}
+        # Independently enforce configured capabilities at the adapter boundary.
+        # Character-based estimates include serialized messages/schema/framing;
+        # they are not a tokenizer guarantee and never expand the configured n_ctx.
+        prompt_estimate = len(json.dumps(body, default=str)) // 3 + 1
+        if (num_predict <= 0 or num_predict > self.max_output_tokens
+                or prompt_estimate + num_predict + 64 > self.context_tokens):
+            return GenerationResult(status=GenerationStatus.error, provider="ollama",
+                                    model=request.model or self.model, duration_seconds=0,
+                                    error_message="Request exceeds configured output/context capability; no inference was invoked.",
+                                    request_ref=request.schema_name)
 
         start_time = time.monotonic()
         call_transport = self.transport or self._default_transport

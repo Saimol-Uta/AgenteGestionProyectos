@@ -205,14 +205,15 @@ class FakeE2ETestCase(unittest.TestCase):
             model="fake",
             duration_seconds=0.01,
         )
+        # Repaired citations use selected active T2, not omitted completed T1.
         valid_res = GenerationResult(
             status=GenerationStatus.complete,
             structured_data={
                 "summary": "Draft summary repaired",
                 "risks": [],
                 "suggested_actions": [],
-                "referenced_task_ids": ["T1"],
-                "evidence_ids": ["T1"],
+                "referenced_task_ids": ["T2"],
+                "evidence_ids": ["T2"],
             },
             provider="fake",
             model="fake",
