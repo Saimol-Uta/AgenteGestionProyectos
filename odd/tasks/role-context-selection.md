@@ -21,7 +21,7 @@ Restore bounded monitoring after the full TaskCard projection overflow, without 
 | T2 | Independently verify offline acceptance and close local commits | delegated: full-suite checks and writer low-effort profile | Context/agents/grounding/providers/orchestrator/full/benchmark/diff; final source readback and parent spot check |
 
 - [x] T1: Complete role-specific evidence selection and safe model budgeting.
-- [ ] T2: Complete independent offline proof and local commit closure.
+- [x] T2: Complete independent offline proof and local commit closure.
 
 ## Confirmed root cause and baseline
 
@@ -51,7 +51,7 @@ Existing branch mvp/real-sources, starting boundary 7e49d58b8b5d9fd632d787b32f56
 
 RDD remains globally on. The prior candidate-only unreviewed exception applied only to the prior fix, not this candidate. Assess work-unit commits and follow native provider transitions/consent when due; do not guess the unavailable untracked-selection schema or change review switches automatically.
 
-T1 implemented and independently verified offline. T2 functional proof complete; local commit and native assessment pending. Engram mirror: odd/role-context-selection/tasks; locator odd/tasks/role-context-selection.md.
+T1 implemented and independently verified offline. T2 complete: independent offline proof, local implementation commit and native assessment recorded; user approved this candidate-only unreviewed closure. Engram mirror: odd/role-context-selection/tasks; locator odd/tasks/role-context-selection.md.
 
 ## Observed implementation and proof
 
@@ -62,4 +62,13 @@ T1 implemented and independently verified offline. T2 functional proof complete;
 - Test-first: initial role regressions failed; semantic relevance regression18tests/2failures RED then18GREEN. Authorized fixture changes cite selected active T2 rather than omitted completed T1; invented-ID/ambiguous-attribution rejection unchanged. User explicitly approved only tests/test_e2e.py recovery fixture as additional surface.
 - Writer and independent verifier: role18, context20, agents17, grounding24, providers15, orchestrator11, full427 (425passed/2opt-inreal-provider skips), offlinebenchmarks7; all exit0. git diff --check exit0. Parent spot: role18 exit0; structural readback confirms relevance selection and scoped E2E fixture.
 - Final source/test candidate: 432 additions +40 deletions across11paths (including new232-line role test). No live provider/network/T8/T9, dependency/config/secrets/multi-repo changes or remote delivery.
-- RDD effective on, global source, clone-local unset. Prior candidate exception is not reused. Current assessment/closure pending. No native receipt claimed.
+- RDD effective on, global source, clone-local unset. Prior candidate exception is not reused. Current assessment recorded; user approved candidate-only unreviewed closure. No native receipt claimed.
+
+## Local commit and native assessment
+
+Implementation commit: e13c3e0 (fix(context): select role evidence within effective model input), 12 paths /497 additions40deletions including passive tracker. Source/test evidence remained unchanged after independent verification and parent spot.
+Native assessment: medium, review_due=true, slice_budget_reached,537 authored lines including tracker. Canonical inventory excludes only unrelated .codegraph/.gitignore and docs/arquitectura-implementada.md. Exact provider-returned committed-only preflight requests external.select_intended_untracked with schema gentle-ai.review-intended-untracked-selection/v1; installed runtime does not expose this schema (prior bounded installed-doc lookup). No schema guessed, START/lineage/consent/receipt/acknowledgement created, or review switch changed. Partial forecast: step1,kind collect,reason intended_untracked_selection_required,description intended untracked selection required. User explicitly answered Aprobar to close only this candidate unreviewed, keeping global RDD on; earlier candidate approval was not reused. T2 is complete. Native review is unavailable/unreviewed, not approved, and no receipt is claimed.
+
+## Closure
+
+All authorized implementation and independent offline checks are complete. Implementation commit e13c3e05b5c7750f5ba5337b121c3038b3e42fbf; this passive closure record follows in a documentation-only commit. No source/test bytes changed after the verified implementation. No live T8/T9/providers, remote delivery or new features were executed. Preserve unrelated untracked files. There is no remaining authorized implementation task; future real execution is outside this request. Estimates remain character-based, and irreducible Quality overflow remains explicitly fail-closed.
