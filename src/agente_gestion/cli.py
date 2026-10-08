@@ -23,6 +23,8 @@ from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
 from agente_gestion.adapters.llm.ollama import OllamaProvider
 from agente_gestion.adapters.llm.gemini import GeminiProvider
+from agente_gestion.adapters.llm.groq import GroqProvider
+from agente_gestion.adapters.llm.mistral import MistralProvider
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
@@ -70,10 +72,41 @@ def _build_orchestrator(
             base_url=config.ollama_base_url,
             model=config.ollama_monitoring_model,
         )
-        revisor = OllamaProvider(
-            base_url=config.ollama_base_url,
-            model=config.ollama_quality_model,
-        )
+        if config.quality_provider == "groq":
+            raw_groq_key = (
+                config.groq_api_key.get_secret_value()
+                if hasattr(config.groq_api_key, "get_secret_value")
+                else (str(config.groq_api_key) if config.groq_api_key is not None else "")
+            )
+            revisor = GroqProvider(
+                api_key=raw_groq_key,
+                model=config.groq_model,
+                base_url=config.groq_base_url,
+                allow_remote_ai=config.allow_remote_ai,
+                context_tokens=config.quality_context_window or 131072,
+                max_output_tokens=config.quality_max_output_tokens or 8192,
+            )
+        elif config.quality_provider == "mistral":
+            raw_mistral_key = (
+                config.mistral_api_key.get_secret_value()
+                if hasattr(config.mistral_api_key, "get_secret_value")
+                else (str(config.mistral_api_key) if config.mistral_api_key is not None else "")
+            )
+            revisor = MistralProvider(
+                api_key=raw_mistral_key,
+                model=config.mistral_model,
+                base_url=config.mistral_base_url,
+                allow_remote_ai=config.allow_remote_ai,
+                context_tokens=config.quality_context_window or 131072,
+                max_output_tokens=config.quality_max_output_tokens or 8192,
+            )
+        else:
+            revisor = OllamaProvider(
+                base_url=config.ollama_base_url,
+                model=config.ollama_quality_model,
+                context_tokens=config.quality_context_window or 4096,
+                max_output_tokens=config.quality_max_output_tokens or 768,
+            )
         aprobador = OllamaProvider(
             base_url=config.ollama_base_url,
             model=config.ollama_report_model,
@@ -106,6 +139,8 @@ def _build_orchestrator(
         max_llm_calls_per_run=config.max_llm_calls_per_run,
         quality_timeout_seconds=config.quality_timeout_seconds,
         verifier_timeout_seconds=config.verifier_timeout_seconds,
+        quality_max_output_tokens=config.quality_max_output_tokens,
+        quality_context_margin=config.quality_context_margin,
         runs_dir=config.runs_dir,
         fixtures_dir=config.fixtures_dir,
         db_path=config.db_path,
@@ -127,6 +162,9 @@ def _build_orchestrator(
     )
 
     return orchestrator, sqlite_storage, artifact_storage, verificador, elaborador, revisor, aprobador
+
+
+initialize_pipeline = _build_orchestrator
 
 
 def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPort] = None) -> int:
@@ -161,6 +199,8 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         overrides["github_commit_sha"] = args.commit
     if getattr(args, "branch", None):
         overrides["github_branch"] = args.branch
+    if getattr(args, "quality_provider", None):
+        overrides["quality_provider"] = args.quality_provider
 
     config = Settings.from_env_and_file(
         config_path=args.config,
@@ -201,8 +241,20 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
     escalations_count = sum(1 for f in findings_stored if f.get("should_escalate"))
     report_path = os.path.join(config.runs_dir, run.run_id, "report.md")
 
+    def _format_model_tag(provider, default_provider_name: str) -> str:
+        if provider is None:
+            return "unavailable"
+        is_sim = getattr(provider, "is_simulated", False) or config.is_fake
+        if is_sim:
+            return getattr(provider, "model", "simulated")
+        p_name = getattr(provider, "provider_name", default_provider_name)
+        p_mod = getattr(provider, "model", "unknown")
+        if "/" in str(p_mod):
+            return str(p_mod)
+        return f"{p_name}/{p_mod}"
+
     verificador_summary = (
-        getattr(verificador, "model", "unavailable")
+        _format_model_tag(verificador, "gemini")
         if (
             verificador is not None
             and (
@@ -219,10 +271,10 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
     print(f"Run ID:         {run.run_id}")
     print(f"Status:         {run.status.value}")
     print(f"Agents:         Elaborador, Revisor, Verificador, Aprobador")
-    print(f"Models:         Elaborador={getattr(elaborador, 'model', 'default')}, "
-          f"Revisor={getattr(revisor, 'model', 'default')}, "
+    print(f"Models:         Elaborador={_format_model_tag(elaborador, 'ollama')}, "
+          f"Revisor={_format_model_tag(revisor, 'ollama')}, "
           f"Verificador={verificador_summary}, "
-          f"Aprobador={getattr(aprobador, 'model', 'default')}")
+          f"Aprobador={_format_model_tag(aprobador, 'ollama')}")
     print(f"Findings:       {len(findings_stored)} candidate finding(s)")
     print(f"Escalations:    {escalations_count} finding(s) escalated to verifier")
     print(f"Verifications:  {len(verifs_stored)} finding(s) independently verified")
@@ -531,6 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--ollama-base-url", default=None, help="Ollama server URL (defaults to http://127.0.0.1:11435)")
     parser_run.add_argument("--db-path", default=None, help="Path to SQLite database file")
     parser_run.add_argument("--output-dir", default=None, help="Directory to save runs artifacts")
+    parser_run.add_argument("--quality-provider", choices=["ollama", "groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral')")
     parser_run.add_argument("--env-file", default=None, help="Path to custom .env file (defaults to .env)")
 
     # source-check command

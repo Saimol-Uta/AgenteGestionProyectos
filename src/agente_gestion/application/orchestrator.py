@@ -76,6 +76,8 @@ class OrchestratorConfig:
         max_llm_calls_per_run: int = 8,
         quality_timeout_seconds: float = 120.0,
         verifier_timeout_seconds: float = 120.0,
+        quality_max_output_tokens: Optional[int] = None,
+        quality_context_margin: int = 64,
         runs_dir: str = "runs",
         fixtures_dir: str = "fixtures",
         db_path: str = ".runtime/agente.db",
@@ -93,6 +95,8 @@ class OrchestratorConfig:
         self.max_llm_calls_per_run = max_llm_calls_per_run
         self.quality_timeout_seconds = quality_timeout_seconds
         self.verifier_timeout_seconds = verifier_timeout_seconds
+        self.quality_max_output_tokens = quality_max_output_tokens
+        self.quality_context_margin = quality_context_margin
         self.runs_dir = runs_dir
         self.fixtures_dir = fixtures_dir
         self.db_path = db_path
@@ -238,22 +242,33 @@ class ProjectOrchestrator:
             max_repair_attempts=1,
         )
 
-        # Track execution metrics accurately reflecting actual calls/readiness vs unavailable
+        def _format_model_tag(provider, default_provider_name: str) -> str:
+            if provider is None:
+                return "unavailable"
+            is_sim = getattr(provider, "is_simulated", False) or self.config.is_simulated
+            if is_sim:
+                return getattr(provider, "model", "simulated")
+            p_name = getattr(provider, "provider_name", default_provider_name)
+            p_mod = getattr(provider, "model", "unknown")
+            if "/" in str(p_mod):
+                return str(p_mod)
+            return f"{p_name}/{p_mod}"
+
         verificador_model_name = "unavailable"
         if self.verificador_provider is not None:
             is_sim = getattr(self.verificador_provider, "is_simulated", False) or self.config.is_simulated
             if is_sim:
                 verificador_model_name = getattr(self.verificador_provider, "model", "simulated")
             elif self.config.allow_remote_ai and bool(getattr(self.verificador_provider, "api_key", None)):
-                verificador_model_name = getattr(self.verificador_provider, "model", "gemini-2.5-flash")
+                verificador_model_name = _format_model_tag(self.verificador_provider, "gemini")
             else:
                 verificador_model_name = "unavailable"
 
         models_used = {
-            "elaborador": getattr(self.elaborador_provider, "model", "unknown"),
-            "revisor": getattr(self.revisor_provider, "model", "unknown"),
+            "elaborador": _format_model_tag(self.elaborador_provider, "ollama"),
+            "revisor": _format_model_tag(self.revisor_provider, "ollama"),
             "verificador": verificador_model_name,
-            "aprobador": getattr(self.aprobador_provider, "model", "unknown"),
+            "aprobador": _format_model_tag(self.aprobador_provider, "ollama"),
         }
         provider_errors: list[str] = []
         escalation_map: dict[str, list[str]] = {}
@@ -356,6 +371,8 @@ class ProjectOrchestrator:
                     model=getattr(self.revisor_provider, "model", "qwen3.5:4b-q4_K_M"),
                     coordinator=coordinator,
                     timeout_seconds=getattr(self.config, "quality_timeout_seconds", 120.0),
+                    max_output_tokens=getattr(self.config, "quality_max_output_tokens", None),
+                    safety_margin_tokens=getattr(self.config, "quality_context_margin", 64),
                 )
                 candidate_findings = quality_agent.run(
                     project_id=proj_id,

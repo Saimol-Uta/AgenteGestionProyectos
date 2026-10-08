@@ -20,6 +20,7 @@ _OLLAMA_SEQUENTIAL_LOCK = threading.Lock()
 
 class OllamaProvider(LLMProviderPort):
     """Adapter for local Ollama instances via native /api/chat."""
+    provider_name: str = "ollama"
 
     def __init__(
         self,
@@ -31,6 +32,7 @@ class OllamaProvider(LLMProviderPort):
         keep_alive: Union[int, str] = 0,
         transport: Optional[Callable[..., dict[str, Any]]] = None,
     ):
+        self.provider_name = "ollama"
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.context_tokens = context_tokens
