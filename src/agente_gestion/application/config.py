@@ -66,6 +66,23 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             if "model" in local_sec:
                 merged["ollama_monitoring_model"] = local_sec["model"]
                 merged["ollama_report_model"] = local_sec["model"]
+        if "quality" in prov_sec and isinstance(prov_sec["quality"], dict):
+            q_sec = prov_sec["quality"]
+            if "provider" in q_sec:
+                merged["quality_provider"] = q_sec["provider"]
+            if "model" in q_sec:
+                eff_prov = str(q_sec.get("provider", "groq")).lower()
+                if eff_prov == "groq":
+                    merged["groq_model"] = q_sec["model"]
+                elif eff_prov == "mistral":
+                    merged["mistral_model"] = q_sec["model"]
+                elif eff_prov == "ollama":
+                    merged["ollama_quality_model"] = q_sec["model"]
+
+    if "roles" in file_data and isinstance(file_data["roles"], dict):
+        roles_sec = file_data["roles"]
+        if "revisor" in roles_sec and roles_sec["revisor"] in ("groq", "mistral", "ollama"):
+            merged["quality_provider"] = roles_sec["revisor"]
 
     if "sources" in file_data and isinstance(file_data["sources"], dict):
         src_sec = file_data["sources"]
@@ -215,6 +232,51 @@ class Settings(BaseSettings):
         description="Google Gemini API key. SecretStr excluded from repr, dumps, and fingerprints.",
     )
     gemini_model: str = Field(default="gemini-2.5-flash")
+    quality_provider: str = Field(
+        default="ollama",
+        description="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral'). Default: ollama.",
+    )
+    groq_api_key: Optional[SecretStr] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="Groq API key. SecretStr excluded from repr, dumps, and fingerprints.",
+    )
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model identifier for code quality review.",
+    )
+    groq_base_url: str = Field(
+        default="https://api.groq.com/openai/v1",
+        description="Groq API base URL.",
+    )
+    mistral_api_key: Optional[SecretStr] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="Mistral API key. SecretStr excluded from repr, dumps, and fingerprints.",
+    )
+    mistral_model: str = Field(
+        default="mistral-large-latest",
+        description="Mistral model identifier for code quality review.",
+    )
+    mistral_base_url: str = Field(
+        default="https://api.mistral.ai/v1",
+        description="Mistral API base URL.",
+    )
+    quality_context_window: Optional[int] = Field(
+        default=None,
+        description="Optional explicit context window tokens for quality provider.",
+    )
+    quality_max_output_tokens: Optional[int] = Field(
+        default=None,
+        description="Optional explicit max output tokens for quality provider.",
+    )
+    quality_context_margin: int = Field(
+        default=64,
+        gt=0,
+        description="Safety margin tokens for quality context budgeting.",
+    )
     quality_timeout_seconds: float = Field(
         default=120.0,
         description="Timeout in seconds for code quality review requests (bounded default 120s per ARCHITECTURA/T4).",
@@ -400,8 +462,22 @@ class Settings(BaseSettings):
             raise ValueError(f"Invalid boolean value for allow_remote_ai: {v!r}")
         return bool(v)
 
+    @field_validator("quality_provider", mode="before")
+    @classmethod
+    def parse_quality_provider(cls, v: Any) -> str:
+        if not isinstance(v, str):
+            raise ValueError("quality_provider must be a string")
+        cleaned = v.strip().lower()
+        if cleaned not in ("ollama", "groq", "mistral"):
+            raise ValueError(
+                f"Invalid quality_provider: '{v}'. Must be 'ollama', 'groq', or 'mistral'."
+            )
+        return cleaned
+
     @field_validator(
         "gemini_api_key",
+        "groq_api_key",
+        "mistral_api_key",
         "trello_api_key",
         "trello_token",
         "github_token",
@@ -473,7 +549,14 @@ class Settings(BaseSettings):
 
     def get_known_secret_values(self) -> tuple[str, ...]:
         secrets: list[str] = []
-        for fld in ("gemini_api_key", "trello_api_key", "trello_token", "github_token"):
+        for fld in (
+            "gemini_api_key",
+            "groq_api_key",
+            "mistral_api_key",
+            "trello_api_key",
+            "trello_token",
+            "github_token",
+        ):
             val = getattr(self, fld, None)
             if isinstance(val, SecretStr):
                 sec = val.get_secret_value().strip()
