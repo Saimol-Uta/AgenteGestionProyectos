@@ -10,7 +10,7 @@ from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.report import MonitoringDraft
 from agente_gestion.domain.llm import GenerationRequest
 from agente_gestion.ports.llm import LLMProviderPort
-from agente_gestion.agents.context import ContextBuilder
+from agente_gestion.agents.context import ContextBuilder, estimate_tokens_from_data
 from agente_gestion.application.generation import StageInvocationCoordinator
 from agente_gestion.application.validation import SemanticValidator
 
@@ -68,12 +68,16 @@ class CodeQualityAgent:
         coordinator: Optional[StageInvocationCoordinator] = None,
         timeout_seconds: float = 120.0,
         context_builder: Optional[ContextBuilder] = None,
+        max_output_tokens: Optional[int] = None,
+        safety_margin_tokens: int = 64,
     ):
         self.context_builder = context_builder or ContextBuilder()
         self.provider = provider
         self.model = model
         self.coordinator = coordinator or StageInvocationCoordinator()
         self.timeout_seconds = timeout_seconds
+        self.max_output_tokens = max_output_tokens
+        self.safety_margin_tokens = safety_margin_tokens
 
     def run(
         self,
@@ -150,14 +154,47 @@ class CodeQualityAgent:
             "- El verificador debe usar insufficient cuando confirmar dependa de contenido no visible.\n"
         )
 
-        context = self.context_builder.build_code_context(
-            project_id, draft, criteria or [], snippets, rules, sorted(code_ev_ids), strict_budget=True,
-        )
         capabilities = self.provider.get_capabilities()
+        output_tokens = min(self.max_output_tokens or 768, capabilities.max_output_tokens)
+        safety_margin = self.safety_margin_tokens
+
+        instructions_overhead = (
+            estimate_tokens_from_data(instructions)
+            + estimate_tokens_from_data(CodeFindingsSchema.model_json_schema())
+        )
+        safe_input_budget = self.context_builder.calculate_safe_input_budget(
+            context_window=capabilities.context_tokens,
+            max_output_tokens=output_tokens,
+            safety_margin=safety_margin,
+            overhead_tokens=instructions_overhead,
+        )
+        if getattr(self.context_builder, "_explicit_default", False):
+            safe_input_budget = min(self.context_builder.default_budget_tokens, safe_input_budget)
+
+        context = self.context_builder.build_code_context(
+            project_id,
+            draft,
+            criteria or [],
+            snippets,
+            rules,
+            sorted(code_ev_ids),
+            budget_tokens=safe_input_budget,
+            strict_budget=True,
+        )
         evidences_payload = self.context_builder.runtime_payload(
-            context, instructions, CodeFindingsSchema.model_json_schema(), 768,
-            capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
-            request_fields={"role": "revisor", "model": self.model, "schema_name": "code_findings_v1", "timeout_seconds": self.timeout_seconds},
+            context,
+            instructions,
+            CodeFindingsSchema.model_json_schema(),
+            output_tokens,
+            capabilities.context_tokens,
+            max_output_tokens=capabilities.max_output_tokens,
+            request_fields={
+                "role": "revisor",
+                "model": self.model,
+                "schema_name": "code_findings_v1",
+                "timeout_seconds": self.timeout_seconds,
+            },
+            safety_margin_tokens=safety_margin,
         )
 
         request = GenerationRequest(
@@ -167,7 +204,7 @@ class CodeQualityAgent:
             schema_name="code_findings_v1",
             json_schema=CodeFindingsSchema.model_json_schema(),
             model=self.model,
-            max_generation_tokens=768,
+            max_generation_tokens=output_tokens,
             timeout_seconds=self.timeout_seconds,
         )
 

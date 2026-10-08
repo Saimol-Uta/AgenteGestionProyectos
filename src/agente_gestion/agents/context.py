@@ -53,10 +53,26 @@ def estimate_tokens_from_data(data: Any) -> int:
 class ContextBuilder:
     """Builds explicit bounded contexts without silent truncation of critical evidence."""
 
-    def __init__(self, default_budget_tokens: int = 4096):
-        if default_budget_tokens <= 0:
+    def __init__(self, default_budget_tokens: Optional[int] = None):
+        if default_budget_tokens is not None and default_budget_tokens <= 0:
             raise ValueError("Context budget must be positive")
-        self.default_budget_tokens = default_budget_tokens
+        self._explicit_default = default_budget_tokens is not None
+        self.default_budget_tokens = 4096 if default_budget_tokens is None else default_budget_tokens
+
+    def calculate_safe_input_budget(
+        self,
+        context_window: int,
+        max_output_tokens: int,
+        safety_margin: int = 64,
+        overhead_tokens: int = 0,
+    ) -> int:
+        """
+        Calculates safe input token budget as:
+        safe_input_budget = context_window - max_output_tokens - safety_margin - overhead_tokens
+        Guarantees non-negative integer floor.
+        """
+        budget = context_window - max_output_tokens - safety_margin - overhead_tokens
+        return max(0, budget)
 
     def _check_budget(
         self,
@@ -116,7 +132,8 @@ class ContextBuilder:
     def runtime_payload(self, context: ContextPayload, instructions: str, schema: dict,
                         output_tokens: int, context_tokens: int,
                         max_output_tokens: Optional[int] = None,
-                        request_fields: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                        request_fields: Optional[dict[str, Any]] = None,
+                        safety_margin_tokens: int = 64) -> dict[str, Any]:
         """Select whole role items before checking the serialized envelope.
 
         The unchanged configured window reserves exact output plus a 64-token
@@ -129,7 +146,7 @@ class ContextBuilder:
         payload["available_evidence_ids"] = payload.pop("evidence_ids", [])
         metadata = context.model_dump(exclude={"data"})
         metadata.update(context_window_tokens=context_tokens, reserved_output_tokens=output_tokens,
-                        safety_margin_tokens=64, estimation_method="JSON character estimate (3 chars/token); not tokenizer exact",
+                        safety_margin_tokens=safety_margin_tokens, estimation_method="JSON character estimate (3 chars/token); not tokenizer exact",
                         estimated_prompt_tokens=0, status="complete", is_truncated=False, incomplete_reason=None)
         payload["context_metadata"] = metadata
         # Self-describing estimates count their own bytes. Stabilize integer
@@ -137,7 +154,7 @@ class ContextBuilder:
         for _ in range(10):
             estimated = estimate_tokens_from_data(payload)
             prompt = self.estimate_prompt(payload, instructions, schema, request_fields)
-            budget = min(context.budget_tokens, context_tokens - output_tokens - 64 - (prompt - estimated))
+            budget = min(context.budget_tokens, context_tokens - output_tokens - safety_margin_tokens - (prompt - estimated))
             updated = (estimated, prompt, budget)
             previous = (metadata["estimated_tokens"], metadata["estimated_prompt_tokens"], metadata["budget_tokens"])
             metadata.update(estimated_tokens=estimated, estimated_prompt_tokens=prompt, budget_tokens=budget)
