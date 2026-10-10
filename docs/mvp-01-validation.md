@@ -1,5 +1,11 @@
 # MVP-01 Real Sources Offline Validation Report
 
+> **Nota de alcance:** las pruebas de T8/T9 documentadas aquí evalúan
+> integración y fiabilidad del MVP; **no certifican el cumplimiento final
+> de REQ-01…REQ-11**. La correspondencia conceptual Ejecutor/Revisor/Aprobador
+> no sustituye la implementación futura de acciones aprobadas.
+> [Matriz de requisitos y hoja de ruta](requisitos-y-plan-de-implementacion.md).
+
 ## Actualización de validación — 10 de octubre de 2026
 
 > **Este apartado es posterior al informe offline original.** El texto
