@@ -1,5 +1,75 @@
 # MVP-01 Real Sources Offline Validation Report
 
+## Actualización de validación — 10 de octubre de 2026
+
+> **Este apartado es posterior al informe offline original.** El texto
+> histórico que sigue refleja T0–T7 antes de configurar las credenciales,
+> no el estado presente. No se reescriben mediciones antiguas como actuales.
+
+### T8 — fuentes reales completadas
+
+Entorno piloto: tablero Trello `PROYECTO HORMIGESTION`
+(`6a957e9173d4d13d0c5db608`) y repositorio público
+`Josu-F1/hormigestion-backend` (`main`).
+
+| Provider | Estado | Count | SHA |
+|---|---|---:|---|
+| Trello | success | 31 | N/A |
+| GitHub | success | 6 | `5412744023c4b3961be9cd783609423d12280f64` |
+| GitHub Actions | success | 0 | `5412744023c4b3961be9cd783609423d12280f64` |
+
+Comando: `PYTHONPATH=src .venv/bin/python -m agente_gestion
+source-check all --sources real`. El cero en Actions no es un fallo de
+conectividad: faltan runs del SHA. Por eso la política de cobertura
+o pruebas puede quedar `unknown`.
+
+### T9 — ejecuciones reales observadas, cierre pendiente
+
+| Run ID | Estado | Hallazgo / lección |
+|---|---|---|
+| `run-20261007-160935-557437` | failed | Ollama inaccesible en localhost:11435; etapa monitoring |
+| `run-20261007-162232-675554` | failed | Timeout de lectura 120 s en quality; Ollama ya respondía |
+| `run-20261007-163608-df22fc` | needs_attention | Reporte y 8 artefactos; 18/30 tareas completas, 60 %, finding C-001 falso positivo por snippet parcial; escalación 1 y verificación 0 por Gemini HTTP 503 |
+| `run-20261007-173724-2b49a3` | failed | ContextBuilder impidió truncamiento: Monitoring estimó 4161 tokens de evidencia con budget 2750 |
+
+La corrida que generó reporte distinguió correctamente ausencia de CI
+mediante `evidencia_insuficiente`, pero Monitoring describió una actividad
+completada como en curso y Quality asoció un finding no sustentado con Q2.
+Por tanto **T9 no se declara validado**.
+
+### Cambios posteriores probados offline
+
+- `140177f`: ContextBuilder integrado, metadata de alcance y límites.
+- `14845ce`: grounding determinista y asociación semántica de findings.
+- `e13c3e0`: selección role-specific: 3 tareas relevantes de 31,
+  prompt estimado Monitoring ~1655 tokens y reserva para salida.
+- `393ceb3`: adaptadores remotos GroqProvider/MistralProvider.
+- `7a44ee1`: presupuesto seguro de Quality según proveedor.
+- `38d4f8a`: variables y Settings para Quality híbrido.
+- `3c4885f`: CLI `--quality-provider` y wiring de proveedores.
+
+El último trabajo con Antigravity reportó **472 tests y 7 benchmarks
+offline aprobados**, sin corrida real Groq/Mistral ni revalidación T9.
+Son resultados reportados, no tests ejecutados al editar este documento.
+Los tests opt-in LLM/Gemini pueden estar fuera de los checks offline.
+
+### Próximo criterio de aceptación
+
+Preparar `.env` local sin divulgar credenciales, seleccionar modelo remoto
+vigente, levantar Ollama para Monitoring y Report, ejecutar smoke fake,
+y después `run hormigestion --sources real --allow-remote-ai
+--quality-provider groq`. Inspeccionar la evidencia y el informe, evitando
+aprobar claims de código basados únicamente en fragmentos truncados.
+Documentar run_id/SHA, duración, hallazgos, escalaciones, verificaciones y
+políticas unknown. No hacer cambios externos sin autorización.
+
+**Persisten como trabajo futuro:** CI con artefactos verificables de
+pruebas/cobertura, soporte multi-repositorio por proyecto, scheduler semanal,
+notificaciones e interfaz de gestión. T8 exitoso no equivale a CI aprobado.
+
+---
+
+
 - Scope: Offline verification complete for branch `mvp/real-sources` at code commit `fed1ac7d338cf4c4ba2c3e0ac5f20da0c68df1b6` (baseline `d08bff4`). Live validation is blocked: T8 configuration preflight failed; T9 real-source E2E was not executed (see final handoff below).
 - Isolation: Executed in isolated environment (`RUN_REAL_LLM_TESTS` unset, no network, no live credentials, zero live API/LLM calls).
 
