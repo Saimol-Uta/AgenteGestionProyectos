@@ -558,7 +558,8 @@ class TrelloSourceAdapter(TaskSourcePort):
                 last_activity_at=normalize_datetime_to_tz(
                     datetime.fromisoformat(c["last_activity"]), self._tz,
                 ) if c["last_activity"] else None,
-                observed_fields=c["observed_fields"],
+                # Derived observations from this board capture and strategy, not actions.
+                observed_fields=[*c["observed_fields"], "state", "list_name"],
             )
             tasks.append(task_card)
 

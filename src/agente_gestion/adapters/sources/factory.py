@@ -1,5 +1,7 @@
 """Fresh source adapter factory creating isolated source instances per invocation (T5b)."""
 
+from hashlib import sha256
+import json
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -28,6 +30,28 @@ from agente_gestion.adapters.sources.http_transport import (
     BoundedGetTransport,
     HttpGetTransportPort,
 )
+
+
+def _task_source_identity(source: TaskSourcePort) -> Optional[str]:
+    """Fingerprint only known effective Trello scope; never serialize Settings/secrets."""
+    if not isinstance(source, TrelloSourceAdapter):
+        return None
+
+    cfg = source.mapping_config
+    # These collections are membership sets; label matching ignores case/whitespace.
+    mapping = {
+        "pending_list_ids": sorted(set(cfg.pending_list_ids)),
+        "in_progress_list_ids": sorted(set(cfg.in_progress_list_ids)),
+        "completed_list_ids": sorted(set(cfg.completed_list_ids)),
+        "blocked_labels": sorted({label.strip().lower() for label in cfg.blocked_labels
+                                  if label.strip()}),
+        "included_list_ids": (sorted(set(cfg.included_list_ids))
+                              if cfg.included_list_ids is not None else None),
+    }
+    scope = {"provider": "trello", "board_id": source.board_id,
+             "state_strategy": source.state_strategy, "mapping": mapping}
+    encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "trello-sha256:" + sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def create_task_source(
@@ -186,4 +210,5 @@ def create_composite_source(
         default_commit_sha=target_sha,
         default_timezone=tz,
         known_secret_values=settings.get_known_secret_values(),
+        task_source_identity=_task_source_identity(task_source),
     )

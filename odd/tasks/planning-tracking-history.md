@@ -17,8 +17,9 @@ Extend the existing analysis MVP with faithful activity metadata, deterministic 
 - [x] H1A — Closed offline in 748379c after independent verification; native review declined for this candidate by human. Extend TaskCard and Trello/fixture normalization with observed assignees, start/completion/archive/activity metadata and unknown priority; preserve old payloads. Route: delegated writer (multi-file).
 - [x] H1B — Closed offline in be369c5 after independent verification; native review declined for this candidate. Add configurable near-due metrics with exact Guayaquil boundaries, exclusions and report visibility; retain original state. Route: delegated writer (multi-file).
 - [x] H1C — Pure comparator closed offline in939876f; native approved+acknowledged, independent checks green. Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
-- [ ] H1E — In progress. Integrate derived Trello state/list-name observations and task source/mapping identity/completeness into real collection, with mocked acceptance. Route: delegated writer (integration gap found by independent verifier).
-- [ ] H1D — Expose reproducible persisted snapshot history/comparison via existing SQLite and CLI; test legacy compatibility. Route: delegated writer (multi-file).
+- [ ] H1E — In progress; functional checks green, review/commit pending. Integrate derived Trello state/list-name observations and task source/mapping identity/completeness into real collection, with mocked acceptance. Route: delegated writer (integration gap found by independent verifier).
+- [ ] H1D1 — Persist immutable content-addressed captures in existing SQLite, atomic safe backfill and read-only queries; preserve latest get_snapshot and all runs. Route: delegated writer (multi-file).
+- [ ] H1D2 — Add read-only CLI history list/compare using explicit capture IDs; unavailable legacy/missing DB never creates/migrates data or artifacts. Route: delegated writer (multi-file).
 
 ## Acceptance and verification
 Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focused tests, tests/ regression, pruebas/test_*.py, and git diff --check. Native review uses only the user-owned switch and provider-issued routes; unavailable review is documented, not globally disabled. Excluded/completed/unknown cards are not deadline risks; progress denominator remains included cards only. Comparator never asserts deletion or actor attribution without evidence, rejects cross-project comparisons and never depends on LLMs.
@@ -42,11 +43,18 @@ Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focu
 ## H1C verification and integration gap
 - Writer mv30ijg6-d-8c0w RED missing module, GREEN56focused/full506run504pass2skip/pruebas7pass; parent14pass and stageddiffcheck covers newfiles.
 - Native review-954ed245636ee126 approved1c463393… then exact acknowledgement burned authority. Advisory malformed-evidence-mask is nonblocking laterhardening, no correction route.
-- Postack ASSESS unassessable due untrackedfiles required independent mv30srj6-e-ti8y: checks green, no unit regression. Its full-suite count wording is under clarification (writer506total/504pass/2skip).
+- Postack ASSESS unassessable due untrackedfiles required independent mv30srj6-e-ti8y: checks green, no unit regression. Verifier retained stdout confirmed Ran506tests/OK(skipped=2):504pass2skip.
 - Pure comparator commit939876ff55af877e2833936144bada6db22f92cd produces exactly4fields in A/B synthetic snapshot test; no physical deletion/creation/actor claims.
 - Integration gap: current Trello observed_fields omits derived state/list_name and Composite does not fill task_source_identity/tasks_complete. H1E now resolves this before storage/CLI; H1C alone is not end-to-end historical tracking.
 
+## H1E scope clarification
+- Writer mv312gl9-g-vyzk stopped before edits because parent incorrectly assumed a mapped_state alias. Existing payload already carries state/list_name; only masks are missing. Human selected A: preserve existing contract without new alias. Continuation mv317rkf-i-ce3g implements original remaining integration scope.
+
+## H1E verification
+- Continuation mv317rkf-i-ce3g observed RED144tests14failures before source; GREEN144focused/full515run513pass2skip/pruebas7pass/diffcheckclean. Nine mocked integrationtests,6files264diff lines.
+- Existing state/list_name keys retained, masks added; factory whitelist hashes provider/effectiveboard/strategy/canonicalmapping scope only (no credentials/fullSettings). Successful empty tasks complete=true, failure=false, independentofCI. Native review/commit pending.
+
 ## Next step
-Implement H1E observed derived facts + credential-free board/mapping identity and task-specific completeness; never infer completeness from missing CI. Then H1D immutable capture history/CLI. H2 permissions remain separate product boundary.
+Implement H1E observed derived facts (human selected existing state/list_name payload; no mapped_state alias) + credential-free board/mapping identity and task-specific completeness; never infer completeness from missing CI. Then H1D1 immutable capture storage and H1D2 CLI (two cohesive units from scout mv312w9r-h-ogco). Migration recovers currently retained rows only, not overwritten past versions; run-scoped evidence is not guaranteed per-capture complete. H2 permissions remain separate product boundary.
 
 Locator: odd/tasks/planning-tracking-history.md

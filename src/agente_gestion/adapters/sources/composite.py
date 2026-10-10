@@ -80,8 +80,10 @@ class CompositeSourcesAdapter(SourceCollectionPort):
         default_commit_sha: Optional[str] = None,
         default_timezone: Optional[ZoneInfo] = None,
         known_secret_values: Optional[Iterable[str]] = None,
+        task_source_identity: Optional[str] = None,
     ):
         self._task_source = task_source
+        self._task_source_identity = task_source_identity
         self._code_source = code_source
         self._ci_source = ci_source
         self._policy_source = policy_source
@@ -237,6 +239,7 @@ class CompositeSourcesAdapter(SourceCollectionPort):
 
         # 2. Tasks & Evidence (Trello)
         tasks: list[TaskCard] = []
+        tasks_complete = False
         t0 = time.perf_counter()
         try:
             raw_tasks = self._task_source.get_tasks(project_id)
@@ -259,6 +262,7 @@ class CompositeSourcesAdapter(SourceCollectionPort):
             # Both data and evidence validated successfully
             tasks = [t.model_copy(deep=True) for t in raw_tasks]
             combined_evidence.extend([e.model_copy(deep=True) for e in raw_task_ev])
+            tasks_complete = True
             records.append(
                 SourceExecutionRecord(
                     provider=SourceProvider.trello,
@@ -547,6 +551,8 @@ class CompositeSourcesAdapter(SourceCollectionPort):
             cutoff_datetime=cutoff_datetime,
             captured_at=captured_at,
             tasks=tasks,
+            task_source_identity=self._task_source_identity,
+            tasks_complete=tasks_complete,
             code_diffs=code_diffs,
             ci_runs=ci_runs,
             policies=policies,

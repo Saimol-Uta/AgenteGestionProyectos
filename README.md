@@ -243,6 +243,15 @@ título es seguro sin evidencia adicional; no se comparan defaults opcionales.
 `task_source_identity` identifica fuente **y versión de mapeo**;
 `tasks_complete` describe solo la enumeración de tareas, no el estado de CI.
 Ambos son desconocidos (`None`) en capturas antiguas y generan advertencias.
+H1E conecta esta API con Trello/factory/composite mediante tests mock offline:
+`state` y `list_name` son observaciones derivadas con IDs de evidencia.
+La identidad es SHA-256 de JSON canónico del tablero, estrategia y mapeo/alcance
+incluido; no contiene credenciales, nombres de listas ni fechas de captura.
+La colección de tareas exitosa, incluso vacía, marca `tasks_complete=True` aunque
+falte CI; su fallo marca `False`. Fuentes desconocidas mantienen identidad `None`.
+En `date_fields`, el estado puede cambiar solo por el tiempo de captura: no prueba
+una operación API ni quién actuó. Cambiar tablero, estrategia o mapeo conocido
+impide comparar esas capturas; la prioridad nunca se deduce de etiquetas.
 `first_observed`/`not_observed` no significan creación/eliminación física;
 `actor` siempre es `None`. H1D añadirá historial persistido y consulta CLI:
 esta API no almacena, autoriza ni ejecuta acciones externas.
