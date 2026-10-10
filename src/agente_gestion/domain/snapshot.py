@@ -21,3 +21,9 @@ class WeeklySnapshot(BaseModel):
     policies: list[QualityRule] = Field(default_factory=list)
     is_complete: bool = Field(default=True, description="Whether all sources responded without error")
     incomplete_reason: Optional[str] = None
+    task_source_identity: Optional[str] = Field(
+        default=None, description="Task source + mapper scope/version; None means legacy unknown",
+    )
+    tasks_complete: Optional[bool] = Field(
+        default=None, description="Task enumeration completeness, independent of CI/other sources",
+    )

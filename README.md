@@ -220,6 +220,33 @@ distingue el as-built inicial de los cambios posteriores. La
    .venv/bin/python -m unittest discover -s pruebas -p 'test_*.py' -v
    ```
 
+### Comparación de tareas entre capturas (H1C, offline)
+
+```python
+from agente_gestion.domain.task_comparison import compare_task_snapshots
+
+# Dos WeeklySnapshot del mismo proyecto, ordenados por captured_at.
+comparison = compare_task_snapshots(
+    previous, current,
+    previous_evidence=previous_task_evidence, current_evidence=current_task_evidence,
+)
+for change in comparison.changes:
+    print(change.task_id, change.kind, change.field, change.before, change.after)
+```
+
+API pura: conserva tarjetas excluidas, compara campos observados en ambas
+capturas y devuelve IDs estables y referencias de evidencia por lado. Nulos y
+listas vacías explícitos representan limpieza; campos ausentes no son cambios.
+La evidencia usa claves normalizadas y se asocia por ID, proyecto y categoría
+`task`, nunca por título. En tarjetas antiguas sin `observed_fields`, solo el
+título es seguro sin evidencia adicional; no se comparan defaults opcionales.
+`task_source_identity` identifica fuente **y versión de mapeo**;
+`tasks_complete` describe solo la enumeración de tareas, no el estado de CI.
+Ambos son desconocidos (`None`) en capturas antiguas y generan advertencias.
+`first_observed`/`not_observed` no significan creación/eliminación física;
+`actor` siempre es `None`. H1D añadirá historial persistido y consulta CLI:
+esta API no almacena, autoriza ni ejecuta acciones externas.
+
 ### Requisitos e instalación
 
 1. **Entorno virtual e instalación del paquete:**
