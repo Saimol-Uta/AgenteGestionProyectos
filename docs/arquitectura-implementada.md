@@ -1,5 +1,80 @@
 # Arquitectura As-Built del Asistente de Gestión de Proyectos (MVP-01)
 
+## Actualización as-built — 10 de octubre de 2026
+
+> **Prevalencia documental:** este apartado actualiza la línea base de T7
+> descrita abajo (commit `fed1ac7`). Las afirmaciones históricas sobre ausencia
+> de conectores, falta de ContextBuilder o validación T8 bloqueada no describen
+> el estado presente. Mantener la línea base permite reproducir su evolución.
+
+### Estado del sistema implementado
+
+- **Arquitectura operativa:** monolito Python modular y secuencial con CLI,
+  persistencia SQLite, métricas y políticas deterministas. La autoridad de
+  decisión es humana; el rol interno `aprobador` sintetiza reportes, no
+  autoriza cambios autónomos.
+- **Fuentes reales:** adaptadores de lectura Trello, GitHub y GitHub Actions.
+  En HORMIGESTION, T8 pasó con 31 tarjetas Trello, 6 elementos GitHub y
+  0 runs Actions para el mismo SHA
+  `5412744023c4b3961be9cd783609423d12280f64`.
+  Las APIs funcionaron, pero **la ausencia de CI deja reglas sin evidencia**.
+- **Trello por fases:** `TRELLO_STATE_STRATEGY=date_fields` interpreta
+  `start`, `dueComplete` y fechas; las listas representan fases, no estados.
+  `list_mapping` continúa como modo Kanban predeterminado.
+- **Grounding y contexto:** ContextBuilder ya se integra con los agentes.
+  Preserva `full_file/snippet/diff/truncated`, SHA/archivo/líneas y
+  completitud; prohíbe inferencias absolutas sobre partes no observadas y
+  asociaciones arbitrarias de reglas (p. ej. Q2 sin cobertura reportada).
+  Selección por rol: Monitoring recibe métricas y tareas relevantes,
+  Quality recibe diffs, Verifier evidencia del finding; el exceso de
+  presupuesto falla antes del proveedor, sin truncamiento silencioso.
+- **Arquitectura LLM híbrida:** Monitoring y Report usan Ollama/Qwen 2B.
+  CodeQuality admite `QUALITY_PROVIDER=ollama|groq|mistral`, también
+  `--quality-provider`. Verifier usa Gemini con autorización explícita.
+  Groq/Mistral están implementados y verificados **offline**, todavía sin
+  evidencia de un T9 real híbrido exitoso. No se afirma fallback remoto automático.
+- **Privacidad:** credenciales locales por `.env`, jamás en Git/artefactos.
+  Antes de enviar diffs remotos comprobar derechos y política de datos,
+  especialmente en repositorios privados.
+
+### Evidencia real y brecha para cierre T9
+
+| Etapa | Estado al corte | Evidencia |
+|---|---|---|
+| T8, fuentes reales | **Completada** | `source-check all --sources real`: Trello success 31; GitHub success 6; Actions success 0 |
+| T9 inicial | **Ejecutado parcialmente** | `run-20261007-163608-df22fc`: `needs_attention`, informe generado, progreso 18/30 = 60 %, 1 finding candidato, 1 escalación, Gemini 503 |
+| Corrección de grounding/contexto | **Validada offline** | `140177f`, `14845ce`, `e13c3e0`: evitar conclusiones basadas en snippets parciales, selección Monitoring ~1655 tokens |
+| Quality híbrido | **Implementado, sin validar en vivo** | `393ceb3`, `7a44ee1`, `38d4f8a`, `3c4885f`; último cierre informó 472 tests + 7 benchmarks offline |
+| T9 híbrido | **Pendiente** | Configurar Groq o Mistral y repetir corrida real, validar narrativa/grounding y respuesta de Gemini |
+
+La corrida con `needs_attention` **no acredita un hallazgo confirmado**.
+El falso positivo observado en `store.ts` provenía de interpretar el final
+de un diff como fin de implementación; su corrección fue verificada offline,
+no mediante una nueva corrida real del mismo commit.
+
+### Próxima decisión técnica
+
+1. Configurar `QUALITY_PROVIDER=groq` o elegirlo por CLI, verificar modelo
+   vigente, credenciales y autorización remota **sin revelar secretos**.
+2. Iniciar Ollama local (`bash pruebas/ollama-local.sh serve`) para Monitoring
+   y Report; ejecutar smoke fake y opcionalmente `source-check all`.
+3. Correr `python -m agente_gestion run hormigestion --sources real
+   --allow-remote-ai --quality-provider groq` con la venv.
+4. Inspeccionar `execution_metrics.json`, `monitoring.json`,
+   `code_findings.json`, `verification.json`, `report.md`.
+   No cerrar T9 solo por `needs_attention`: verificar contenido y causas.
+5. Solo tras T9 confiable, priorizar multi-repo (dos repos HORMIGESTION
+   y segundo piloto organizacional de tres repos), CI/cobertura y scheduler.
+
+**Fuentes:** historial `mvp/real-sources`, `README.md`,
+`ARCHITECTURA.md`, `odd/tasks/evidence-grounding.md`,
+`odd/tasks/role-context-selection.md` y artefactos de runs locales.
+Las cifras del piloto provienen de esas ejecuciones y no son mediciones
+independientes repetidas en esta actualización.
+
+---
+
+
 Documento técnico de la arquitectura **realmente implementada** en la rama `mvp/real-sources` (código base `fed1ac7d338cf4c4ba2c3e0ac5f20da0c68df1b6`, derivado de `d08bff4`). Refleja el estado as-built del sistema tras cerrar la unidad T7 ([`mvp-01-validation.md`](./mvp-01-validation.md)), delimitando las capacidades verificadas frente a las extensiones pendientes.
 
 ## 1. Propósito y Enfoque As-Built
