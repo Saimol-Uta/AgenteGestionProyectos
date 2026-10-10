@@ -18,7 +18,36 @@ Mistral. La decisión final sigue siendo humana.
 
 [Diseño de referencia](ARCHITECTURA.md) ·
 [arquitectura implementada (línea base + actualización)](docs/arquitectura-implementada.md) ·
-[registro de validación inicial y evolución](docs/mvp-01-validation.md).
+[registro de validación inicial y evolución](docs/mvp-01-validation.md) ·
+[matriz REQ-01…REQ-11 y plan de implementación](docs/requisitos-y-plan-de-implementacion.md).
+
+## Cumplimiento académico y continuidad
+
+La materia exige tres roles: **Ejecutor → Revisor → Aprobador**. En la
+presentación se explicará su **equivalencia funcional con la arquitectura
+existente**, sin modificar código únicamente para cambiar nombres o dividir
+componentes:
+
+- **Agente padre / coordinador:** `ProjectOrchestrator` coordina las etapas
+  de software; no es por sí mismo un agente LLM autónomo.
+- **Ejecutor de análisis:** `ProjectMonitoringAgent` y los módulos que recogen
+  y calculan información objetiva del proyecto.
+- **Revisor:** `CodeQualityAgent` y validación determinista de evidencia.
+  `VerifierAgent`, llamado condicionalmente por `EscalationGate`, actúa como
+  **verificación auxiliar independiente**.
+- **Aprobador consultivo:** `ReportAgent` sintetiza una recomendación
+  restringida por políticas. **No otorga autorización de escritura**.
+- **Autoridad final:** el gestor humano registra su decisión con la CLI y
+  SQLite. El **ejecutor de acciones externas autorizadas aún no existe**.
+
+**La decisión de no refactorizar aplica solo a la presentación/mapeo de
+roles.** No es un recorte del alcance: se implementarán todos los requisitos
+REQ-01 a REQ-11 del documento del docente **y** las funcionalidades
+adicionales propuestas que resulten justificadas. REQ-08 permanece **parcial**
+hasta completar revisión de propuestas, autorización humana y ejecución
+controlada de cambios. Consultar la
+[matriz de cumplimiento y roadmap](docs/requisitos-y-plan-de-implementacion.md)
+para evidencias, brechas y prioridades.
 
 La sección siguiente conserva el **banco histórico de benchmarks locales**
 que precedió al MVP. Consulta [INFORME_PRUEBAS.md](INFORME_PRUEBAS.md)
