@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 from zoneinfo import ZoneInfo
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator
 
 DEFAULT_TIMEZONE = ZoneInfo("America/Guayaquil")
 
@@ -42,6 +42,30 @@ class TaskCard(BaseModel):
     external_id: Optional[str] = Field(default=None, description="External provider ID")
     is_included: bool = Field(default=True, description="Whether this card counts for completion progress")
     has_contradiction: bool = Field(default=False, description="Flag indicating contradictory state signals")
+    assignee_ids: Optional[list[StrictStr]] = Field(default=None, strict=True)
+    start_date: Optional[datetime] = None
+    due_complete: Optional[StrictBool] = None
+    is_archived: Optional[StrictBool] = None
+    priority: Optional[StrictStr] = Field(default=None, description="Explicit priority only; never inferred from labels")
+    last_activity_at: Optional[datetime] = None
+    observed_fields: Optional[list[StrictStr]] = Field(
+        default=None, strict=True,
+        description="Observed domain field names, including explicit null/empty values; None means legacy unknown",
+    )
+
+    @field_validator("start_date", "last_activity_at", mode="before")
+    @classmethod
+    def validate_metadata_datetime(cls, value):
+        """Accept ISO strings/datetimes, not numeric timestamps or coercible booleans."""
+        if value is not None and not isinstance(value, (str, datetime)):
+            raise ValueError("Metadata dates must be ISO strings or datetimes")
+        return value
+
+    @field_validator("assignee_ids", "observed_fields")
+    @classmethod
+    def normalize_metadata_ids(cls, value):
+        """Stable set ordering keeps serialized snapshots reproducible."""
+        return sorted(set(value)) if value is not None else None
 
 
 class DeterministicTaskMetrics(BaseModel):

@@ -68,6 +68,23 @@ class FixtureSourcesAdapter(TaskSourcePort, CodeSourcePort, CISourcePort, Policy
             except ValueError:
                 state = TaskState.unknown
 
+            metadata_names = (
+                "assignee_ids", "start_date", "due_complete", "is_archived",
+                "priority", "last_activity_at",
+            )
+            metadata = {name: raw[name] for name in metadata_names if name in raw}
+            for name in ("start_date", "last_activity_at"):
+                value = metadata.get(name)
+                if value is not None:
+                    dt = datetime.fromisoformat(value)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=DEFAULT_TIMEZONE)
+                    metadata[name] = dt.astimezone(DEFAULT_TIMEZONE)
+            # Explicit metadata survives snapshot JSON; old fixtures retain unknown coverage.
+            observed = raw.get("observed_fields")
+            if "observed_fields" not in raw and metadata:
+                observed = sorted(set(raw) & (set(TaskCard.model_fields) - {"observed_fields"}))
+
             cards.append(
                 TaskCard(
                     id=raw["id"],
@@ -81,6 +98,8 @@ class FixtureSourcesAdapter(TaskSourcePort, CodeSourcePort, CISourcePort, Policy
                     external_id=raw.get("external_id"),
                     is_included=raw.get("is_included", True),
                     has_contradiction=raw.get("has_contradiction", False),
+                    observed_fields=observed,
+                    **metadata,
                 )
             )
         return cards

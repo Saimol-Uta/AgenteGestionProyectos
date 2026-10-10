@@ -386,6 +386,21 @@ class TrelloSourceAdapter(TaskSourcePort):
                         raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
                     start_raw = st_val
 
+            # Priority is supported only as an explicit field, never through labels.
+            priority = item.get("priority")
+            if priority is not None:
+                if not isinstance(priority, str) or len(priority) > self._max_text_length:
+                    raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                priority = self._sanitize_text(priority)
+
+            field_mapping = {
+                "id": "id", "name": "title", "idList": "list_id", "labels": "labels",
+                "desc": "detail", "due": "due_date", "idMembers": "assignee_ids",
+                "start": "start_date", "dueComplete": "due_complete", "closed": "is_archived",
+                "dateLastActivity": "last_activity_at", "priority": "priority",
+            }
+            observed_fields = sorted(field_mapping[key] for key in field_mapping if key in item)
+
             validated_cards.append({
                 "id": card_id,
                 "name": name,
@@ -396,7 +411,9 @@ class TrelloSourceAdapter(TaskSourcePort):
                 "due": due,
                 "last_activity": act_dt_str,
                 "labels": card_labels,
-                "idMembers": member_ids,
+                "idMembers": sorted(set(member_ids)) if "idMembers" in item else None,
+                "priority": priority,
+                "observed_fields": observed_fields,
                 "dueComplete": due_complete,
                 "start": start_raw,
                 "start_dt": parsed_start,
@@ -533,6 +550,15 @@ class TrelloSourceAdapter(TaskSourcePort):
                 external_id=card_id,
                 is_included=is_included,
                 has_contradiction=has_contradiction,
+                assignee_ids=c["idMembers"],
+                start_date=normalize_datetime_to_tz(c["start_dt"], self._tz) if c["start_dt"] else None,
+                due_complete=c["dueComplete"],
+                is_archived=c["closed"],
+                priority=c["priority"],
+                last_activity_at=normalize_datetime_to_tz(
+                    datetime.fromisoformat(c["last_activity"]), self._tz,
+                ) if c["last_activity"] else None,
+                observed_fields=c["observed_fields"],
             )
             tasks.append(task_card)
 
@@ -546,7 +572,7 @@ class TrelloSourceAdapter(TaskSourcePort):
                 "list_id": list_id,
                 "list_name": sanitized_list_name,
                 "labels": sanitized_labels,
-                "member_ids": c["idMembers"],
+                "member_ids": c["idMembers"] or [],
                 "due_date": due_dt.isoformat() if due_dt else None,
                 "is_archived": c["closed"],
                 "is_included": is_included,
@@ -562,6 +588,12 @@ class TrelloSourceAdapter(TaskSourcePort):
                 norm_start = normalize_datetime_to_tz(c["start_dt"], self._tz) if c.get("start_dt") else None
                 payload["start_date"] = norm_start.isoformat() if norm_start else None
                 payload["start_raw"] = self._sanitize_text(c["start"])
+
+            # Add normalized field facts while retaining legacy provenance aliases above.
+            normalized = task_card.model_dump(mode="json")
+            for field in ("assignee_ids", "start_date", "due_complete", "is_archived",
+                          "priority", "last_activity_at", "observed_fields"):
+                payload[field] = normalized[field]
 
             provenance = EvidenceProvenance(
                 id=f"trello-task-{card_id}",

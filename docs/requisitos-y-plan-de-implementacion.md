@@ -48,9 +48,9 @@ Los once requisitos provienen del documento universitario; las prioridades son *
 
 | ID | Prioridad | Estado | Evidencia ya implementada | Falta para cumplimiento completo |
 |---|---|---|---|---|
-| **REQ-01** Planificación general | Alta | **Parcial** | Trello lee listas, tarjetas, fechas, etiquetas e IDs de miembros; `TaskCard` normaliza estado y vencimiento. | Normalizar/exponer responsables, fecha de inicio, prioridad y planificación general en vista o informe consumible, sin perder procedencia. |
+| **REQ-01** Planificación general | Alta | **Parcial (mejorado offline)** | H1A amplía `TaskCard` y normalización Trello/fixtures con IDs de responsables, inicio, finalización de vencimiento, archivo, actividad y prioridad explícita; conserva campos observados y procedencia normalizada. Validación offline. | Exponer planificación general en vista o informe consumible; prioridad desconocida permanece `null` sin evidencia explícita, nunca se infiere de etiquetas. |
 | **REQ-02** Estado y avance | Alta | **Parcial avanzado** | `calculate_task_metrics` calcula avance, completadas, vencidas, bloqueadas, desconocidas y contradicciones; T8/T9 piloto mostró 18/30, 60 %. | Exponer estados de cada tarea, diferenciar vencida de estado base y detectar «próxima a vencer» según criterio temporal explícito. |
-| **REQ-03** Trello y cambios | Alta | **Parcial** | `TrelloSourceAdapter` y `source-check` funcionan en vivo; `date_fields` contempla tableros por fases. | Comparar snapshots históricos y registrar cambios de planificación; preparar escrituras Trello **solo** tras autorización auditada. |
+| **REQ-03** Trello y cambios | Alta | **Parcial** | `TrelloSourceAdapter` y `source-check` funcionan en vivo; `date_fields` contempla tableros por fases. H1A añade metadatos normalizados probados offline, no historial ni ejecución de acciones. | No cumplido hasta comparar snapshots históricos, registrar cambios de planificación y ejecutar acciones Trello **solo** tras autorización auditada. |
 | **REQ-04** Retrasos y riesgos | Alta | **Parcial** | Vencidas/bloqueadas calculadas; Monitoring y reporte generan riesgos consultivos. | Detección preventiva de proximidad al vencimiento; causas, dependencias e impacto sobre otras actividades evaluados con evidencia. |
 | **REQ-05** Acciones correctivas | Alta | **Parcial** | `suggested_actions` y recomendaciones textuales en informes. | Propuestas estructuradas de fechas, prioridad, responsable/estado, alternativas, revisión, aprobación, ejecución y resultado verificable. |
 | **REQ-06** Reporte semanal | Media | **Parcial** | `ReportAgent` genera JSON/Markdown y métricas al invocar `run`. | Scheduler semanal, reporte por categoría/estado/desviación, historial de propuestas aprobadas/rechazadas/ejecutadas y distribución/notificación. |
@@ -80,7 +80,9 @@ Los once requisitos provienen del documento universitario; las prioridades son *
 
 Normalizar prioridad/responsables/fechas, exponer planificación consultable y estados por tarea; definir «próxima a vencer»; comparar snapshots preservando fechas, actores y cambios; relacionar dependencias/impacto con evidencia. Tests de cálculo, mapeo y comparación temporal.
 
-**Salida:** consulta de tareas y cambios entre dos capturas, riesgos justificables y sin falsas inferencias de dependencias no registradas.
+**Avance H1A (offline):** metadatos opcionales y `observed_fields` preservan compatibilidad con JSON antiguo y distinguen ausencia de valores explícitos nulos/vacíos. Se mantienen `list_mapping`, `date_fields`, contradicciones y exclusión de tarjetas cerradas del avance; no cambian prompts, métricas ni historial.
+
+**Salida pendiente del hito completo:** consulta de tareas y cambios entre dos capturas, riesgos justificables y sin falsas inferencias de dependencias no registradas.
 
 ### Hito H2 — Propuestas, revisión, aprobación, ejecución segura (REQ-03/05/08/09/10/11)
 

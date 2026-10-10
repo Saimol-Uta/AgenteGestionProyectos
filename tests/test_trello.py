@@ -634,6 +634,10 @@ class TestTrelloSourceAdapter(unittest.TestCase):
             "due_complete",
             "start_date",
             "start_raw",
+            "assignee_ids",
+            "priority",
+            "last_activity_at",
+            "observed_fields",
         }
         self.assertTrue(set(ev.provenance.payload.keys()).issubset(allowed_keys))
 
