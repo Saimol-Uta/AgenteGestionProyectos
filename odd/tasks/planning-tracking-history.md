@@ -16,7 +16,8 @@ Extend the existing analysis MVP with faithful activity metadata, deterministic 
 - [x] H0 — Establish current offline baseline and hybrid invariants; document honest T9 state. Closed offline in f0feca8; real T9 PENDING. Route: delegated explorer + verifier (broad evidence and command execution).
 - [x] H1A — Closed offline in 748379c after independent verification; native review declined for this candidate by human. Extend TaskCard and Trello/fixture normalization with observed assignees, start/completion/archive/activity metadata and unknown priority; preserve old payloads. Route: delegated writer (multi-file).
 - [x] H1B — Closed offline in be369c5 after independent verification; native review declined for this candidate. Add configurable near-due metrics with exact Guayaquil boundaries, exclusions and report visibility; retain original state. Route: delegated writer (multi-file).
-- [ ] H1C — In progress. Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
+- [x] H1C — Pure comparator closed offline in939876f; native approved+acknowledged, independent checks green. Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
+- [ ] H1E — In progress. Integrate derived Trello state/list-name observations and task source/mapping identity/completeness into real collection, with mocked acceptance. Route: delegated writer (integration gap found by independent verifier).
 - [ ] H1D — Expose reproducible persisted snapshot history/comparison via existing SQLite and CLI; test legacy compatibility. Route: delegated writer (multi-file).
 
 ## Acceptance and verification
@@ -38,7 +39,14 @@ Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focu
 - Writer mv30241r-b-zm5q observed RED128tests with1failure/18errors before source; GREEN128focused, full492run490pass2skip, pruebas7pass, diffcheckclean.
 - Eleven hermetic tests cover boundaries, offsets, zero window, exclusions, contradictions, config/CLI/hash/report/context/budget behavior; unit9files277diff lines. No live calls. Native START declined3adf9d5d…/no lineage; ASSESS fallback independent mv30am9d-c-1t0u reproduced128focused/full492run490pass2skip/pruebas7pass, no severe findings. Parent11pass; stageddiffcheck also covers new test. Commit be369c565432afc7723a5277f13e0157b93a2c8d. Nonblocking: extremely large due_soon_days may overflow datetime; SQLite ResourceWarning persists.
 
+## H1C verification and integration gap
+- Writer mv30ijg6-d-8c0w RED missing module, GREEN56focused/full506run504pass2skip/pruebas7pass; parent14pass and stageddiffcheck covers newfiles.
+- Native review-954ed245636ee126 approved1c463393… then exact acknowledgement burned authority. Advisory malformed-evidence-mask is nonblocking laterhardening, no correction route.
+- Postack ASSESS unassessable due untrackedfiles required independent mv30srj6-e-ti8y: checks green, no unit regression. Its full-suite count wording is under clarification (writer506total/504pass/2skip).
+- Pure comparator commit939876ff55af877e2833936144bada6db22f92cd produces exactly4fields in A/B synthetic snapshot test; no physical deletion/creation/actor claims.
+- Integration gap: current Trello observed_fields omits derived state/list_name and Composite does not fill task_source_identity/tasks_complete. H1E now resolves this before storage/CLI; H1C alone is not end-to-end historical tracking.
+
 ## Next step
-Implement pure H1C comparator over existing WeeklySnapshot and TaskCard observed_fields. Stable same-project chronological deltas, field before/after and evidence references; excluded cards remain comparable. Never infer physical deletion/creation or actor from presence alone: first_observed/not_observed. Optional source/mapping/task-completeness metadata is unknown for legacy snapshots; overall CI completeness is not task completeness. Storage/CLI follows in H1D.
+Implement H1E observed derived facts + credential-free board/mapping identity and task-specific completeness; never infer completeness from missing CI. Then H1D immutable capture history/CLI. H2 permissions remain separate product boundary.
 
 Locator: odd/tasks/planning-tracking-history.md
