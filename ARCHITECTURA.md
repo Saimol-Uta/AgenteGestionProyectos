@@ -5,7 +5,8 @@ Revisión 2 (6 de octubre de 2026). Sustituye a la propuesta del 2 de octubre
 de referencia histórica**. Su plan por fases no equivale al estado del código
 actual. Para conocer lo construido al 10 de octubre de 2026, consultar
 [arquitectura implementada](docs/arquitectura-implementada.md) y
-[validaciones del MVP](docs/mvp-01-validation.md).
+[validaciones del MVP](docs/mvp-01-validation.md) y la
+[matriz de requisitos académicos](docs/requisitos-y-plan-de-implementacion.md).
 
 ## Estado de lo descrito
 
@@ -23,6 +24,35 @@ octubre y pueden mencionar etapas históricas como «futuras».
 El sistema sigue siendo un **monolito modular supervisado y de solo lectura** en
 su piloto. `FastAPI`, OAuth, scheduler, panel de gestión y soporte multi-repo
 son conceptos de evolución; no se acreditan aquí como funcionalidades listas.
+
+## Correspondencia con REQ-08 y continuidad del alcance
+
+**Decisión del proyecto (10 de octubre de 2026):** mantener la arquitectura
+funcional existente y explicar los **tres roles académicos** de la guía
+universitaria **sin refactorizar código solo para su presentación**.
+
+| Rol académico | Implementación que se presenta | Observación de alcance |
+|---|---|---|
+| Coordinación / padre | `ProjectOrchestrator` | Coordina código y decisiones condicionales, no es un agente autónomo |
+| Ejecutor | `ProjectMonitoringAgent` + fuentes/motor determinista | Análisis y recomendaciones, no ejecución actual de cambios Trello |
+| Revisor | `CodeQualityAgent` + validación determinista | Revisión de código; la validación integral de propuestas de gestión es futura |
+| Auxiliar del Revisor | `VerifierAgent` vía `EscalationGate` | Verificación independiente **condicional**, no rol académico adicional obligatorio |
+| Aprobador consultivo | `ReportAgent` + evaluación de políticas | Recomienda, **no autoriza** cambios en sistemas externos |
+| Aprobación definitiva | Gestor humano (`decide`, SQLite) | Autoridad explícita y revisable |
+
+La **secuencia académica completa** incluye propuesta → revisión →
+aprobación/autorización → ejecución de la acción aprobada. El pipeline actual
+termina con informe y decisión humana registrada; **no implementa aún
+escrituras autorizadas ni revisión estructurada de todas las propuestas de
+gestión**. Por eso REQ-08 está **parcial**, no cerrado por documentación.
+
+**Esta decisión no cambia ni elimina los requisitos pendientes.** Se
+implementarán los once REQ del docente (incluidas detección de cambios,
+gestión de propuestas, notificaciones, scheduler y seguridad) y también las
+ampliaciones del proyecto (multi-repo, históricos, CI verificable e interfaz)
+según la [hoja de ruta](docs/requisitos-y-plan-de-implementacion.md).
+Mantener el código existente **no significa congelarlo**; significa evitar
+reorganizaciones cosméticas de agentes que no aporten capacidad real.
 
 ## Objetivo
 
