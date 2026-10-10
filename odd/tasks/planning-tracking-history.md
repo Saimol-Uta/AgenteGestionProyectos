@@ -15,8 +15,8 @@ Extend the existing analysis MVP with faithful activity metadata, deterministic 
 ## Tasks
 - [x] H0 — Establish current offline baseline and hybrid invariants; document honest T9 state. Closed offline in f0feca8; real T9 PENDING. Route: delegated explorer + verifier (broad evidence and command execution).
 - [x] H1A — Closed offline in 748379c after independent verification; native review declined for this candidate by human. Extend TaskCard and Trello/fixture normalization with observed assignees, start/completion/archive/activity metadata and unknown priority; preserve old payloads. Route: delegated writer (multi-file).
-- [ ] H1B — In progress; functional checks green, review/commit pending. Add configurable near-due metrics with exact Guayaquil boundaries, exclusions and report visibility; retain original state. Route: delegated writer (multi-file).
-- [ ] H1C — Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
+- [x] H1B — Closed offline in be369c5 after independent verification; native review declined for this candidate. Add configurable near-due metrics with exact Guayaquil boundaries, exclusions and report visibility; retain original state. Route: delegated writer (multi-file).
+- [ ] H1C — In progress. Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
 - [ ] H1D — Expose reproducible persisted snapshot history/comparison via existing SQLite and CLI; test legacy compatibility. Route: delegated writer (multi-file).
 
 ## Acceptance and verification
@@ -36,9 +36,9 @@ Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focu
 
 ## H1B verification
 - Writer mv30241r-b-zm5q observed RED128tests with1failure/18errors before source; GREEN128focused, full492run490pass2skip, pruebas7pass, diffcheckclean.
-- Eleven hermetic tests cover boundaries, offsets, zero window, exclusions, contradictions, config/CLI/hash/report/context/budget behavior; unit9files277diff lines. No live calls. Native review/commit pending.
+- Eleven hermetic tests cover boundaries, offsets, zero window, exclusions, contradictions, config/CLI/hash/report/context/budget behavior; unit9files277diff lines. No live calls. Native START declined3adf9d5d…/no lineage; ASSESS fallback independent mv30am9d-c-1t0u reproduced128focused/full492run490pass2skip/pruebas7pass, no severe findings. Parent11pass; stageddiffcheck also covers new test. Commit be369c565432afc7723a5277f13e0157b93a2c8d. Nonblocking: extremely large due_soon_days may overflow datetime; SQLite ResourceWarning persists.
 
 ## Next step
-Review/commit H1B: configurable due_soon_days default7, nonnegative; America/Guayaquil cutoff <= due <= cutoff+days; overdue due<cutoff. Exclude completed/unknown/excluded/archived cards and preserve state/denominator. Add settings/CLI/hash/report/context wiring without increasing budgets. Then H1C/D.
+Implement pure H1C comparator over existing WeeklySnapshot and TaskCard observed_fields. Stable same-project chronological deltas, field before/after and evidence references; excluded cards remain comparable. Never infer physical deletion/creation or actor from presence alone: first_observed/not_observed. Optional source/mapping/task-completeness metadata is unknown for legacy snapshots; overall CI completeness is not task completeness. Storage/CLI follows in H1D.
 
 Locator: odd/tasks/planning-tracking-history.md
