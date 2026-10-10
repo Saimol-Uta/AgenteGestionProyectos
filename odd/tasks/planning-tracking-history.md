@@ -18,7 +18,7 @@ Extend the existing analysis MVP with faithful activity metadata, deterministic 
 - [x] H1B — Closed offline in be369c5 after independent verification; native review declined for this candidate. Add configurable near-due metrics with exact Guayaquil boundaries, exclusions and report visibility; retain original state. Route: delegated writer (multi-file).
 - [x] H1C — Pure comparator closed offline in939876f; native approved+acknowledged, independent checks green. Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
 - [x] H1E — Closed offline in3b6f269, nativeapproved+acknowledged; ASSESSclosed. Integrate derived Trello state/list-name observations and task source/mapping identity/completeness into real collection, with mocked acceptance. Route: delegated writer (integration gap found by independent verifier).
-- [ ] H1D1 — In progress. Persist immutable content-addressed captures in existing SQLite, atomic safe backfill and read-only queries; preserve latest get_snapshot and all runs. Route: delegated writer (multi-file).
+- [ ] H1D1 — In progress; functional checks green, review/commit pending. Persist immutable content-addressed captures in existing SQLite, atomic safe backfill and read-only queries; preserve latest get_snapshot and all runs. Route: delegated writer (multi-file).
 - [ ] H1D2 — Add read-only CLI history list/compare using explicit capture IDs; unavailable legacy/missing DB never creates/migrates data or artifacts. Route: delegated writer (multi-file).
 
 ## Acceptance and verification
@@ -53,6 +53,10 @@ Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focu
 ## H1E verification
 - Continuation mv317rkf-i-ce3g observed RED144tests14failures before source; GREEN144focused/full515run513pass2skip/pruebas7pass/diffcheckclean. Nine mocked integrationtests,6files264diff lines.
 - Existing state/list_name keys retained, masks added; factory whitelist hashes provider/effectiveboard/strategy/canonicalmapping scope only (no credentials/fullSettings). Successful empty tasks complete=true, failure=false, independentofCI. Native review-f43517d0a645c0f4 approved f770d12a… and exactack burned8cea5476…; ASSESS medium/consumedtrue/closedderived, no separate verifier needed. Parent9pass; stageddiffclean. Commit3b6f269fffa4813ee0fb3c9679e9499507b902ad.
+
+## H1D1 verification
+- Worker mv31f5wx-j-06sb RED52tests16errors before source; GREEN53focused/full527run525pass2skip/pruebas7pass. Twelve temporary-DB tests;7files410diff lines, coherent migration+storage+tests (advisory size heuristic, not split by filetype).
+- ExactJSON SHA256 identities, serialize-once, capture/latest atomic write, explicit DDL/index/backfill transaction, UTC ordering, integrity and readonly noncreation verified. Old overwrittenversions unrecoverable; hashes prove consistency not authorship. No real DB opened. Native review/commit pending.
 
 ## Next step
 H1D1 backend: typed wrapper reuses WeeklySnapshot; snapshot_captures content-addressed exactJSON storage in existing SQLite, atomic capture+latest write and explicit DDL/backfill transaction, idempotent replays/reopens, UTC-normalized order. Preserve existing snapshots/runs/get_snapshot/save_snapshot signature. Read-only URI mode=ro/query_only skips mkdir/schema and reports missing or legacy history unavailable. H1D2 CLI follows. No real DB migration in this session.

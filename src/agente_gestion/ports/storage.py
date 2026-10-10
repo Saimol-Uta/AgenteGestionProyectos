@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from agente_gestion.domain.snapshot import WeeklySnapshot
+from agente_gestion.domain.snapshot import SnapshotCapture, WeeklySnapshot
 from agente_gestion.domain.report import FinalReport, HumanDecisionState
 from agente_gestion.domain.run import ExecutionRun, StageExecutionRecord
 from agente_gestion.domain.findings import CandidateFinding, FindingVerification
@@ -48,6 +48,14 @@ class StoragePort(ABC):
     def get_snapshot(self, snapshot_id: str) -> Optional[WeeklySnapshot]:
         """Retrieve a persisted weekly snapshot by ID."""
         raise NotImplementedError
+
+    def list_snapshot_captures(self, project_id: str) -> list[SnapshotCapture]:
+        """List immutable captures chronologically; optional storage capability."""
+        raise NotImplementedError("Snapshot history unavailable")
+
+    def get_snapshot_capture(self, capture_id: str) -> Optional[SnapshotCapture]:
+        """Retrieve a capture by exact JSON hash; optional storage capability."""
+        raise NotImplementedError("Snapshot history unavailable")
 
     @abstractmethod
     def save_evidence(self, run_id: str, evidence_items: list[EvidenceItem]) -> None:

@@ -27,3 +27,10 @@ class WeeklySnapshot(BaseModel):
     tasks_complete: Optional[bool] = Field(
         default=None, description="Task enumeration completeness, independent of CI/other sources",
     )
+
+
+class SnapshotCapture(BaseModel):
+    """Content-addressed stored capture; identity hashes original JSON, not this model."""
+    capture_id: str
+    content_hash: str
+    snapshot: WeeklySnapshot

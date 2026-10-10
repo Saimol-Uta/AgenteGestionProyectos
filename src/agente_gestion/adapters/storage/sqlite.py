@@ -1,10 +1,12 @@
 """SQLite storage adapter for execution runs, audit records, and human decisions."""
 
+import hashlib
 import json
 import os
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -16,7 +18,7 @@ from agente_gestion.domain.run import (
     StageStatus,
     compute_sha256,
 )
-from agente_gestion.domain.snapshot import WeeklySnapshot
+from agente_gestion.domain.snapshot import SnapshotCapture, WeeklySnapshot
 from agente_gestion.domain.report import FinalReport, HumanDecisionState
 from agente_gestion.domain.findings import (
     CandidateFinding,
@@ -33,12 +35,22 @@ class SQLiteStorageAdapter(StoragePort):
     Never holds open transactions across network boundaries.
     """
 
-    def __init__(self, db_path: str = ".runtime/agente.db"):
+    def __init__(self, db_path: str = ".runtime/agente.db", *, read_only: bool = False):
         self.db_path = db_path
-        self._ensure_dir_and_schema()
+        self.read_only = read_only
+        if read_only:
+            # Fail immediately for a missing DB; never create directories or schemas.
+            self._get_connection().close()
+        else:
+            self._ensure_dir_and_schema()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        if self.read_only:
+            uri = Path(self.db_path).absolute().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            conn.execute("PRAGMA query_only = ON")
+        else:
+            conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -175,6 +187,91 @@ class SQLiteStorageAdapter(StoragePort):
                     );
                     """
                 )
+            # executescript above may commit implicitly. Keep all history DDL,
+            # indexes and backfill in a separate explicit transaction, never a script.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS snapshot_captures (
+                        capture_id TEXT PRIMARY KEY,
+                        snapshot_id TEXT NOT NULL,
+                        project_id TEXT NOT NULL,
+                        cutoff_datetime TEXT NOT NULL,
+                        captured_at TEXT NOT NULL,
+                        data_json TEXT NOT NULL,
+                        content_hash TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_snapshot_captures_project_order
+                                ON snapshot_captures(project_id, captured_at, capture_id)""")
+                for row in conn.execute("SELECT data_json FROM snapshots"):
+                    self._insert_capture(conn, row["data_json"])
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _canonical_utc(value: str) -> str:
+        timestamp = datetime.fromisoformat(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=ZoneInfo("America/Guayaquil"))
+        return timestamp.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+    @classmethod
+    def _capture_metadata(cls, raw: str) -> tuple[str, str, str, str, str]:
+        # Inspect the original JSON only for metadata; never reserialize legacy data
+        # or hash a parsed model whose defaults may change between schema versions.
+        data = json.loads(raw)
+        actual_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return (actual_hash, data["id"], data["project_id"],
+                cls._canonical_utc(data["cutoff_datetime"]),
+                cls._canonical_utc(data["captured_at"]))
+
+    def _insert_capture(self, conn: sqlite3.Connection, raw: str) -> None:
+        metadata = self._capture_metadata(raw)
+        conn.execute("""
+            INSERT INTO snapshot_captures (
+                capture_id, snapshot_id, project_id, cutoff_datetime,
+                captured_at, data_json, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(capture_id) DO NOTHING
+        """, (*metadata, raw, metadata[0]))
+
+    @classmethod
+    def _parse_capture(cls, row: sqlite3.Row) -> SnapshotCapture:
+        try:
+            metadata = cls._capture_metadata(row["data_json"])
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
+            raise ValueError("Invalid snapshot capture JSON metadata") from exc
+        stored = tuple(row[key] for key in (
+            "capture_id", "snapshot_id", "project_id", "cutoff_datetime", "captured_at"))
+        if metadata != stored or row["content_hash"] != metadata[0]:
+            raise ValueError("Snapshot capture hash or metadata mismatch")
+        return SnapshotCapture(capture_id=metadata[0], content_hash=metadata[0],
+                               snapshot=WeeklySnapshot.model_validate_json(row["data_json"]))
+
+    @staticmethod
+    def _require_history(conn: sqlite3.Connection) -> None:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='snapshot_captures'").fetchone():
+            raise NotImplementedError("Snapshot history unavailable; writer migration required")
+
+    def list_snapshot_captures(self, project_id: str) -> list[SnapshotCapture]:
+        conn = self._get_connection()
+        try:
+            self._require_history(conn)
+            rows = conn.execute("""SELECT * FROM snapshot_captures WHERE project_id = ?
+                                   ORDER BY captured_at, capture_id""", (project_id,))
+            return [self._parse_capture(row) for row in rows]
+        finally:
+            conn.close()
+
+    def get_snapshot_capture(self, capture_id: str) -> Optional[SnapshotCapture]:
+        conn = self._get_connection()
+        try:
+            self._require_history(conn)
+            row = conn.execute("SELECT * FROM snapshot_captures WHERE capture_id = ?",
+                               (capture_id,)).fetchone()
+            return self._parse_capture(row) if row else None
         finally:
             conn.close()
 
@@ -335,9 +432,14 @@ class SQLiteStorageAdapter(StoragePort):
             conn.close()
 
     def save_snapshot(self, snapshot: WeeklySnapshot, content_hash: Optional[str] = None) -> None:
+        raw = snapshot.model_dump_json()
         conn = self._get_connection()
         try:
             with conn:
+                # Explicit BEGIN also makes legacy read-only saves fail before any
+                # history-table lookup. Both writes commit or roll back together.
+                conn.execute("BEGIN IMMEDIATE")
+                self._insert_capture(conn, raw)
                 conn.execute(
                     """
                     INSERT INTO snapshots (
@@ -355,7 +457,7 @@ class SQLiteStorageAdapter(StoragePort):
                         snapshot.captured_at.isoformat(),
                         1 if snapshot.is_complete else 0,
                         snapshot.incomplete_reason,
-                        snapshot.model_dump_json(),
+                        raw,
                         content_hash,
                     ),
                 )

@@ -220,6 +220,34 @@ distingue el as-built inicial de los cambios posteriores. La
    .venv/bin/python -m unittest discover -s pruebas -p 'test_*.py' -v
    ```
 
+### Historial SQLite desde Python (H1D1, validado offline)
+
+```python
+from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+
+# Solo lectura: exige un archivo existente; no crea ni migra la base.
+history = SQLiteStorageAdapter("ruta/a/base-existente.db", read_only=True)
+captures = history.list_snapshot_captures("mi-proyecto")
+if captures:
+    capture = history.get_snapshot_capture(captures[0].capture_id)
+    snapshot = capture.snapshot  # WeeklySnapshot, reutilizable por el comparador
+```
+
+El escritor predeterminado conserva `save_snapshot(snapshot, content_hash=None)`
+y `get_snapshot(id)` (última versión), y añade capturas inmutables: SHA-256 del
+JSON exacto UTF-8, independiente del hash aportado por el llamador. Un replay
+idéntico no duplica filas; otro JSON con el mismo ID sí crea otra captura.
+Las consultas devuelven valores nuevos, validan hash/metadatos y ordenan por
+`captured_at` UTC (fechas sin zona: Guayaquil), después por ID de captura.
+
+La apertura escritora migra únicamente snapshots retenidos, conservando su JSON
+original y runs, con DDL/índice/backfill transaccionales. **Versiones sobrescritas
+antes de esta migración son irrecuperables**. Una base antigua abierta en solo
+lectura permite `get_snapshot`, pero las consultas de historial lanzan
+`NotImplementedError`; una base ausente falla sin crear archivos. Corrupción
+lanza `ValueError`; SHA-256 detecta inconsistencias, no autentica al autor.
+H1D2 añadirá la CLI list/compare; este backend no ejecuta acciones externas.
+
 ### Comparación de tareas entre capturas (H1C, offline)
 
 ```python

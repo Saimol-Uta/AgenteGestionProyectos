@@ -66,6 +66,20 @@ docente y los extras propuestos permanecen en el plan de desarrollo**. Ver
   Antes de enviar diffs remotos comprobar derechos y política de datos,
   especialmente en repositorios privados.
 
+### Historial de planificación H1D1 (backend offline)
+
+`SnapshotCapture` reutiliza `WeeklySnapshot`; los métodos opcionales del puerto
+no vuelven abstractos a los consumidores legados. SQLite añade
+`snapshot_captures`, con identidad SHA-256 del JSON exacto, índice por
+proyecto/fecha UTC/ID y consultas que verifican hash y metadatos antes de parsear.
+Cada guardado serializa una vez y confirma captura + upsert legado juntos.
+La migración escritora conserva JSON y runs, con DDL/índice/backfill en una
+transacción explícita; no recupera versiones ya sobrescritas.
+`read_only=True` usa URI `mode=ro` y `query_only`, sin mkdir, schema ni backfill;
+historial legado no disponible se informa con `NotImplementedError`.
+Validación con bases temporales, sin migrar la base real. La CLI de historial
+queda para H1D2; no cambia la autorización ni ejecuta acciones de REQ-03.
+
 ### Evidencia real y brecha para cierre T9
 
 | Etapa | Estado al corte | Evidencia |
