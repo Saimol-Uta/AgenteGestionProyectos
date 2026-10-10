@@ -1,19 +1,28 @@
 # Arquitectura del Asistente Multiagente para Seguimiento de Proyectos y Aseguramiento de Calidad de Software
 
 Revisión 2 (6 de octubre de 2026). Sustituye a la propuesta del 2 de octubre
-(conservada en `ARCHITECTURA.v1.md`). Este documento es un **diseño**: describe
-lo que se propone construir primero como prototipo reproducible con fixtures.
+(conservada en `ARCHITECTURA.v1.md`). Este documento conserva la **arquitectura
+de referencia histórica**. Su plan por fases no equivale al estado del código
+actual. Para conocer lo construido al 10 de octubre de 2026, consultar
+[arquitectura implementada](docs/arquitectura-implementada.md) y
+[validaciones del MVP](docs/mvp-01-validation.md).
 
 ## Estado de lo descrito
 
-| Etiqueta | Significado | Elementos |
-|---|---|---|
-| **Implementado y probado** | Existe en el repositorio y fue ejecutado. | Banco de pruebas local (`pruebas/`), Ollama 0.35.1, modelos Qwen evaluados, casos simulados, métricas de benchmark. |
-| **Propuesto** | Diseñado aquí; no existe código. | Orquestador, agentes, ContextBuilder, EscalationGate, motor determinista, FastAPI, SQLite, `OllamaProvider`, `GeminiProvider`, CLI. |
-| **Futuro** | Posterior al primer prototipo. | Trello y GitHub reales, GitHub Actions, OAuth, scheduler, dashboard, múltiples proyectos, `MistralProvider`. |
+**Estado actualizado (10/10/2026).** Lo siguiente diferencia lo implementado
+de lo que solo se planificó. Los apartados posteriores describen el diseño de
+octubre y pueden mencionar etapas históricas como «futuras».
 
-Ninguna integración externa, agente, proveedor, API ni base de datos descritos
-en este documento está implementado todavía.
+| Etiqueta | Elementos | Alcance de la evidencia |
+|---|---|---|
+| **Implementado y validado offline** | Orquestador modular, agentes Monitoring/Quality/Verifier/Report, motor determinista, ContextBuilder, EscalationGate, SQLite, CLI, adaptadores Trello/GitHub/Actions y proveedores Ollama/Gemini/Groq/Mistral. | Suite y benchmarks offline; la última implementación híbrida reportó 472 tests y 7 benchmarks aprobados. |
+| **Probado con fuentes reales (T8)** | Trello (31 tarjetas), GitHub (6 elementos), GitHub Actions (0 runs) para HORMIGESTION; SHA compartido entre código y Actions. | Conectividad y normalización real verificadas. Cero ejecuciones de CI no equivale a una política aprobada. |
+| **Probado parcialmente en E2E (T9)** | Un run real generó informe; luego se observaron errores de contexto y grounding, y un 503 temporal de Gemini. | `needs_attention` documentado, pero aún sin nueva prueba E2E real después del cambio híbrido. |
+| **Pendiente** | Validación real Quality=Groq/Mistral, CI con métricas completas, scheduler semanal, notificaciones, multi-repo por proyecto, interfaz y escrituras tras aprobación. | No presentar como implementado o validado. |
+
+El sistema sigue siendo un **monolito modular supervisado y de solo lectura** en
+su piloto. `FastAPI`, OAuth, scheduler, panel de gestión y soporte multi-repo
+son conceptos de evolución; no se acreditan aquí como funcionalidades listas.
 
 ## Objetivo
 
@@ -477,7 +486,8 @@ tokens o costo no informados quedan en `null`.
 |---|---|---|
 | `OllamaProvider` | Prototipo | API nativa `/api/chat`, `format` con esquema, `think: false`. |
 | `GeminiProvider` | Prototipo | API nativa con salida estructurada; verificar disponibilidad en el modelo elegido y los límites de cuota vigentes. |
-| `MistralProvider` | Futuro | Segundo proveedor remoto en la política de fallback. |
+| `GroqProvider` | Implementado offline desde 2026-10-07 | CodeQualityAgent configurable por CLI/Settings; la primera validación API real continúa pendiente. |
+| `MistralProvider` | Implementado offline desde 2026-10-07 | Proveedor remoto alternativo configurable para CodeQualityAgent; no se afirma fallback automático. |
 | `OpenAICompatibleProvider` | Futuro | URL base configurable; comprobar capacidades por modelo. |
 | `OpenAIProvider`, `AnthropicProvider` | Futuro | Según necesidad. |
 
@@ -487,10 +497,14 @@ Las cuotas y condiciones de uso de la API gratuita cambian y deben consultarse
 al implementar; además, conviene revisar si los términos del nivel gratuito
 permiten enviar datos del proyecto, ya que esto afecta a la política de datos.
 
-### Configuración por rol (propuesta)
+### Configuración por rol (ejemplo histórico de diseño)
 
-Todavía no la lee ningún programa; los valores locales iniciales provienen de
-las pruebas y no son límites del proyecto.
+El YAML siguiente ilustra la propuesta original y **no es una plantilla
+literal validada para el Settings actual**. La implementación real ya lee
+`QUALITY_PROVIDER=ollama|groq|mistral` y admite
+`--quality-provider`; ver el [README](README.md) y `.env.example`.
+No asumir que `allowed_providers` o `remote_data_policy` mostrados aquí
+están implementados íntegramente solo por figurar en este ejemplo.
 
 ```yaml
 project:
@@ -726,9 +740,11 @@ Los subpaquetes `orchestrator`, `routing`, `context`, `findings`, `evidence` y
 con pocos archivos, puede fusionarse al empezar. Solo existen documentación y
 `pruebas/`; el resto es propuesta.
 
-## Arquitectura del primer prototipo
+## Arquitectura del primer prototipo (histórico)
 
-Sin Trello real, GitHub real, OAuth, scheduler ni dashboard completo.
+El alcance original era solo fixtures. **Hoy** ya existen conectores reales
+Trello/GitHub/Actions y proveedores Quality Groq/Mistral. Siguen pendientes
+scheduler y dashboard; se conserva el flujo original para trazabilidad.
 
 Entrada:
 
@@ -811,7 +827,8 @@ dashboard, despliegue permanente.
 
 ## Limitaciones conocidas
 
-- Solo el banco de pruebas está implementado; todo lo demás está sin construir ni medir.
+- La versión original solo implementaba el banco de pruebas. Ahora existe el
+  MVP modular con conectores y agentes; **T9 híbrido en vivo aún no está validado**.
 - Muestra experimental pequeña (cuatro casos, tres repeticiones); no sustenta porcentajes de precisión en proyectos reales.
 - Los modelos locales de 2B/4B cometen errores aritméticos y de interpretación; el diseño los mitiga con cálculo determinista pero no los elimina.
 - La verificación independiente aumenta la confianza, pero un verificador remoto también puede equivocarse o coincidir con el error del generador.
@@ -826,10 +843,13 @@ dashboard, despliegue permanente.
 
 ## Trabajo futuro
 
-- Integración real con Trello, GitHub y GitHub Actions; paginación y parsers de CI.
+- Ampliar conectores reales Trello/GitHub/Actions ya implementados con historial
+  comparativo, métricas CI verificables y, posteriormente, soporte multi-repo.
 - Historial, comparación entre snapshots, tendencias y reporte semanal automático.
 - Scheduler, UI sencilla y luego dashboard.
-- `MistralProvider`, `OpenAICompatibleProvider` y otros; política de fallback completa.
+- `OpenAICompatibleProvider` u otros proveedores si se justifican; los adapters
+  `GroqProvider` y `MistralProvider` ya existen, pero falta verificar sus
+  APIs reales y una eventual política de fallback automático.
 - Calibración de umbrales de escalamiento con datos propios.
 - Evaluación comparativa de modelos locales y remotos con más casos y proyectos reales.
 - Múltiples proyectos, autenticación y almacenamiento/cola escalables si hay varios usuarios.
