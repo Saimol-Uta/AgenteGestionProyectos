@@ -1,0 +1,124 @@
+# Matriz de requisitos académicos y plan de implementación
+
+**Fuente de requisitos:** `AgenteIA.pdf`, «Agente inteligente para seguimiento y control de proyectos de desarrollo de software», UTA, ciclo julio–diciembre 2026, páginas 1–5 (especialmente lista de chequeo de las páginas 4–5).
+
+**Corte de evaluación:** 10 de octubre de 2026. **Rama:** `mvp/real-sources`. **Estado:** evaluación documental contra código y resultados disponibles, **no certificación** ni nueva prueba ejecutada.
+
+## 1. Decisión arquitectónica acordada: REQ-08 sin refactorización para presentar los roles
+
+Conservamos el flujo real implementado; **no modificamos código únicamente para renombrar o reorganizar agentes con fines de presentación**. Documentamos su correspondencia funcional con los tres roles que pide la materia, distinguiendo código, abstracción académica y autoridad humana.
+
+| Concepto académico | Componente existente | Lo que hace realmente | Límite |
+|---|---|---|---|
+| Coordinación / agente padre | `ProjectOrchestrator` | Ejecuta secuencialmente etapas, selecciona rutas y aplica condiciones | Es un **orquestador Python**, no un agente LLM autónomo ni un supervisor distribuido |
+| Ejecutor | `ProjectMonitoringAgent` con adaptadores y motor determinista | Recibe hechos, interpreta tareas/avance y propone riesgos y acciones | No aplica todavía reprogramaciones en Trello ni edita código |
+| Revisor | `CodeQualityAgent` y validadores deterministas | Analiza diffs, propone hallazgos y valida referencias de evidencia | Su revisión principal es **código**, no una revisión integral de toda acción de gestión |
+| Subagente de apoyo del Revisor | `VerifierAgent` activado por `EscalationGate` | Verifica independientemente hallazgos relevantes cuando procede y hay proveedor habilitado | No se ejecuta siempre; el orquestador coordina la llamada, no CodeQuality directamente |
+| Aprobador consultivo / síntesis | `ReportAgent` (rol interno histórico `aprobador`) + políticas deterministas | Consolida un informe y una recomendación que respeta las reglas calculadas | **No autoriza** por sí mismo escrituras ni sustituye la decisión humana |
+| Autoridad final | Gestor humano, `decide` y `human_decisions` en SQLite | Puede aprobar/rechazar/solicitar cambios/posponer reportes, registrando motivo | No existe aún un ejecutor de acciones de Trello autorizado por esa decisión |
+
+### Flujo real implementado hoy
+
+```text
+Fuentes → Orquestador + métricas → Monitoring (Ejecutor/seguimiento)
+        → Quality (Revisor/código) → EscalationGate
+        → Verifier (auxiliar, solo si corresponde)
+        → Evaluación determinista → Report (síntesis «Aprobador» consultivo)
+        → Informe y decisión del gestor humano (CLI/SQLite)
+```
+
+### Flujo completo que pide el docente y aún debemos terminar
+
+```text
+Análisis y propuesta estructurada (Ejecutor)
+    → Validación técnica de la propuesta (Revisor)
+    → Recomendación del Aprobador conforme a reglas
+    → Autorización explícita del gestor
+    → Ejecutor de acciones permitidas (Trello; código solo bajo control específico)
+    → Verificación posterior y auditoría por actor
+```
+
+**Criterio de presentación:** el diseño satisface conceptualmente la especialización de tres roles y añade un verificador auxiliar, pero **REQ-08 sigue PARCIAL** hasta que las acciones puedan revisarse, autorizarse y ejecutarse siguiendo la secuencia exigida. No declarar la última flecha implementada. La correspondencia de roles es una **explicación de arquitectura**, no prueba de ejecución del flujo académico.
+
+**Alcance de la decisión:** la prohibición de cambios de código aplica **solo** a reestructuraciones cosméticas de roles para REQ-08. **Sí debemos desarrollar** las funcionalidades ausentes de todos los requisitos del docente, además de las extensiones propuestas y justificadas para el proyecto. No renunciamos a ninguna.
+
+## 2. Matriz REQ-01 a REQ-11
+
+Los once requisitos provienen del documento universitario; las prioridades son **Alta** excepto REQ-06 (**Media**). Estado «Parcial» incluye componentes ya implementados, pero no el requisito íntegro. Ninguno se declara «No aplica».
+
+| ID | Prioridad | Estado | Evidencia ya implementada | Falta para cumplimiento completo |
+|---|---|---|---|---|
+| **REQ-01** Planificación general | Alta | **Parcial** | Trello lee listas, tarjetas, fechas, etiquetas e IDs de miembros; `TaskCard` normaliza estado y vencimiento. | Normalizar/exponer responsables, fecha de inicio, prioridad y planificación general en vista o informe consumible, sin perder procedencia. |
+| **REQ-02** Estado y avance | Alta | **Parcial avanzado** | `calculate_task_metrics` calcula avance, completadas, vencidas, bloqueadas, desconocidas y contradicciones; T8/T9 piloto mostró 18/30, 60 %. | Exponer estados de cada tarea, diferenciar vencida de estado base y detectar «próxima a vencer» según criterio temporal explícito. |
+| **REQ-03** Trello y cambios | Alta | **Parcial** | `TrelloSourceAdapter` y `source-check` funcionan en vivo; `date_fields` contempla tableros por fases. | Comparar snapshots históricos y registrar cambios de planificación; preparar escrituras Trello **solo** tras autorización auditada. |
+| **REQ-04** Retrasos y riesgos | Alta | **Parcial** | Vencidas/bloqueadas calculadas; Monitoring y reporte generan riesgos consultivos. | Detección preventiva de proximidad al vencimiento; causas, dependencias e impacto sobre otras actividades evaluados con evidencia. |
+| **REQ-05** Acciones correctivas | Alta | **Parcial** | `suggested_actions` y recomendaciones textuales en informes. | Propuestas estructuradas de fechas, prioridad, responsable/estado, alternativas, revisión, aprobación, ejecución y resultado verificable. |
+| **REQ-06** Reporte semanal | Media | **Parcial** | `ReportAgent` genera JSON/Markdown y métricas al invocar `run`. | Scheduler semanal, reporte por categoría/estado/desviación, historial de propuestas aprobadas/rechazadas/ejecutadas y distribución/notificación. |
+| **REQ-07** Revisión de código | Alta | **Parcial avanzado** | Lector GitHub diffs con SHA, `CodeQualityAgent`, `SemanticValidator`, `VerifierAgent`, reglas Q1–Q3 y adapters híbridos. | Validar T9 híbrido en vivo, revisar cobertura real de errores/duplicaciones/mantenibilidad/vulnerabilidades y ejecutar análisis periódicos sin editar código automáticamente. |
+| **REQ-08** Tres roles y autorización | Alta | **Parcial (mapeo documentado)** | Orquestador; Monitoring (ejecución analítica), Quality (revisión código), Verifier auxiliar, Report (síntesis consultiva), `decide` humano. | Revisión de propuestas de acción de gestión, autorización explícita sobre cada acción y ejecución posterior controlada; preservar autoridad humana. |
+| **REQ-09** Interacción/gestión | Alta | **Parcial** | Reportes y `decide --decision approved|rejected|changes_requested|postponed`. | Notificaciones, presentación de riesgos y justificación por propuesta, solicitudes de autorización, cambios a propuesta antes de ejecutarla. |
+| **REQ-10** Trazabilidad | Alta | **Parcial avanzado** | SQLite registra runs, stages, snapshots, evidence, findings, verifications, llm_calls, reports y human_decisions. | Registrar identidad/autorización del actor por operación y cambios externos efectivamente ejecutados con before/after, timestamp y evidencia. |
+| **REQ-11** Seguridad | Alta | **Parcial** | `SecretStr`, `.env` ignorado, sanitización de entradas, operaciones de lectura y opt-in remoto. | Permisos por identidad/rol, protección integral del almacenamiento de credenciales, políticas de envío remoto por proyecto, auditoría y pruebas de autorización. |
+
+### Notas de evaluación
+
+- **T8 está validada con fuentes reales**, pero 0 runs de CI no prueba cumplimiento de Q1/Q2. El sistema preserva `unknown` y `evidencia_insuficiente`.
+- **T9 aún no se cierra**: una corrida produjo reporte, pero detectó un falso positivo por diff parcial y Gemini devolvió 503; las correcciones posteriores están probadas **offline**, no en otra corrida híbrida real.
+- No confundir recomendaciones de texto con acciones ejecutables y autorizadas.
+- No confundir `human_decisions` sobre un **reporte** con permisos/revisión/aprobación individual de acciones en Trello.
+- Los componentes de ContextBuilder, seguridad y proveedores son infraestructura transversal que ayuda a varios REQ; no cambia el significado literal de la lista de chequeo.
+
+## 3. Secuencia de implementación comprometida
+
+### Hito H0 — Conservar y verificar MVP actual (T9)
+
+**Objetivo:** completar una ejecución real controlada con Quality remoto (Groq o Mistral), Monitoring/Report locales y Gemini cuando escale. Inspeccionar `execution_metrics.json`, `monitoring.json`, `code_findings.json`, `verification.json` y `report.md`. Validar exactitud semántica contra SHA/código y estados Trello. Sin afirmaciones inventadas de cobertura ni verificación.
+
+**Salida:** evidencia de corrida real, correcciones puntuales si son necesarias, trazabilidad del test. No añadir funcionalidades no relacionadas antes de este control.
+
+### Hito H1 — Seguimiento completo y detección de cambios (REQ-01/02/03/04)
+
+Normalizar prioridad/responsables/fechas, exponer planificación consultable y estados por tarea; definir «próxima a vencer»; comparar snapshots preservando fechas, actores y cambios; relacionar dependencias/impacto con evidencia. Tests de cálculo, mapeo y comparación temporal.
+
+**Salida:** consulta de tareas y cambios entre dos capturas, riesgos justificables y sin falsas inferencias de dependencias no registradas.
+
+### Hito H2 — Propuestas, revisión, aprobación, ejecución segura (REQ-03/05/08/09/10/11)
+
+Definir `ActionProposal` (acción, objetivo, valor anterior y propuesto, motivo, evidencia, impacto, autor); revisión de validez técnica y autorización separadas; petición al gestor, identidad/permiso, token de aprobación vinculado a versión, ejecutor Trello de lista permitida y verificación posterior de cambio; manejo idempotente de rechazos/duplicados y trazabilidad. **Nunca hacer escrituras sin autorización**. Mantener tres roles académicos y Verifier auxiliar; implementar nuevas funciones sin «recrear» agentes existentes.
+
+**Salida:** demo de una reprogramación propuesta, revisada, aprobada por gestor, ejecutada y auditada; rechazo demuestra cero escrituras.
+
+### Hito H3 — Reportería y notificación automática (REQ-04/06/09/10)
+
+Scheduler semanal configurado y ejecución bajo entorno confiable; reportes que separen métricas, riesgos, pendientes, acciones propuestas/aprobadas/rechazadas/ejecutadas; notificaciones y entrega consultable con control de duplicados/errores.
+
+**Salida:** evidencia de programación y entrega semanal, incluyendo fallos controlados.
+
+### Hito H4 — Seguridad y calidad integral (REQ-07/10/11)
+
+Autenticación y autorización por rol; seguridad de secretos en reposo/operación; política de transferencia a cloud; cobertura CI real (artefactos) y análisis de calidad más allá del diff puntual, con benchmark de falsos positivos/negativos.
+
+**Salida:** tests de abuso, permisos y auditoría, revisión de findings reales y métricas CI.
+
+## 4. Funcionalidades adicionales propuestas por el equipo (no sustituyen REQ)
+
+| Extensión | Relación | Prioridad de planificación |
+|---|---|---|
+| **Multi-repositorio por proyecto** (backend, frontend y varios repos del mismo equipo) | Amplía REQ-07 e integración; el código actual apunta a un repo configurado | Después de H0; coordinar con H1/H4 |
+| **Historial de snapshots y tendencias** | Necesario para REQ-03 y fortalece REQ-04 | Integrar en H1 |
+| **ContextBuilder / grounding / fail-closed** | Control transversal de fiabilidad LLM, ya implementado parcialmente | Mantener y validar en H0–H4 |
+| **Routing local/remoto por rol; Groq/Mistral/Gemini/Ollama** | Especialización y ajuste a hardware, ya implementado offline | Validar H0; optimizar después |
+| **Calidad CI verificable y reglas configurables** | Fortalece REQ-07 y exactitud de aprobación | H4, sin falsear métricas |
+| **Dashboard/UI y experiencia multi-proyecto** | Facilita REQ-01/09/06; no reemplaza aprobación ni permisos | Después de contratos H1/H2 |
+| **Historial/auditoría avanzada y despliegue continuo** | Escalabilidad/observabilidad | Cuando el flujo mínimo esté probado |
+
+## 5. Regla de trabajo y documentación
+
+1. **Cumplir todos los REQ-01…REQ-11 del PDF**: una presentación arquitectónica no reemplaza la funcionalidad requerida.
+2. **Conservar el código existente cuando sea correcto**. Solo evitar refactorizaciones cosméticas de los agentes para encajar etiquetas académicas; implementar lo realmente faltante.
+3. **No convertir mejoras futuras en capacidades actuales**; separar «implementado», «validado offline», «validado real» y «pendiente».
+4. **Mantener revisión humana obligatoria y no enviar secretos ni código privado no autorizado a proveedores remotos**.
+5. **Cerrar hitos con evidencia reproducible**: tests, commits, runs y demostración del caso de uso; actualizar esta matriz al completar cada REQ.
+
+**Referencias del repositorio:** [arquitectura de referencia](../ARCHITECTURA.md), [arquitectura implementada](arquitectura-implementada.md), [validación T8/T9](mvp-01-validation.md), [reglas de calidad](../config/policies.yaml), [orquestador](../src/agente_gestion/application/orchestrator.py), [agentes](../src/agente_gestion/agents/).
+
