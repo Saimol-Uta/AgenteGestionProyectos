@@ -1,5 +1,34 @@
 # Arquitectura As-Built del Asistente de Gestión de Proyectos (MVP-01)
 
+## Correspondencia académica y decisión de continuidad — 10 de octubre de 2026
+
+**Acordado:** no cambiar el flujo existente únicamente para renombrar o
+reorganizar agentes conforme al REQ-08. El sistema conserva su orquestador
+central, el análisis de Monitoring, Quality, verificación independiente
+condicional y síntesis Report.
+
+- **Padre/coordinador:** `ProjectOrchestrator`; orquesta etapas sin autonomía
+  LLM distribuida.
+- **Ejecutor:** `ProjectMonitoringAgent` apoyado por adaptadores y métricas
+  deterministas; analiza y formula recomendaciones.
+- **Revisor:** `CodeQualityAgent`, controles semánticos y `VerifierAgent`
+  **auxiliar** cuando `EscalationGate` determine escalamiento.
+- **Aprobador consultivo:** `ReportAgent` acata la evaluación de políticas y
+  explica la recomendación; no firma autorizaciones técnicas de escritura.
+- **Aprobador final de acciones:** el gestor humano; `decide` registra la
+  decisión sobre reportes en SQLite.
+
+Esta asociación es **conceptual/pedagógica**, no una afirmación de que todos
+los agentes revisan propuestas de gestión ni de que exista un ejecutor
+autorizado de cambios. Falta implementar el circuito completo de propuesta
+estructurada → revisión → autorización específica → ejecución externa →
+auditoría. El REQ-08 queda **parcial** hasta probarlo.
+
+**Sin renunciar a funciones:** el acuerdo «sin cambiar código» se aplica
+solo a una refactorización cosmética para REQ-08. **Todos los requisitos del
+docente y los extras propuestos permanecen en el plan de desarrollo**. Ver
+[matriz REQ-01…REQ-11 y roadmap](requisitos-y-plan-de-implementacion.md).
+
 ## Actualización as-built — 10 de octubre de 2026
 
 > **Prevalencia documental:** este apartado actualiza la línea base de T7
