@@ -1,12 +1,29 @@
-# Pruebas locales para el asistente de gestión de proyectos
+# Asistente multiagente para seguimiento y calidad de proyectos de software
 
-La [arquitectura propuesta del agente](ARCHITECTURA.md) define el flujo de Trello,
-GitHub y calidad, los roles y la compatibilidad con Ollama y APIs externas de IA.
-Es un diseño para implementar; los conectores y el backend aún no existen.
+**Estado al 10 de octubre de 2026:** MVP modular en Python implementado, con
+adaptadores de solo lectura para Trello, GitHub y GitHub Actions, métricas
+deterministas, ContextBuilder con control de evidencia, agentes especializados,
+SQLite, CLI y proveedor de revisión de código configurable entre Ollama, Groq y
+Mistral. La decisión final sigue siendo humana.
 
-Ya se ejecutaron las pruebas en esta laptop. Consulta el
-[informe de resultados](INFORME_PRUEBAS.md) para ver velocidades, memoria,
-errores observados y diferencias entre configuraciones.
+- **T8 (fuentes reales):** validado con HORMIGESTION (Trello 31 tarjetas,
+  GitHub 6 elementos, GitHub Actions 0 ejecuciones).
+- **T9 (E2E real):** se generó un informe en una corrida, pero aparecieron
+  un falso positivo por evidencia parcial y un 503 de Gemini. El grounding,
+  la selección por rol y Quality híbrido se corrigieron offline; **falta
+  repetir y validar T9 con Groq/Mistral real**.
+- **Pruebas automáticas:** el último cierre de Antigravity reportó 472
+  tests y 7 benchmarks offline aprobados. Estos resultados no certifican
+  por sí solos funcionamiento de las APIs en vivo.
+
+[Diseño de referencia](ARCHITECTURA.md) ·
+[arquitectura implementada (línea base + actualización)](docs/arquitectura-implementada.md) ·
+[registro de validación inicial y evolución](docs/mvp-01-validation.md).
+
+La sección siguiente conserva el **banco histórico de benchmarks locales**
+que precedió al MVP. Consulta [INFORME_PRUEBAS.md](INFORME_PRUEBAS.md)
+para las mediciones originales de Ollama; no se deben interpretar como
+mediciones actuales de Groq/Mistral.
 
 Preparado a partir de la conversación «Revisa El Audio». El objetivo es comparar
 modelos en la Lenovo IdeaPad Gaming 3, Ryzen 5 6600H, 16 GB de RAM y RTX 3050 de
@@ -152,22 +169,26 @@ comparación local; no son una certificación ni una evaluación estadística am
 
 ## Prototipo funcional del agente (`agente_gestion`)
 
-Implementación del pipeline de análisis semanal modular y determinista según [ARCHITECTURA.v1.md](ARCHITECTURA.v1.md).
+El pipeline implementado mantiene una arquitectura monolítica modular. La
+[revisión 2](ARCHITECTURA.md) es el **diseño de referencia**, mientras que
+[docs/arquitectura-implementada.md](docs/arquitectura-implementada.md)
+distingue el as-built inicial de los cambios posteriores. La
+[revisión v1](ARCHITECTURA.v1.md) se conserva solo como antecedente histórico.
 
 ### Ruta rápida (Quick Path)
 
 1. **Ejecutar demo simulada determinista (sin consumo de LLM real):**
    ```bash
-   PYTHONPATH=src python3 -m agente_gestion run fixture_1_standard --fake --fixture fixture_1_standard
+   PYTHONPATH=src .venv/bin/python -m agente_gestion run fixture_1_standard --fake --fixture fixture_1_standard
    ```
 2. **Registrar decisión del gestor humano sobre el reporte:**
    ```bash
-   PYTHONPATH=src python3 -m agente_gestion decide <RUN_ID> --decision approved --reason "Aprobado en revisión técnica"
+   PYTHONPATH=src .venv/bin/python -m agente_gestion decide <RUN_ID> --decision approved --reason "Aprobado en revisión técnica"
    ```
 3. **Ejecutar todas las pruebas deterministas:**
    ```bash
-   PYTHONPATH=src python3 -m unittest discover -s tests -v
-   python3 -m unittest discover -s pruebas -v
+   PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
+   .venv/bin/python -m unittest discover -s pruebas -p 'test_*.py' -v
    ```
 
 ### Requisitos e instalación
@@ -175,8 +196,8 @@ Implementación del pipeline de análisis semanal modular y determinista según 
 1. **Entorno virtual e instalación del paquete:**
    ```bash
    python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -e .
+   # En Fish: source .venv/bin/activate.fish
+   .venv/bin/python -m pip install -e .
    ```
 
 2. **Inicio del runtime local de Ollama (opcional para modo real):**
@@ -186,9 +207,10 @@ Implementación del pipeline de análisis semanal modular y determinista según 
    El script inicia Ollama local escuchando en `http://127.0.0.1:11435`.
 
 - **Python:** 3.10+ (con `pydantic`, `pydantic-settings`, `pyyaml`, `requests`).
-- **Ollama local (Opcional para modo real):** escuchando en `http://127.0.0.1:11435`.
-- **Modelos recomendados:** `qwen3.5:2b-q4_K_M` (monitoreo y reporte) y `qwen3.5:4b-q4_K_M` (calidad de código).
-- **Gemini remoto (Verificación independiente):** requiere variable `GEMINI_API_KEY` y flag explícito `--allow-remote-ai`. No existe fallback automático a Ollama para verificación: si hay hallazgos que escalan y el verificador remoto no está habilitado o no cuenta con credenciales, la etapa pasa a `needs_attention` y los hallazgos permanecen pendientes (nunca se inventan veredictos ni se confirma automáticamente).
+- **Ollama local (modo híbrido real):** requerido para MonitoringAgent y ReportAgent; escucha en `http://127.0.0.1:11435` con el script de este repositorio.
+- **Modelos locales:** `qwen3.5:2b-q4_K_M` para monitoreo y reporte; `qwen3.5:4b-q4_K_M` disponible para Quality si se selecciona Ollama.
+- **Quality remoto:** se puede elegir `groq` o `mistral` con su clave/modelo y permiso explícito para datos remotos. El adapter está implementado y probado offline; **la primera corrida real híbrida continúa pendiente**.
+- **Gemini remoto:** verificación independiente condicional. Requiere `GEMINI_API_KEY` y autorización remota. Si no está disponible, los findings que escalan permanecen pendientes y la ejecución puede marcar `needs_attention`, sin fabricar veredictos.
 
 ### Opciones de ejecución CLI
 
@@ -201,7 +223,8 @@ Implementación del pipeline de análisis semanal modular y determinista según 
 | `--config <PATH>` | Ruta al archivo de configuración YAML (ej. `config/config.yaml`). |
 | `--fake` | Modo simulado determinista con `FakeProvider` para LLM. No requiere servicios de IA; simula el flujo E2E completo. En modo `--sources real`, las fuentes externas siguen activas a menos que se inyecte transporte simulado. |
 | `--fixture <NOMBRE>` | Carga datos desde `fixtures/<NOMBRE>.json` (modo fixtures). Incompatible con `--sources real`. |
-| `--allow-remote-ai` | Autoriza llamadas al verificador remoto (Gemini). |
+| `--allow-remote-ai` | Autoriza el uso de proveedores remotos configurados (Quality Groq/Mistral y/o Verifier Gemini); revisar política de datos antes de usar repositorios privados. |
+| `--quality-provider <ollama\|groq\|mistral>` | Selecciona explícitamente el proveedor de CodeQualityAgent. |
 | `--ollama-base-url <URL>` | URL personalizada para el runtime de Ollama. |
 | `--db-path <PATH>` | Ruta del archivo SQLite (por defecto `.runtime/agente.db`). |
 | `--output-dir <PATH>` | Carpeta de artefactos (por defecto `runs/`). |
@@ -237,7 +260,11 @@ El proyecto utiliza un módulo centralizado de configuración (`Settings`) basad
 - `OLLAMA_BASE_URL`: URL base de Ollama (por defecto `http://127.0.0.1:11435`).
 - `GEMINI_API_KEY`: Clave de API de Google Gemini (requerida únicamente para verificación remota en modo real).
 - `GEMINI_MODEL`: Modelo de Gemini (por defecto `gemini-2.5-flash`).
-- `QUALITY_TIMEOUT_SECONDS`: Timeout para revisión de calidad en el agente revisor (por defecto `120.0` s).
+- `QUALITY_PROVIDER`: `ollama` (valor por defecto), `groq` o `mistral`; también configurable mediante `--quality-provider`.
+- `GROQ_API_KEY`, `GROQ_MODEL`: credencial y modelo para Quality con Groq.
+- `MISTRAL_API_KEY`, `MISTRAL_MODEL`: credencial y modelo para Quality con Mistral.
+- `QUALITY_CONTEXT_WINDOW`, `QUALITY_MAX_OUTPUT_TOKENS`, `QUALITY_CONTEXT_MARGIN`: presupuesto configurable de Quality, con reserva de salida y margen. Debe respetar las capacidades del modelo remoto seleccionado.
+- `QUALITY_TIMEOUT_SECONDS`: timeout del Revisor (por defecto `120.0` s); el piloto local necesitó un valor superior para Qwen 4B.
 - `VERIFIER_TIMEOUT_SECONDS`: Timeout para verificación independiente en el agente verificador (por defecto `120.0` s; configurable en `220.0` s si se desea conservar el presupuesto previo). Presupuesto independiente de `QUALITY_TIMEOUT_SECONDS`.
 - `TRELLO_STATE_STRATEGY`: Estrategia de determinación de estado para Trello (`list_mapping` por defecto, o `date_fields`).
 - `RUN_REAL_LLM_TESTS`: Establecer en `1` para ejecutar pruebas con modelos reales (opt-in).
@@ -245,7 +272,9 @@ El proyecto utiliza un módulo centralizado de configuración (`Settings`) basad
 ### Limitaciones conocidas y comportamiento por defecto
 
 - **Verificación sin credenciales remotas:** Por defecto (`allow_remote_ai: false` o sin `GEMINI_API_KEY`), cuando existen hallazgos de código que escalan (por ejemplo, categorías severas como inyección SQL o seguridad), la corrida finaliza con estado esperado `needs_attention`. No se sustituye localmente ni se asume veredicto favorable. Para una demostración determinista completa sin servicios externos, utilice la bandera `--fake`.
-- **Tiempo de respuesta en calidad y verificación:** La revisión exhaustiva de diffs en modelos locales de 4B y la verificación en modelos remotos disponen de presupuestos de tiempo independientes y acotados por defecto a 120 segundos (`quality_timeout_seconds: 120.0` y `verifier_timeout_seconds: 120.0`). Si se desea conservar el presupuesto previo de verificación, se puede sobrescribir vía `VERIFIER_TIMEOUT_SECONDS=220`.
+- **Contexto y proveedores:** ContextBuilder selecciona evidencia relevante por rol, conserva alcance y procedencia de snippets/diffs y rechaza el truncamiento silencioso. Groq/Mistral tienen un presupuesto de Quality configurable, distinto del límite local de Qwen.
+- **Límites operativos:** los timeouts de Quality y Verifier son independientes (por defecto 120 s cada uno). El piloto local requirió `QUALITY_TIMEOUT_SECONDS=300`; no extrapolar esa medición como requisito para Groq/Mistral.
+- **Fuentes incompletas:** una API que devuelve 0 runs de CI puede haber respondido correctamente, pero la ausencia de métricas de pruebas/cobertura mantiene reglas obligatorias en `unknown`.
 
 ### Políticas de calidad locales (`config/policies.yaml`) y frontera de fuentes
 
@@ -314,7 +343,7 @@ El proyecto utiliza un módulo centralizado de configuración (`Settings`) basad
   - **Métricas de auditoría y precisión de mediciones (T6):** Si la unidad de recolección de código falla (por transporte, formato o detección de secretos en parches o SHA), el SHA objetivo fijado se omite honestamente (`target_commit_sha: null / None`) en la etapa y en `execution_metrics.json`. El campo `attempt_count` en cada `SourceExecutionRecord` representa 1 intento para la unidad de fuente del proveedor en su conjunto (no peticiones HTTP individuales ni páginas paginadas). La duración total de la etapa reporta la suma de las duraciones medidas de cada unidad individual, no el tiempo exacto de reloj de pared (*wall-clock*, del cual se excluye la sobrecarga interna del orquestador); estas cifras reflejan mediciones locales del arnés y no constituyen afirmaciones de rendimiento en producción ni latencia en la nube.
   - **Decisión humana y estado final:** El reporte final generado siempre queda con decisión humana pendiente (`human_decision: pending`, estado de corrida `awaiting_human`), requiriendo la acción explícita del gestor mediante el subcomando `decide`.
   - **Compatibilidad hacia atrás y conflictos CLI:** La bandera explícita `--fixture <NOMBRE>` tiene precedencia sobre configuraciones de modo real para permitir pruebas locales continuas. Sin embargo, especificar simultáneamente `--sources real` y `--fixture <NOMBRE>` en la línea de comandos se rechaza inmediatamente por contradicción explícita.
-  - **Estado de verificación:** La integración de pipeline se encuentra verificada deterministamente mediante suites de pruebas con transporte HTTP simulado y proveedores de prueba en memoria. La validación en vivo frente a endpoints externos y servicios en la nube permanece como alcance de etapas posteriores (T8/T9).
+  - **Estado de verificación al 10/10/2026:** T8 se validó contra Trello/GitHub/Actions reales; T9 produjo al menos un reporte real con `needs_attention` y reveló problemas de grounding/contexto corregidos después mediante tests offline. Falta una ejecución real completa con Quality remoto; ver [registro de validación](docs/mvp-01-validation.md).
 
 
 ### Ubicación de artefactos y persistencia
@@ -336,11 +365,28 @@ En caso de fallo, se guardan artefactos parciales de diagnóstico sin presentar 
 | Componente | Estado Prototipo | Futuro / Producción |
 |---|---|---|
 | **Orquestador** | Secuencial síncrono modular con reanudación acotada e idempotencia por hash | Worker distribuido / Celery / Temporal |
-| **Fuentes de datos** | Adaptador de fixtures normalizadas JSON (`fixtures/`) | Conectores REST en vivo a Trello y GitHub |
+| **Fuentes de datos** | Fixtures y adaptadores de solo lectura Trello, GitHub y GitHub Actions; T8 real exitoso | Comparación histórica de snapshots y ampliación multi-repositorio |
 | **Persistencia** | SQLite con transacciones atómicas y archivos locales en `runs/` | PostgreSQL / Blob Storage |
-| **Modelos de IA** | FakeProvider determinista + Ollama local + Gemini opt-in | Adaptadores adicionales (OpenAI Responses, Anthropic) |
+| **Modelos de IA** | FakeProvider, Ollama, Gemini, GroqProvider y MistralProvider. Quality es seleccionable | Fallback sofisticado entre proveedores y evaluación real multi-modelo |
 | **Aprobación** | Decisión humana registrada por CLI | UI Web interactiva con panel para el gestor |
-| **Límites** | Presupuesto compartido de 8 llamadas y 1 intento de reparación | Cuotas dinámicas configurables por organización |
+| **Límites** | Presupuesto de llamadas, reparación acotada, selección de contexto por rol y límites fail-closed | Cuotas dinámicas y políticas por organización |
+
+### Próxima validación controlada (T9 híbrido)
+
+Tras configurar `QUALITY_PROVIDER=groq` (o `--quality-provider groq`),
+un `GROQ_MODEL` vigente y su clave **solo en el entorno local**, mantener
+Ollama activo y comprobar primero el modo fake:
+
+```fish
+PYTHONPATH=src .venv/bin/python -m agente_gestion run fixture_1_standard --fake --fixture fixture_1_standard
+PYTHONPATH=src .venv/bin/python -m agente_gestion source-check all --sources real
+# Solamente cuando las fuentes y las políticas de envío remoto estén verificadas:
+PYTHONPATH=src .venv/bin/python -m agente_gestion run hormigestion --sources real --allow-remote-ai --quality-provider groq
+```
+
+Esta secuencia es **instrucción pendiente**, no evidencia de una prueba real
+híbrida ya completada. Evitar imprimir claves, subir `.env` o enviar
+repositorios privados a un proveedor remoto sin autorización.
 
 ## Comprobación del comparador
 
