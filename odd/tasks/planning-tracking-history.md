@@ -17,8 +17,8 @@ Extend the existing analysis MVP with faithful activity metadata, deterministic 
 - [x] H1A — Closed offline in 748379c after independent verification; native review declined for this candidate by human. Extend TaskCard and Trello/fixture normalization with observed assignees, start/completion/archive/activity metadata and unknown priority; preserve old payloads. Route: delegated writer (multi-file).
 - [x] H1B — Closed offline in be369c5 after independent verification; native review declined for this candidate. Add configurable near-due metrics with exact Guayaquil boundaries, exclusions and report visibility; retain original state. Route: delegated writer (multi-file).
 - [x] H1C — Pure comparator closed offline in939876f; native approved+acknowledged, independent checks green. Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
-- [ ] H1E — In progress; functional checks green, review/commit pending. Integrate derived Trello state/list-name observations and task source/mapping identity/completeness into real collection, with mocked acceptance. Route: delegated writer (integration gap found by independent verifier).
-- [ ] H1D1 — Persist immutable content-addressed captures in existing SQLite, atomic safe backfill and read-only queries; preserve latest get_snapshot and all runs. Route: delegated writer (multi-file).
+- [x] H1E — Closed offline in3b6f269, nativeapproved+acknowledged; ASSESSclosed. Integrate derived Trello state/list-name observations and task source/mapping identity/completeness into real collection, with mocked acceptance. Route: delegated writer (integration gap found by independent verifier).
+- [ ] H1D1 — In progress. Persist immutable content-addressed captures in existing SQLite, atomic safe backfill and read-only queries; preserve latest get_snapshot and all runs. Route: delegated writer (multi-file).
 - [ ] H1D2 — Add read-only CLI history list/compare using explicit capture IDs; unavailable legacy/missing DB never creates/migrates data or artifacts. Route: delegated writer (multi-file).
 
 ## Acceptance and verification
@@ -52,9 +52,9 @@ Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focu
 
 ## H1E verification
 - Continuation mv317rkf-i-ce3g observed RED144tests14failures before source; GREEN144focused/full515run513pass2skip/pruebas7pass/diffcheckclean. Nine mocked integrationtests,6files264diff lines.
-- Existing state/list_name keys retained, masks added; factory whitelist hashes provider/effectiveboard/strategy/canonicalmapping scope only (no credentials/fullSettings). Successful empty tasks complete=true, failure=false, independentofCI. Native review/commit pending.
+- Existing state/list_name keys retained, masks added; factory whitelist hashes provider/effectiveboard/strategy/canonicalmapping scope only (no credentials/fullSettings). Successful empty tasks complete=true, failure=false, independentofCI. Native review-f43517d0a645c0f4 approved f770d12a… and exactack burned8cea5476…; ASSESS medium/consumedtrue/closedderived, no separate verifier needed. Parent9pass; stageddiffclean. Commit3b6f269fffa4813ee0fb3c9679e9499507b902ad.
 
 ## Next step
-Implement H1E observed derived facts (human selected existing state/list_name payload; no mapped_state alias) + credential-free board/mapping identity and task-specific completeness; never infer completeness from missing CI. Then H1D1 immutable capture storage and H1D2 CLI (two cohesive units from scout mv312w9r-h-ogco). Migration recovers currently retained rows only, not overwritten past versions; run-scoped evidence is not guaranteed per-capture complete. H2 permissions remain separate product boundary.
+H1D1 backend: typed wrapper reuses WeeklySnapshot; snapshot_captures content-addressed exactJSON storage in existing SQLite, atomic capture+latest write and explicit DDL/backfill transaction, idempotent replays/reopens, UTC-normalized order. Preserve existing snapshots/runs/get_snapshot/save_snapshot signature. Read-only URI mode=ro/query_only skips mkdir/schema and reports missing or legacy history unavailable. H1D2 CLI follows. No real DB migration in this session.
 
 Locator: odd/tasks/planning-tracking-history.md
