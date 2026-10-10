@@ -150,3 +150,79 @@ PYTHONPATH=src .venv/bin/python -m agente_gestion run proyecto-demo --sources re
 ```
 
 The final command is a **future** real E2E step, not executed evidence. Review its generated report and audit records; human decision must remain pending. Missing CI test counts/coverage may still produce `evidencia_insuficiente`. No source writes, push, PR, merge, deployment or MVP-02 work was performed.
+
+## H0 — evidencia offline actual en `6f60007`
+
+**Baseline e invariantes híbridos verificados offline; T9 real sigue PENDING.**
+Este apartado agrega evidencia ejecutada para
+[`planning-tracking-history`](../odd/tasks/planning-tracking-history.md), sin
+reemplazar cifras ni observaciones históricas T8/T9 y sin declarar cumplido
+ningún REQ-01…REQ-11.
+
+### Comandos ejecutados y resultados
+
+| Comando exacto | Ejecutados | Aprobados | Omitidos | Resultado |
+|---|---:|---:|---:|---|
+| `.venv/bin/python -m unittest tests.test_hybrid_config tests.test_hybrid_pipeline tests.test_quality_context_budgets tests.test_evidence_grounding tests.test_role_context_selection tests.test_remote_providers` | 87 | 87 | 0 | OK |
+| `.venv/bin/python -m unittest discover -s tests` | 472 | 470 | 2 | OK (skipped=2) |
+| `.venv/bin/python -m unittest discover -s pruebas -p 'test_*.py'` | 7 | 7 | 0 | OK |
+| `git diff --check` | — | — | — | Sin errores de whitespace |
+
+Los slices se solapan: no sumar sus totales. Las 7 pruebas de `pruebas`
+son checks deterministas del evaluador, no un benchmark de rendimiento real.
+Discovery emitió el rechazo esperado de argparse a `invalid_status` y un
+`ResourceWarning` por conexión SQLite sin cerrar; no hubo fallos de tests.
+
+### Contratos comprobados con tests existentes
+
+- **Hybrid/fake y CLI:** `test_fake_mode_preserves_fake_provider_for_all_agents`
+  verifica FakeProvider para todos los roles con Quality ollama/groq/mistral.
+  Los tests de wiring mantienen Monitoring/Report en Ollama y Verifier en
+  Gemini cuando está habilitado; `test_cli_quality_provider_flag_override`
+  comprueba `--quality-provider mistral` sobre el entorno usando orchestrator
+  mock, no una ejecución híbrida real.
+- **Settings:** `tests.test_config` (incluido en discovery) comprueba
+  overrides > entorno OS > dotenv sintético > YAML sintético > defaults,
+  incluyendo `ALLOW_REMOTE_AI=false`. `tests.test_hybrid_config` comprueba
+  precedencia de Quality, selección inválida y protección de secretos.
+- **Presupuestos fail-closed:** `tests.test_quality_context_budgets` y
+  `tests.test_role_context_selection` comprueban reserva de salida/margen,
+  ventana local y remota configurada, rechazo antes de provider/transport
+  cuando no cabe la evidencia y conservación de código completo sin recorte
+  silencioso. Las respuestas Groq/Mistral usan transport mocks.
+- **Anchors/completitud:** `tests.test_evidence_grounding` comprueba SHA,
+  archivo, línea y citas; rechaza claims de ausencia sobre snippets parciales
+  y permite el control positivo de archivo completo coincidente. También
+  rechaza estados de tareas falsos y métricas CI sin procedencia coincidente.
+- **CI ausente/UNKNOWN:**
+  `test_pipeline_ci_mismatched_sha_evaluates_to_insufficient` comprueba CI
+  ausente para el SHA objetivo y `evidencia_insuficiente`;
+  `test_policy_evaluator_demonstration_mandatory_q1_q2_yield_evidencia_insuficiente`
+  comprueba que tests/cobertura no reportados dejan Q1/Q2 `unknown`, incluso
+  con workflow exitoso. Ambos están incluidos en discovery; no se inventó
+  un test denominado H0.
+
+### Límites y siguiente validación real
+
+`RUN_REAL_LLM_TESTS` no estaba habilitado. Quedaron omitidos
+`test_real_ollama_local_smoke` y `test_real_gemini_remote_smoke`.
+No se ejecutaron source-check real, inferencia local/remota ni T9; tampoco
+se inspeccionaron valores de credenciales ni contenido de dotenv. Un control
+posterior mediante Settings comprobó únicamente presencia: Groq y Mistral
+sin clave; Gemini con clave; Trello con clave/token/board; GitHub sin token,
+con owner/repo. Son booleanos de configuración, no validación de secretos ni
+conectividad. La evidencia procede de fixtures, fake providers y transport
+mocks, no de autenticación o conectividad.
+
+Los tokens son estimaciones por caracteres JSON (3 chars/token), no conteos
+exactos del tokenizer ni garantía de ajuste al template del proveedor. Los
+modelos/ventanas configurados y el parsing mock no prueban disponibilidad o
+compatibilidad actual de modelos Groq/Mistral/Gemini remotos.
+
+**Pendiente con autorización explícita:** comprobar fuentes reales del SHA
+objetivo, disponibilidad de Ollama y modelo remoto elegido, y repetir T9
+híbrido registrando run_id/SHA, métricas, grounding, verificaciones y políticas
+unknown; mantener decisión humana pendiente. `--fake` no vuelve offline
+`--sources real`. No se modificaron dependencias, entorno ni configuración,
+ni se hicieron commits/staging. Por ser documentación pasiva sin cambio de
+comportamiento, no aplica RED; la verificación usa regresiones existentes.
