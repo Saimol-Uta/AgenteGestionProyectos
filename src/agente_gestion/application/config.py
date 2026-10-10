@@ -6,6 +6,7 @@ import re
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, Tuple, Type
 from zoneinfo import ZoneInfo
+from agente_gestion.domain.tasks import validate_due_soon_days
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
@@ -50,6 +51,8 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
 
     if "execution" in file_data and isinstance(file_data["execution"], dict):
         exec_sec = file_data["execution"]
+        if "due_soon_days" in exec_sec:
+            merged["due_soon_days"] = exec_sec["due_soon_days"]
         if "max_llm_calls_per_run" in exec_sec:
             merged["max_llm_calls_per_run"] = exec_sec["max_llm_calls_per_run"]
         if "quality_timeout_seconds" in exec_sec:
@@ -286,6 +289,7 @@ class Settings(BaseSettings):
         gt=0.0,
         description="Timeout in seconds for independent verification requests (bounded default 120s; set to 220s to retain legacy budget).",
     )
+    due_soon_days: int = Field(default=7, ge=0)
     max_llm_calls_per_run: int = Field(default=8)
     max_transient_retries: int = Field(default=1)
     max_repair_attempts: int = Field(default=1)
@@ -409,6 +413,17 @@ class Settings(BaseSettings):
             AliasNormalizingSettingsSource(settings_cls, s)
             for s in (init_settings, env_settings, dotenv_settings, yaml_src)
         )
+
+    @field_validator("due_soon_days", mode="before")
+    @classmethod
+    def parse_due_soon_days(cls, value: Any) -> int:
+        # Environment values are strings; reject float/bool coercion in YAML/overrides.
+        if isinstance(value, str):
+            try:
+                value = int(value)
+            except ValueError:
+                raise ValueError("due_soon_days must be a nonnegative integer")
+        return validate_due_soon_days(value)
 
     @field_validator("timezone", mode="before")
     @classmethod

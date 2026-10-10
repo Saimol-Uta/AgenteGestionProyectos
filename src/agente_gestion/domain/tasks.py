@@ -1,6 +1,6 @@
 """Task entities, state mappings, and deterministic metrics."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -79,7 +79,11 @@ class DeterministicTaskMetrics(BaseModel):
     )
     overdue_card_ids: list[str] = Field(
         default_factory=list,
-        description="IDs of overdue cards (due before cutoff, not completed, state known)"
+        description="IDs of eligible unfinished cards due before cutoff"
+    )
+    due_soon_card_ids: list[str] = Field(
+        default_factory=list,
+        description="IDs of eligible unfinished cards due in the inclusive cutoff window"
     )
     blocked_card_ids: list[str] = Field(
         default_factory=list,
@@ -102,30 +106,43 @@ def normalize_datetime_to_tz(dt: datetime, tz: ZoneInfo) -> datetime:
     return dt.astimezone(tz)
 
 
+def validate_due_soon_days(value: int) -> int:
+    """Deadline windows are nonnegative integers, never booleans or floats."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("due_soon_days must be a nonnegative integer")
+    return value
+
+
 def calculate_task_metrics(
     cards: list[TaskCard],
     cutoff: datetime,
     timezone_name: str = "America/Guayaquil",
+    due_soon_days: int = 7,
 ) -> DeterministicTaskMetrics:
     """
-    Deterministically computes progress, overdue, blocked, and unknown task metrics.
+    Deterministically computes progress, deadline, blocked, and unknown task metrics.
 
     Enforces domain invariants:
     - Zero progress is None (when included denominator is 0)
     - Unknown states are NOT overdue, even if due_date < cutoff
     - Completed states are NOT overdue, even if due_date < cutoff
-    - Overdue requires due_date < cutoff AND pending/in_progress/blocked state
+    - Deadline risks require included, non-archived, pending/in_progress/blocked cards
+      without raw due_complete=True; contradictory signals do not change state
+    - Overdue: due < cutoff; due soon: cutoff <= due <= cutoff + days (inclusive)
     - Timezone-aware cutoff comparison in configured timezone (default America/Guayaquil)
     - Rejects duplicate task IDs
     """
+    validate_due_soon_days(due_soon_days)
     tz = ZoneInfo(timezone_name)
     normalized_cutoff = normalize_datetime_to_tz(cutoff, tz)
+    window_end = normalized_cutoff + timedelta(days=due_soon_days)
 
     seen_ids: set[str] = set()
     total_cards = len(cards)
     included_count = 0
     completed_count = 0
     overdue_ids: list[str] = []
+    due_soon_ids: list[str] = []
     blocked_ids: list[str] = []
     unknown_ids: list[str] = []
     contradictory_ids: list[str] = []
@@ -149,17 +166,18 @@ def calculate_task_metrics(
         if card.has_contradiction:
             contradictory_ids.append(card.id)
 
-        # Overdue evaluation:
-        # A card is overdue IF and ONLY IF:
-        # 1. It has a due_date
-        # 2. due_date < normalized_cutoff
-        # 3. state is NOT completed
-        # 4. state is NOT unknown (unknown states must not be flagged overdue)
-        if card.due_date is not None:
+        deadline_eligible = (
+            card.is_included
+            and card.is_archived is not True
+            and card.due_complete is not True
+            and card.state in (TaskState.pending, TaskState.in_progress, TaskState.blocked)
+        )
+        if deadline_eligible and card.due_date is not None:
             card_due = normalize_datetime_to_tz(card.due_date, tz)
             if card_due < normalized_cutoff:
-                if card.state not in (TaskState.completed, TaskState.unknown):
-                    overdue_ids.append(card.id)
+                overdue_ids.append(card.id)
+            elif normalized_cutoff <= card_due <= window_end:
+                due_soon_ids.append(card.id)
 
     progress: Optional[float] = None
     if included_count > 0:
@@ -171,6 +189,7 @@ def calculate_task_metrics(
         completed_cards=completed_count,
         progress_percentage=progress,
         overdue_card_ids=sorted(overdue_ids),
+        due_soon_card_ids=sorted(due_soon_ids),
         blocked_card_ids=sorted(blocked_ids),
         unknown_card_ids=sorted(unknown_ids),
         contradictory_card_ids=sorted(contradictory_ids),

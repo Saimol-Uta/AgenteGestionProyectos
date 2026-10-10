@@ -261,6 +261,27 @@ distingue el as-built inicial de los cambios posteriores. La
 | `python -m agente_gestion source-check <FUENTE>` | Diagnóstico de solo lectura (`trello`, `github`, `github-actions`, `local-policy`, `all`). |
 | `python -m agente_gestion decide <RUN_ID>` | Registra la decisión humana (`approved`, `rejected`, `changes_requested`, `postponed`). |
 
+### Vencidas y próximas a vencer (H1B, validado offline)
+
+```bash
+PYTHONPATH=src .venv/bin/python -m agente_gestion run --fake --fixture fixture_1_standard --due-soon-days 7
+```
+
+`due_soon_days` acepta enteros no negativos (por defecto **7**): CLI
+`--due-soon-days` > entorno `DUE_SOON_DAYS` > `.env` > YAML
+`execution.due_soon_days` > valor por defecto. `0` incluye solo el instante del corte.
+El backend usa el corte capturado del snapshot, normalizado en `America/Guayaquil`
+por defecto (fechas sin zona se interpretan en la zona configurada):
+
+- **Vencida:** `due < cutoff`.
+- **Próxima a vencer:** `cutoff <= due <= cutoff + timedelta(days=N)` (ambos extremos incluidos).
+
+Ambas señales requieren tarjeta incluida, no archivada, estado pendiente/en curso/bloqueada,
+fecha de vencimiento y `due_complete` distinto de `True`. No cambian el estado base,
+el denominador del avance ni las contradicciones. El reporte muestra IDs calculados
+por backend; Monitoring debe conservar su evidencia o fallar por presupuesto, no omitirla.
+REQ-02/04 mejoran offline, pero siguen parciales; historial, dependencias e impacto quedan pendientes.
+
 ### Configuración de entorno y precedencia de fuentes
 
 El proyecto utiliza un módulo centralizado de configuración (`Settings`) basado en `pydantic-settings`.

@@ -146,6 +146,7 @@ def _build_orchestrator(
         db_path=config.db_path,
         is_simulated=config.is_fake,
         timezone=config.timezone,
+        due_soon_days=config.due_soon_days,
         commit_sha=config.github_commit_sha,
         target_commit_sha=config.github_commit_sha,
     )
@@ -201,6 +202,8 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         overrides["github_branch"] = args.branch
     if getattr(args, "quality_provider", None):
         overrides["quality_provider"] = args.quality_provider
+    if getattr(args, "due_soon_days", None) is not None:
+        overrides["due_soon_days"] = args.due_soon_days
 
     config = Settings.from_env_and_file(
         config_path=args.config,
@@ -585,6 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--output-dir", default=None, help="Directory to save runs artifacts")
     parser_run.add_argument("--quality-provider", choices=["ollama", "groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral')")
     parser_run.add_argument("--env-file", default=None, help="Path to custom .env file (defaults to .env)")
+    parser_run.add_argument("--due-soon-days", type=int, default=None, help="Inclusive near-due window in days (nonnegative; default 7)")
 
     # source-check command
     parser_check = subparsers.add_parser("source-check", help="Read-only data source diagnostic checks")

@@ -179,7 +179,7 @@ class ContextBuilder:
         source_commit_sha: Optional[str] = None,
     ) -> ContextPayload:
         """Compact snapshot facts; critical signals are required, never clipped."""
-        required = set(metrics.overdue_card_ids + metrics.blocked_card_ids +
+        required = set(metrics.overdue_card_ids + metrics.due_soon_card_ids + metrics.blocked_card_ids +
                        metrics.unknown_card_ids + metrics.contradictory_card_ids)
         required.update(task.id for task in tasks if task.state in
                         {TaskState.in_progress, TaskState.blocked, TaskState.unknown} or task.has_contradiction)

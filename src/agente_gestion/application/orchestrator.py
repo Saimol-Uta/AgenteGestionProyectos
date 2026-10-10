@@ -13,6 +13,7 @@ from agente_gestion.domain.tasks import (
     TaskCard,
     DeterministicTaskMetrics,
     calculate_task_metrics,
+    validate_due_soon_days,
 )
 from agente_gestion.domain.code import (
     CodeDiffSnippet,
@@ -86,6 +87,7 @@ class OrchestratorConfig:
         timezone: str = "America/Guayaquil",
         commit_sha: Optional[str] = None,
         target_commit_sha: Optional[str] = None,
+        due_soon_days: int = 7,
     ):
         if verifier_timeout_seconds <= 0:
             raise ValueError("verifier_timeout_seconds must be positive")
@@ -103,6 +105,7 @@ class OrchestratorConfig:
         self.policy_version = policy_version
         self.is_simulated = is_simulated
         self.timezone = timezone
+        self.due_soon_days = validate_due_soon_days(due_soon_days)
         self.commit_sha = commit_sha or target_commit_sha
         self.target_commit_sha = self.commit_sha
 
@@ -114,6 +117,7 @@ class OrchestratorConfig:
             "max_llm_calls_per_run": self.max_llm_calls_per_run,
             "policy_version": self.policy_version,
             "timezone": self.timezone,
+            "due_soon_days": self.due_soon_days,
             "commit_sha": self.commit_sha,
         })
 
@@ -278,6 +282,7 @@ class ProjectOrchestrator:
             cards=snapshot.tasks,
             cutoff=snapshot.cutoff_datetime,
             timezone_name=self.config.timezone,
+            due_soon_days=self.config.due_soon_days,
         )
 
         # CI commit matching: evaluate CI only for exact commit matching code diffs or pinned target SHA

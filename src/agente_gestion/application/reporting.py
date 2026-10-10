@@ -99,6 +99,16 @@ def generate_report_markdown(
         lines.append("No se registran tareas vencidas pendientes a la fecha de corte.")
     lines.append("")
 
+    # Near-due facts come exclusively from backend metrics, not report prose.
+    lines.append("## Próximos vencimientos")
+    if m.due_soon_card_ids:
+        lines.append(f"Se identificaron {len(m.due_soon_card_ids)} tarea(s) próximas a vencer en la ventana configurada:")
+        for sid in m.due_soon_card_ids:
+            lines.append(f"- **{sid}** (plazo dentro de la ventana inclusiva desde el corte)")
+    else:
+        lines.append("No se registran tareas próximas a vencer en la ventana configurada.")
+    lines.append("")
+
     # 7. Riesgos
     lines.append("## Riesgos")
     # Collect risks from policy failures, blocks, overdues, and findings
