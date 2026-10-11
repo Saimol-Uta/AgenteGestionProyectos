@@ -21,6 +21,29 @@ Mistral. La decisión final sigue siendo humana.
 [registro de validación inicial y evolución](docs/mvp-01-validation.md) ·
 [matriz REQ-01…REQ-11 y plan de implementación](docs/requisitos-y-plan-de-implementacion.md).
 
+## Historial de planificación (H1D2, offline)
+
+Consulta una base existente sin Settings, proveedores, artefactos ni migraciones:
+
+```sh
+.venv/bin/python -m agente_gestion history list PROJECT --db-path DB
+.venv/bin/python -m agente_gestion history compare PROJECT PREVIOUS_CAPTURE CURRENT_CAPTURE --db-path DB
+```
+
+`list` devuelve JSON de metadatos y conteo de tareas, no código ni evidencia
+completa. Copia sus `capture_id` para `compare`: un `snapshot_id` puede
+reutilizarse para varias versiones; el `capture_id` identifica el JSON exacto
+por SHA-256. Comparar una captura consigo misma produce cero cambios.
+Los deltas conservan before/after, fechas y advertencias; no prueban operaciones,
+eliminación física ni actores. La evidencia por run no se asocia arbitrariamente
+a capturas. Base ausente/legada, corrupción o comparación incompatible fallan
+con stderr y código no cero, sin crear ni migrar datos.
+
+Ejemplo sintético reproducible: `planning_example()` en
+`tests/test_cli_history.py` persiste A/B en bases temporales y comprueba los
+cuatro cambios (responsable, fecha límite, prioridad, estado). Sin base real ni
+APIs; T9 sigue **PENDING**. H2, scheduler, UI y acciones externas siguen pendientes.
+
 ## Cumplimiento académico y continuidad
 
 La materia exige tres roles: **Ejecutor → Revisor → Aprobador**. En la

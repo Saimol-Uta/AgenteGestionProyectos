@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import sys
@@ -28,6 +29,7 @@ from agente_gestion.adapters.llm.mistral import MistralProvider
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
+from agente_gestion.domain.task_comparison import compare_task_snapshots
 from agente_gestion.ports.source_errors import (
     SourceError,
     SourceErrorCategory,
@@ -561,6 +563,53 @@ def decide_command(args: argparse.Namespace) -> int:
         return 1
 
 
+def history_command(args: argparse.Namespace) -> int:
+    """Read persisted observations without configuration, migration or composition."""
+    try:
+        storage = SQLiteStorageAdapter(db_path=args.db_path, read_only=True)
+        if args.history_operation == "list":
+            result = []
+            for capture in storage.list_snapshot_captures(args.project):
+                snapshot = capture.snapshot
+                result.append({
+                    "capture_id": capture.capture_id,
+                    "content_hash": capture.content_hash,
+                    "snapshot_id": snapshot.id,
+                    "project_id": snapshot.project_id,
+                    "captured_at": snapshot.captured_at.isoformat(),
+                    "cutoff_datetime": snapshot.cutoff_datetime.isoformat(),
+                    "task_source_identity": snapshot.task_source_identity,
+                    "tasks_complete": snapshot.tasks_complete,
+                    "is_complete": snapshot.is_complete,
+                    "task_count": len(snapshot.tasks),
+                })
+        else:
+            previous = storage.get_snapshot_capture(args.previous_capture)
+            current = storage.get_snapshot_capture(args.current_capture)
+            if previous is None or current is None:
+                sys.stderr.write("ERROR: History capture not found.\n")
+                return 1
+            if any(c.snapshot.project_id != args.project for c in (previous, current)):
+                sys.stderr.write("ERROR: History capture belongs to another project.\n")
+                return 1
+            # Evidence is run-scoped, not capture-scoped: never invent associations.
+            comparison = compare_task_snapshots(previous.snapshot, current.snapshot)
+            result = comparison.model_dump(mode="json")
+            result.update(previous_capture_id=previous.capture_id,
+                          current_capture_id=current.capture_id)
+        output = json.dumps(result)
+    except NotImplementedError:
+        sys.stderr.write("ERROR: History unavailable in legacy database; no migration performed.\n")
+        return 1
+    except Exception:
+        # Validation/SQLite exceptions may contain entire payloads or private facts.
+        sys.stderr.write("ERROR: History read or comparison failed; check database integrity, "
+                         "capture chronology and source compatibility.\n")
+        return 1
+    print(output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agente_gestion",
@@ -621,6 +670,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser_decide.add_argument("--reason", default=None, help="Optional explanatory rationale for decision")
     parser_decide.add_argument("--db-path", default=".runtime/agente.db", help="Path to SQLite database file")
 
+    parser_history = subparsers.add_parser("history", help="Read persisted capture history as JSON")
+    history_operations = parser_history.add_subparsers(dest="history_operation", required=True)
+    for operation in ("list", "compare"):
+        history_parser = history_operations.add_parser(operation)
+        history_parser.add_argument("project", help="Project identifier")
+        if operation == "compare":
+            history_parser.add_argument("previous_capture", help="Previous capture ID (not snapshot ID)")
+            history_parser.add_argument("current_capture", help="Current capture ID (not snapshot ID)")
+        history_parser.add_argument("--db-path", required=True, help="Existing SQLite database; read-only")
+
     return parser
 
 
@@ -634,6 +693,8 @@ def main() -> int:
         return source_check_command(args)
     elif args.subcommand == "decide":
         return decide_command(args)
+    elif args.subcommand == "history":
+        return history_command(args)
     return 0
 
 

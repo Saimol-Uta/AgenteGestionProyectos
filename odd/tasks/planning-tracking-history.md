@@ -19,7 +19,7 @@ Extend the existing analysis MVP with faithful activity metadata, deterministic 
 - [x] H1C — Pure comparator closed offline in939876f; native approved+acknowledged, independent checks green. Compare same-project snapshots deterministically with stable changes and conservative missing/incomplete semantics. Route: delegated writer (multi-file).
 - [x] H1E — Closed offline in3b6f269, nativeapproved+acknowledged; ASSESSclosed. Integrate derived Trello state/list-name observations and task source/mapping identity/completeness into real collection, with mocked acceptance. Route: delegated writer (integration gap found by independent verifier).
 - [x] H1D1 — Closed offline in0617ef1; nativeapproved+acknowledged and ASSESSclosed. Persist immutable content-addressed captures in existing SQLite, atomic safe backfill and read-only queries; preserve latest get_snapshot and all runs. Route: delegated writer (multi-file).
-- [ ] H1D2 — In progress. Add read-only CLI history list/compare using explicit capture IDs; unavailable legacy/missing DB never creates/migrates data or artifacts. Route: delegated writer (multi-file).
+- [ ] H1D2 — In progress; implementation recovered and checks green, review/commit pending. Add read-only CLI history list/compare using explicit capture IDs; unavailable legacy/missing DB never creates/migrates data or artifacts. Route: delegated writer (multi-file).
 
 ## Acceptance and verification
 Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focused tests, tests/ regression, pruebas/test_*.py, and git diff --check. Native review uses only the user-owned switch and provider-issued routes; unavailable review is documented, not globally disabled. Excluded/completed/unknown cards are not deadline risks; progress denominator remains included cards only. Comparator never asserts deletion or actor attribution without evidence, rejects cross-project comparisons and never depends on LLMs.
@@ -57,6 +57,11 @@ Observe test-first RED/GREEN for new deterministic behavior. Each unit runs focu
 ## H1D1 verification
 - Worker mv31f5wx-j-06sb RED52tests16errors before source; GREEN53focused/full527run525pass2skip/pruebas7pass. Twelve temporary-DB tests;7files410diff lines, coherent migration+storage+tests (advisory size heuristic, not split by filetype).
 - ExactJSON SHA256 identities, serialize-once, capture/latest atomic write, explicit DDL/index/backfill transaction, UTC ordering, integrity and readonly noncreation verified. Old overwrittenversions unrecoverable; hashes prove consistency not authorship. No real DB opened. Native review-cba6493ce9630bd3 approved44f875f5… then exactackburn35755582…; ASSESS medium/consumedtrue/closedderived, no separate verifier. Parent12pass/stageddiffclean; commit0617ef18c0bd0d4a6bf63a12444b6fe907da9b4b.
+
+## H1D2 recovered verification
+- User requested status/result retrieval; mv31oipb-k-6cex completed, source/test/docs present, uncommitted. No duplicate writer launched.
+- Writer RED70tests10errors before CLI source; GREEN70focused/full534run532pass2skip/pruebas7pass,6files348diff lines. Parent7history tests pass; readonlyDBbytes/schema/artifacts unchanged in tests.
+- Synthetic A0e9de74b139db73b50db7615b0162b809cc4c18a19c765f4d52d2c27f333947b -> B1df793912b546e0dd4fbc488136c29e8dc0ac423a69512b7f3e44712ce0b218b: assignees[A]->[B], due2026-10-15T12:00Z->2026-10-19T12:00Z, prioritynormal->high, statepending->en_curso. Exactly4changes, no actor/physicaldeletion/creation/evidence association invented. Review/commit pending.
 
 ## Next step
 H1D2 CLI: history list PROJECT --db-path and history compare PROJECT PREVIOUS_CAPTURE CURRENT_CAPTURE --db-path, JSON metadata/deltas with explicit capture IDs. Open SQLite read_only=True only; never compose orchestrator/artifacts or create/migrate files. Missing/legacy/corrupt/foreign capture fail cleanly. Synthetic persisted A/B must yield exactly4changes and leave database/schema/artifacts unchanged. Update validation/architecture/roadmap with current totals and pending T9/H2. Then advance next safe H2 increment; authorization is not report approval.

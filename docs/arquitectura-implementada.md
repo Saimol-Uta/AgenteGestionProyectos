@@ -77,8 +77,24 @@ La migración escritora conserva JSON y runs, con DDL/índice/backfill en una
 transacción explícita; no recupera versiones ya sobrescritas.
 `read_only=True` usa URI `mode=ro` y `query_only`, sin mkdir, schema ni backfill;
 historial legado no disponible se informa con `NotImplementedError`.
-Validación con bases temporales, sin migrar la base real. La CLI de historial
-queda para H1D2; no cambia la autorización ni ejecuta acciones de REQ-03.
+Validación con bases temporales, sin migrar la base real.
+
+### Historial de planificación H1D2 (CLI offline)
+
+`history list PROJECT --db-path DB` y `history compare PROJECT PREVIOUS_CAPTURE
+CURRENT_CAPTURE --db-path DB` abren directamente SQLite con `read_only=True`;
+no construyen Settings, orquestador, proveedores ni ArtifactStorageAdapter.
+Listar emite solo JSON de identidad, fechas, fuente, completitud y conteo de
+tareas. Comparar valida ambos proyectos y reutiliza `compare_task_snapshots`,
+conservando IDs de snapshot, fechas, advertencias y evidencia before/after,
+añadiendo los dos IDs de captura explícitos. La evidencia es por run: no hay
+asociaciones inventadas por captura. Hash y hechos observados son reproducibles,
+no una auditoría de operaciones/actores ni prueba de eliminación física.
+Errores de base ausente/legada, captura faltante/corrupta, proyecto, cronología
+o fuente incompatible retornan stderr estático y código no cero, sin dump de
+snapshot ni migración. Tests temporales comprueban bytes/esquema/artefactos sin
+cambios. REQ-03/10 siguen parciales; no cambia la autorización ni implementa H2,
+scheduler, UI o acciones. T9 real permanece PENDING.
 
 ### Evidencia real y brecha para cierre T9
 

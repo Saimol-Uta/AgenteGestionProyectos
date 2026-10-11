@@ -226,3 +226,49 @@ unknown; mantener decisión humana pendiente. `--fake` no vuelve offline
 `--sources real`. No se modificaron dependencias, entorno ni configuración,
 ni se hicieron commits/staging. Por ser documentación pasiva sin cambio de
 comportamiento, no aplica RED; la verificación usa regresiones existentes.
+
+## H1 — actualización offline H1D2 sobre `ea29dda`
+
+**T9 real permanece PENDING; REQ siguen parciales.** Evidencia nueva, sin
+reescribir el registro histórico ni afirmar validación externa/model performance.
+
+| Unidad previa | Commit | Disposición nativa disponible en el tracker |
+|---|---|---|
+| H1A | `748379c` | Declined para ese candidato; verificación independiente verde |
+| H1B | `be369c5` | Declined para ese candidato; verificación independiente verde |
+| H1C | `939876f` | Approved + acknowledged; verificación independiente verde |
+| H1E | `3b6f269` | Approved + acknowledged; ASSESS cerrado |
+| H1D1 | `0617ef1` | Approved + acknowledged; ASSESS cerrado |
+
+H1D2: implementación/verificación offline; disposición nativa y cierre son
+responsabilidad del padre, no se invocó revisión desde el writer.
+
+| Comando exacto | Resultado observado H1D2 |
+|---|---|
+| `.venv/bin/python -m unittest tests.test_cli_history tests.test_snapshot_history tests.test_task_comparison tests.test_cli tests.test_cli_sources tests.test_hybrid_pipeline` | 70/70 aprobados |
+| `.venv/bin/python -m unittest discover -s tests` | 534 ejecutados, 532 aprobados, 2 omitidos opt-in |
+| `.venv/bin/python -m unittest discover -s pruebas -p 'test_*.py'` | 7/7 aprobados: tests del evaluador, no benchmarks de rendimiento de modelos |
+| `git diff --check` | Sin errores de whitespace |
+
+Baseline suministrado: 527 ejecutados/525 aprobados/2 omitidos + 7 evaluadores.
+Los siete nuevos tests de `tests/test_cli_history.py` usan `planning_example()`
+y SQLite temporal: A/B con el mismo `snap-p`, responsables A→B, fecha límite
+15→19 de octubre de 2026, prioridad normal→high y estado pending→en_curso.
+La CLI devuelve exactamente esos cuatro campos con todos los before/after,
+IDs explícitos y fechas originales. RED antes de modificar fuente: 70 tests,
+10 errores (incluidos subtests), todos por `history` ausente de argparse.
+GREEN conserva también run/source-check/decide en las regresiones.
+
+Casos alternos: captura idéntica sin cambios; proyecto vacío; DB ausente/legada;
+captura faltante/corrupta (JSON/metadatos/modelo), proyecto ajeno en cualquiera
+de las capturas, tiempo invertido y fuente incompatible. Warnings y ausencia
+`not_observed` se conservan sin inferir eliminación física/actor. Se verifican
+bytes, esquema y entradas/bytes de artefactos sin cambios en éxito y error,
+bloqueando inicialización escritora, Settings, orquestador, artefactos y
+composición de proveedores. El slice enfocado emitió el ResourceWarning SQLite
+ya conocido y el rechazo argparse esperado; no hubo fallos.
+
+Límites: hechos persistidos y hash prueban consistencia/reproducibilidad, no
+operaciones ni autoría. La evidencia por run no se une arbitrariamente a
+capturas. No se abrió la base real ni se hicieron APIs, cambios de credenciales,
+H2, scheduler, UI, acciones externas, commits o staging.
