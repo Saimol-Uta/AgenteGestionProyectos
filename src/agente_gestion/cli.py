@@ -20,6 +20,9 @@ from agente_gestion.adapters.sources.factory import (
 )
 from agente_gestion.adapters.sources.http_transport import HttpGetTransportPort
 from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
+from agente_gestion.adapters.sources.local_monitoring_rules import (
+    MonitoringRulesError, load_monitoring_rules,
+)
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
 from agente_gestion.adapters.llm.ollama import OllamaProvider
@@ -207,11 +210,30 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
     if getattr(args, "due_soon_days", None) is not None:
         overrides["due_soon_days"] = args.due_soon_days
 
-    config = Settings.from_env_and_file(
-        config_path=args.config,
-        overrides=overrides,
-        env_file=getattr(args, "env_file", None),
-    )
+    if getattr(args, "monitoring_rules", None) is not None:
+        overrides["monitoring_rules_path"] = args.monitoring_rules
+
+    try:
+        config = Settings.from_env_and_file(
+            config_path=args.config,
+            overrides=overrides,
+            env_file=getattr(args, "env_file", None),
+        )
+    except Exception:
+        sys.stderr.write("ERROR: Configuration validation failed.\n")
+        return 2
+
+    requested_project = args.project or config.project_id
+    rules_path = getattr(args, "monitoring_rules", None)
+    if rules_path is None:
+        rules_path = config.monitoring_rules_path
+    proposal_rules = None
+    if rules_path is not None:
+        try:
+            proposal_rules = load_monitoring_rules(rules_path, requested_project)
+        except MonitoringRulesError:
+            sys.stderr.write("ERROR: Monitoring rules input invalid.\n")
+            return 2
 
     # Backward compatibility: explicit --fixture forces fixtures mode
     if explicit_fixture_passed:
@@ -236,9 +258,10 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         sys.stderr.write("ERROR: Configuration validation failed.\n")
         return 2
 
-    requested_project = args.project or config.project_id
     fixture_name = args.fixture
-    run = orchestrator.execute(project_id=requested_project, fixture_name=fixture_name)
+    execute_options = {"proposal_rules": proposal_rules} if proposal_rules is not None else {}
+    run = orchestrator.execute(project_id=requested_project, fixture_name=fixture_name,
+                               **execute_options)
 
     # Print required execution summary:
     findings_stored = sqlite_storage.get_findings(run.run_id)
@@ -675,6 +698,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--quality-provider", choices=["ollama", "groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral')")
     parser_run.add_argument("--env-file", default=None, help="Path to custom .env file (defaults to .env)")
     parser_run.add_argument("--due-soon-days", type=int, default=None, help="Inclusive near-due window in days (nonnegative; default 7)")
+    parser_run.add_argument("--monitoring-rules", default=None, metavar="PATH",
+                            help="Local JSON owner constraints (not action authorization)")
 
     # source-check command
     parser_check = subparsers.add_parser("source-check", help="Read-only data source diagnostic checks")

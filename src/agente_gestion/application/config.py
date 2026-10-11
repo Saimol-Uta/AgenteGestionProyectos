@@ -303,6 +303,10 @@ class Settings(BaseSettings):
         default="fixtures",
         description="Data source collection mode ('fixtures' or 'real').",
     )
+    monitoring_rules_path: Optional[str] = Field(
+        default=None,
+        description="Optional local JSON owner constraints; not quality policies or authorization.",
+    )
     policies_path: str = Field(
         default="config/policies.yaml",
         description="Path to local quality policies YAML file.",

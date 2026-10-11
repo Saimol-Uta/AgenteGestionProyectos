@@ -105,6 +105,11 @@ Observe test-first RED/GREEN; tests reject wrong field/value, stale capture/hash
 - JSONDomainProposalRuleSet strictproject/task/field/value/rationaleimpact validation beforeexecution; staticerrors forinvalid/missing/foreignpolicyfiles, no paths/rawpayload/credentialleak. Explicitpolicynottrust/auth, no defaultfakechoices. execute receivesonlyvalidatedtypedoptionalrules, fingerprintalreadyincludesnormalizedrules. Existingofflinefake/quality/gates/reports/commands retained.
 - Target350source/test hard400. RED/GREEN localtempfiles/parser/config/CLIintegration tests/fullregression/nativeexactunitreview/localcommit. No YAMLruleparser/deps/network/realauth/execution/autoactions. C/D offlineidentityreview thencontrolleddryrun remainpending.
 
+## H2B2c verified handoff
+- Writer mv4c2jql-12-r34k completedONLY4authorizedpaths266added/7removedlines (66source200tests),8newtests. REDmissing-loaderimport; GREEN8new+33config+10CLI/full583run581pass2skip/pruebas7pass/diffclean. Currentdoc/headerpreserved.
+- Publicrun --monitoring-rules PATH overridesSettings/YAMLmonitoring_rules_path/environmentMONITORING_RULES_PATH, Nonepreserveslegacyexecution/cache+abstention. Newbounded1MiBJSONDomainProposalRuleSet loaderstrictprojectmatching/value/null/date/trustflags validation staticerrors; validatesBEFOREstorage/providercomposition, explicitinvalid/missing/foreignfile exit2 no partialrun.
+- Constraintsonlynotauth; currentobservation/evidence stillneeded, sparsefixturesno inventedactivity. No orchestrator/context/domain/storage/provider/fixturechanges, noactuation. Nativeexactunitreview/commitpending; SQLiteResourceWarningknown.
+
 ## Next step
 H2B2b2closed. B3closed; scopeowner-rulelocalJSONinputbeforeC/D. Newwriterlaunchpending; no unclosednativeauthority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 
