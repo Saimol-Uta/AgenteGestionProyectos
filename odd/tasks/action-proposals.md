@@ -201,6 +201,13 @@ The original omnibus H2C task is refined into the three authoritative units belo
 - JSON allowlist requestbinding/status/reasons/field/beforeafter/server timestamp/replay/history/unverified metadata only; no rationale/evidenceDTO/rawdata/path/exception/provider output. ExistingCLI intact, no orchestration/real sources/providers/inference/network.
 - Full regression afterD3 then bitacora/docs and safeH3. H3scout found Friday onlysoftpref/no configuredday/time/weekboundary: require ownerexplicitconfiguration, never choose/activate schedule orlivecutoff silently.
 
+## H2D3 verified handoff
+- Worker completed exactly cli.py/new tests/test_cli_proposal_dry_run.py, 311 added lines (88source223tests), seven genuine SQLite tests. RED7tests17failures1error missingroute/parser/private-proseoutput; GREEN7new49focus623run621pass2optinskips7evaluator exactPYTHONPATH=src/diffclean includingnewfile. Fullsuite SQLiteResourceWarning nonblocking.
+- Explicit dry-run required request/capture/permission-event/expected-version/bodySHA/project/proposal/DB binding; strictpreconnectionvalidation, readonlyaudit-capability/context/publiccapture preflight beforewriter. Corrupt/missing/foreign/legacy staticexit2/no schema mutation. Legitimatefirstdenial audited; all retries reenter D2transaction nevercachedsuccess bypass.
+- Allowlisted JSON bindsrequest/result/UTC/replay/history, not_executed/livefalse/identityfalse/initiatorunknown. Replayhistorical=true/is_new_simulation=false originaltimestamp; readonlyaudit historical=true survivesrevocation, no provider/sourcecomposition/auth/live/path/evidence/prose leakage.
+- Scope-filtered publicreadscannotproveforeigncaptureintegrity, D2finalglobalchecks remain authoritative. Native review/localcommit pending; final independent verifier mv4fjaaf-1m-afty running49/full/pruebas/CLIhelpsmoke.
+- No sourcewriter active. H3map available with no bindingconfiguredFriday/time/cutoff, so future pureplanning requires explicit ownerpolicy without activation/defaults.
+
 ## Next step
 H2B2b2closed. Rule input and pipeline closed. H2C closed offline. H2D1/2 closed. Launch only bounded H2D3 CLI writer; then full regression, bitacora and next safe H3 unit. Real execution remains blocked. No unclosed native authority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 
