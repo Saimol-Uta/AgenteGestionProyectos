@@ -92,13 +92,15 @@ Normalizar prioridad/responsables/fechas, exponer planificación consultable y e
 
 **Avance H1D2 (CLI offline):** `history list/compare --db-path` consulta SQLite directamente con `read_only=True`, sin Settings/composición/proveedores/artefactos ni migraciones. Lista solo metadatos; compara IDs de captura explícitos (distintos de snapshot IDs reutilizables), conservando contexto, before/after y advertencias. Datos observados + hash permiten reproducir diferencias, no atribuir actores u operaciones; evidencia por run puede no estar disponible y no se inventa su asociación. Tests temporales cubren cuatro cambios exactos, comparación idéntica, errores sanitizados y no mutación.
 
-**Salida pendiente del hito completo:** quedan vistas completas y riesgos justificables sin falsas inferencias de dependencias no registradas. REQ-03/10 siguen parciales por validación integrada en vivo y acciones/autorización/auditoría pendientes. No se implementaron H2, scheduler ni UI; T9 permanece PENDING.
+**Salida pendiente del hito completo:** quedan vistas completas y riesgos justificables sin falsas inferencias de dependencias no registradas. REQ-03/10 siguen parciales por validación integrada en vivo y acciones/autorización/auditoría pendientes. El avance H2 se limita al contrato H2A descrito abajo; scheduler y UI no están implementados. T9 permanece PENDING.
 
 ### Hito H2 — Propuestas, revisión, aprobación, ejecución segura (REQ-03/05/08/09/10/11)
 
 Definir `ActionProposal` (acción, objetivo, valor anterior y propuesto, motivo, evidencia, impacto, autor); revisión de validez técnica y autorización separadas; petición al gestor, identidad/permiso, token de aprobación vinculado a versión, ejecutor Trello de lista permitida y verificación posterior de cambio; manejo idempotente de rechazos/duplicados y trazabilidad. **Nunca hacer escrituras sin autorización**. Mantener tres roles académicos y Verifier auxiliar; implementar nuevas funciones sin «recrear» agentes existentes.
 
-**Salida:** demo de una reprogramación propuesta, revisada, aprobada por gestor, ejecutada y auditada; rechazo demuestra cero escrituras.
+**Avance H2A (dominio puro, offline):** `ActionProposal` versionada admite solo `start_date`, `due_date`, `priority`, `assignee_ids` y `state`, con valores actual/propuesto, motivo, impacto y IDs de evidencia. `validate_action_proposal` comprueba vínculo captura/hash/proyecto, tarea única, observación explícita, valor actual y evidencia de apoyo sin mutación. Conserva null/desconocido/vacío y rechaza coerciones, contradicciones, duplicados y cambios nulos. Las propuestas permanecen `pending`, `not_authorized`, `not_executed`; no hay integración, transición de revisión, actores autorizados ni ejecutor. Se presupone captura autoritativa desde almacenamiento verificado: no se rehashea el modelo legado. La evidencia pasada valida metadatos de tarea, **no demuestra pertenencia a la captura inmutable**. REQ-08 sigue PARCIAL y T9 PENDING.
+
+**Salida pendiente H2B/H2C:** demo de una reprogramación propuesta, revisada, aprobada por gestor, ejecutada y auditada; rechazo demuestra cero escrituras. Antes de implementar autorización/ejecución deben resolverse identidad, permisos y política de revisión.
 
 ### Hito H3 — Reportería y notificación automática (REQ-04/06/09/10)
 
