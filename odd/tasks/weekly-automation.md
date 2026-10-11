@@ -13,8 +13,8 @@ Advance H3/REQ-04/06/09/10 safely after H2 closed offline (945c15e, c6d5277, ef8
 - H2 final independent 623run621passed2optinskips/7offline evaluator checks; SQLiteResourceWarning remains nonblocking. Real T9/Ollama/Gemini validation and trusted execution remain unperformed.
 
 ## Tasks
-- [ ] H3A — In progress: pure explicit weekly schedule/window planner. Exactly domain/weekly_schedule.py and tests/test_weekly_schedule.py. Required owner fields, strict validation, stable project/schedule/window identity, elapsed/next boundary in Guayaquil and UTC; planning only, no scheduling/execution. No default schedule.
-- [ ] H3B — Pending exploration: unique project/period job records with immutable attempts, version/CAS, controlled retries and failure evidence. Preserve existing ExecutionRun/report records; no implicit pipeline calls.
+- [x] H3A — Closed offline in a5ad81f3595ab615552c37b8c331f4053c89597e, native approved+acknowledged: pure explicit weekly schedule/window planner. Exactly domain/weekly_schedule.py and tests/test_weekly_schedule.py. Required owner fields, strict validation, stable project/schedule/window identity, elapsed/next boundary in Guayaquil and UTC; planning only, no scheduling/execution. No default schedule.
+- [ ] H3B — In progress (read-only map, split pure lifecycle and storage): unique project/period job records with immutable attempts, version/CAS, controlled retries and failure evidence. Preserve existing ExecutionRun/report records; no implicit pipeline calls.
 - [ ] H3C — Pending exploration: idempotent offline notification outbox and local delivery/failure states, queryable history; no email/Slack/Trello credentials/network.
 - [ ] H3D — Pending exploration: explicit offline plan/tick/inspection CLI linking actual stored capture/report facts, not generic synthetic activities or private-code inference. Activation requires owner-selected schedule and data scope.
 
@@ -26,7 +26,7 @@ Strict nonblank project; weekday integer Monday0–Sunday6 (not bool/string), ex
 - REDmissingmodule observed; GREEN7planner17domain11dueSoon12history630run628passed2optinskips7evaluator exactPYTHONPATH=src; whitespaceclean. Existing SQLiteResourceWarning remains nonblocking.
 - WeeklySchedule strict/frozen/extra-forbid requires project/weekday0–6/exactHH:MM/Guayaquil/previous_scheduled_week; no defaults or configuration activation. Unsafeconstructed/mutated rawfields and extra claims revalidated before use.
 - Injected aware datetime only, local latest elapsed boundary <=evaluation, next+7localdays, [elapsed-7localdays,elapsed) cutoffelapsed; every boundary local+UTC, deterministic SHA fullschedule+UTCendpoints, not capture/event proof. planning_only constant even unsafe construction, no execution/notification/DB flags.
-- Parent read115line source; native exact-unit review/localcommit pending. H3B scout mv4fx48c-1p-hail read-only lifecycle/storage map running, no activewriter.
+- Parent read115line source; native review-a2d4654948c7bd7a approved exactack0a198499, ASSESSderivedclosedconsumedtrue; commit a5ad81f3595ab615552c37b8c331f4053c89597e. H3B scout mv4fx48c-1p-hail read-only lifecycle/storage map running, no activewriter.
 
 ## Next step
-Implement and verify H3A only; continue storage/outbox/CLI through fresh bounded mapping. A real schedule remains unconfigured until its owner explicitly chooses the fields.
+H3A closed. Finish current bounded H3B mapping, then pure lifecycle and optional SQLite persistence in separate units, followed by outbox/CLI. A real schedule remains unconfigured until its owner explicitly chooses the fields.
