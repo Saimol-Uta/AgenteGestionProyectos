@@ -13,8 +13,8 @@ Advance H2/REQ-08 with structured, capture-bound action proposals and explicit e
 - Authentication, authorized actors, review transition policy and specific action consent must be resolved before permission or execution is implemented.
 
 ## Tasks
-- [ ] H2A — In progress; implementation/checks green, native review/commit pending. New pure proposal schema and validate_action_proposal(proposal,capture,evidence_items); field-specific values, immutable capture/project/task binding, explicitly observed current fact and exact supporting evidence. No review transitions or executor. Route: delegated writer (new source/test files).
-- [ ] H2B — Pending exploration after H2A. Integrate proposals with existing roles and versioned consultative review/audit, subdividing storage/CLI work into small units as needed. No claimed authorization.
+- [x] H2A — Closed offline in 214a9256c97adff9d546869d99a272a5800ebc22; native approved+acknowledged. New pure proposal schema and validate_action_proposal(proposal,capture,evidence_items); field-specific values, immutable capture/project/task binding, explicitly observed current fact and exact supporting evidence. No review transitions or executor. Route: delegated writer (new source/test files).
+- [ ] H2B — In progress, read-only mapping for a storage-only B1 slice; no writer active. Integrate proposals with existing roles and versioned consultative review/audit, subdividing storage/CLI work into small units as needed. No claimed authorization.
 - [ ] H2C — Pending product/security authorization. Define authenticated actor/role and specific-action authorization boundary before any executor; explicit human decisions required for real Trello actions.
 
 ## Acceptance and checks
@@ -25,10 +25,10 @@ Observe test-first RED/GREEN; tests reject wrong field/value, stale capture/hash
 - Scout mv31ql95-l-i5bn mapped minimal domain/action_proposal.py + tests/test_action_proposals.py; evidence IDs are provenance.id and captures bind exact storedJSON hash. HumanDecisionState has no established transition/authentication policy, so H2A does not invent it.
 
 ## H2A verification
-- Writer mv333rkp-n-96x8: RED42tests1expected importerror; GREEN47focused/full540run538pass2skip/pruebas7pass; gitdiffcheckclean. New source/test308lines,6tests withsubcases; parent6pass. Pure schema and validator enforce observed current fact plus matching field evidence, wrongcapture/project/task/IDs and fabricatedpermissions rejected; original models unchanged. Review/commitpending.
+- Writer mv333rkp-n-96x8: RED42tests1expected importerror; GREEN47focused/full540run538pass2skip/pruebas7pass; gitdiffcheckclean. New source/test308lines,6tests withsubcases; parent6pass. Pure schema and validator enforce observed current fact plus matching field evidence, wrongcapture/project/task/IDs and fabricatedpermissions rejected; original models unchanged. Native review-7c4b7c55ce601d69 approved6a936068…; exact acknowledgement burned911f2a66…; ASSESSmedium/consumedtrue/closedderived (no separate verifier). Commit214a9256c97adff9d546869d99a272a5800ebc22.
 - Supporting evidence is explicit metadata, not proof of membership in a capture; storage-verification assumed for SnapshotCapture. Review/authentication/executionpolicy remains unimplemented. No API/network/provider calls or role changes.
 
 ## Next step
-Complete H2A only, review/check/commit, then map next safe H2B slice. Resolve indispensable product/security policy with one focused question before crossing its boundary.
+H2Aclosed. Map minimalH2B1 catalogue before any writer. Freeze exact sanitized submission evidence: SQLite(id,run_id) evidence rows INSERTORREPLACE are not immutable references; provenance.id alone is insufficient. SHA consistency is not authorship or capture association. Resolve indispensable product/security policy with one focused question before crossing its boundary.
 
 Locator: odd/tasks/action-proposals.md
