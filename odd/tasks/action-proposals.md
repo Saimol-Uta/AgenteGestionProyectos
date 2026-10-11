@@ -169,6 +169,13 @@ The original omnibus H2C task is refined into the three authoritative units belo
 - [ ] H2D3 — Pending: explicit CLI dry-run request and distinct read-only historical audit inspection, actor/permission/capture/version/bodyhash binding, no caller-specified arbitrary action values/live/default execution.
 - Each unit <=350 changed source/test lines, hard400; tests latest/tie/staleness/incomplete/currentvalue/five fields/evidence/grant/revocation/version/race/replay/immutable status and audit. Existing roles/providers/pipeline unchanged, no real service calls.
 
+## H2D1 recovered implementation
+- Original worker mv4dtxlv-1a-ivhn recovered via status/result, completed; no duplicate writer. Exactly domain/proposal_dry_run.py + tests/test_proposal_dry_run.py, 322 new lines and six tests with subcases.
+- RED focused25tests1missingmoduleerror; GREEN30focused609run607pass2optinskips7evaluator exact PYTHONPATH=src, diffcheck clean (worker evidence). Independent verifier mv4egjsf-1b-l5ls running.
+- Pure keyword-only simulate_proposal(request,proposal,capture,evidence_items,proposal_body_sha256,events,project_captures): actual technical validator and event fold, explicit request/capture/permission-event/expectedversion/rawstoredbodydigest binding, tasks_complete=True/nonblank task_source_identity, included/nonarchived/knownstate target, UTC unique latest stored capture (naive=UTC; identical duplicates normalize, conflicting IDs/ties fail).
+- Frozen extra-forbid requests and recursively checked supplied models reject fabricated roles/live flags; successful result only field/before/after SIMULATED, not_executed/live_state_changed=false/real_execution_allowed=false even unsafe constructed outputs. No persistent audit or live freshness proof. Exact stored bytes and full verified project capture inventory remain adapter preconditions.
+- Native review/local commit pending. D2 scout mv4egxu2-1c-vjcr mapping same-connection transactional audit; no writer yet.
+
 ## Next step
 H2B2b2closed. Rule input and pipeline closed. H2C closed offline. Launch only bounded H2D1 pure guard/simulation writer; later transactional audit then CLI. Real execution remains blocked. No unclosed native authority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 
