@@ -14,8 +14,9 @@ Advance H2/REQ-08 with structured, capture-bound action proposals and explicit e
 
 ## Tasks
 - [x] H2A — Closed offline in 214a9256c97adff9d546869d99a272a5800ebc22; native approved+acknowledged. New pure proposal schema and validate_action_proposal(proposal,capture,evidence_items); field-specific values, immutable capture/project/task binding, explicitly observed current fact and exact supporting evidence. No review transitions or executor. Route: delegated writer (new source/test files).
-- [ ] H2B1 — In progress; implementation/checks green, native review/commit pending. Persist immutable proposals plus exact referenced sanitized submission evidence, optional storage port APIs, idempotency/conflict guards and read-only catalogue queries. Route: one delegated writer; no CLI/roles/review/auth/executor changes.
-- [ ] H2B2 — Pending mapping after B1. Consume the catalogue and integrate consultative proposal inspection/review with existing roles in bounded units; resolve indispensable review policy first. No claimed authorization.
+- [x] H2B1 — Closed offline in 2cabd581763a0d2abf84c9790827ccf246521e76; native approved+acknowledged. Persist immutable proposals plus exact referenced sanitized submission evidence, optional storage port APIs, idempotency/conflict guards and read-only catalogue queries. Route: one delegated writer; no CLI/roles/review/auth/executor changes.
+- [ ] H2B2a — In progress. Read-only CLI proposals list PROJECT and show PROJECT PROPOSAL_ID --db-path, explicit JSON projection, no raw supporting DTO/payload/URL/snippet export; preserve existing commands and nonmutation. Route: one delegated writer after mapped scope.
+- [ ] H2B2b — Pending exploration. Integrate structured proposals and consultative review with existing roles; resolve indispensable review-transition policy first, no authority by report/technical approval.
 - [ ] H2C — Pending product/security authorization. Define authenticated actor/role and specific-action authorization boundary before any executor; explicit human decisions required for real Trello actions.
 
 ## Acceptance and checks
@@ -38,9 +39,15 @@ Observe test-first RED/GREEN; tests reject wrong field/value, stale capture/hash
 
 ## H2B1 verification
 - Writer mv33p5we-q-sk2c completed3allowedpaths; source/test360addedlines (soft350 exceeded10, below400hardstop);7tempfiletests. REDmissingAPIs14expectederrors, subsequentreadonlyPermissionError/binarytamper RED failures; GREEN49focused/full547run545pass2skip/pruebas7pass; gitdiffcheckclean; parent7pass.
-- Optional typedtuple port APIs; separate transactional catalogue migration; capture verification/save atomic; exactbodySHA+metadata integrity checks; frozen selected DTOs survive later evidence replacement/mutation. SameIDidenticalretry succeeds, conflictingbody denied. Read-only noncreation/missingcatalogue errors preserved. No status/authorship/live-state/captureassociation claim. Caller sanitizedDTOprecondition unchanged. Review/commitpending.
+- Optional typedtuple port APIs; separate transactional catalogue migration; capture verification/save atomic; exactbodySHA+metadata integrity checks; frozen selected DTOs survive later evidence replacement/mutation. SameIDidenticalretry succeeds, conflictingbody denied. Read-only noncreation/missingcatalogue errors preserved. No status/authorship/live-state/captureassociation claim. Caller sanitizedDTOprecondition unchanged. Native review-95c3fe5d27b2bb2f approvedddee67bf…; exactackburnc9f8ab15…; ASSESSmedium/consumedtrue/closedderived, no separate verifier. Commit2cabd581763a0d2abf84c9790827ccf246521e76.
+
+## H2B2a mapped scope
+- Read-only scout mv33zv4o-r-o5qr: reuse CLI history handler/parser/dispatch pattern, direct SQLiteStorageAdapter(read_only=True), tupleget/list already validate frozen record/capturefacts; no schema/domain/validator change.
+- Exactsource/test paths cli.py + new tests/test_cli_proposals.py; small README/requirements/validation updates to correct old H2-not-touched ledger. List explicit IDs/capture/field/status metadata and supporting_evidence_count; show allowlisted proposal fields including current/proposed values, rationale/impact/evidence_ids, never supporting EvidenceItemDTO.
+- Not-found and foreign-project show indistinguishable; static errors never DB/model data. No Settings/providers/orchestrator/artifacts or migrations. No submit/import/transition/actor/executor; source/testtarget<=300lines, >400stop/split.
+- Test RED/GREEN temporary persisted fixture, exact JSON/values/types, project isolation/errors/tamper/missingcatalogue/no evidence leakage, DB/schema/files unchanged, oldcommands/hybrid retained. Native review only exact completed unit, no accumulatedbranch.
 
 ## Next step
-H2Aclosed, B1scope mapped. Implement B1 only; source writer receives three exact paths. Freeze exact sanitized submission evidence: SQLite(id,run_id) evidence rows INSERTORREPLACE are not immutable references; provenance.id alone is insufficient. SHA consistency is not authorship or capture association. Resolve indispensable product/security policy with one focused question before crossing its boundary.
+H2A+B1closed. Implement browse-only B2a within mapped scope, then resolve next indispensable review/authentication policy before crossing its boundary. Freeze exact sanitized submission evidence: SQLite(id,run_id) evidence rows INSERTORREPLACE are not immutable references; provenance.id alone is insufficient. SHA consistency is not authorship or capture association. Resolve indispensable product/security policy with one focused question before crossing its boundary.
 
 Locator: odd/tasks/action-proposals.md
