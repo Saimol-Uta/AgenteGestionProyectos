@@ -125,6 +125,12 @@ The original omnibus H2C task is refined into the three authoritative units belo
 - Extra actor roles/authenticated flags/UID claims rejected; explicit nonempty actor claim has fixed asserted_offline provenance. Real execution always denied; only explicit dry-run permission after valid technical assessment and offline review.
 - Tests first for initial state, technical eligibility without approval, offline approval without permission, dry-run grant/deny/revoke, rejection, invalid transitions, forged/mutable claims, stale/mismatched bindings/version, replay/conflicts and capture/evidence failures. No storage/CLI changes in C1.
 
+## H2C1 verified handoff
+- Writer mv4cgep3-14-v0of completed two new files, 319 source/test lines, six new tests; no existing source changed. RED expected missing proposal_review module; GREEN 28 focused, 589 run / 587 passed / 2 opt-in skipped, 7 evaluator checks, diff check clean.
+- OfflineActorClaim, DecisionEvent, TechnicalAssessment, Projection; assess_proposal and fold_decisions derive eligibility from actual proposal/capture/evidence, reject extra/forged/mutable claims, strict digest/version/bindings.
+- Approval grants no permission; authorize_dry_run separately requires approved_offline and eligibility, bound_proposal_dry_run scope only. Terminal rejection withdraws permission; deny/revoke clear it, new explicit grant while approved may reauthorize. Replay preserves version; changed event ID content conflicts, stale/mismatched bindings fail without mutation. Real execution always false.
+- Adapter supplies verified lowercase 64-hex SHA256 of exact stored catalogue JSON INCLUDING evidence, never parsed-model reserialization. C2 must expose this digest and append events transactionally; C3 requires explicit actor without identity fallback. Native exact-unit review/commit pending; SQLite warning remains.
+
 ## Next step
 H2B2b2closed. Rule input and pipeline closed. Launch only bounded H2C1 pure-domain writer; follow its completed handoff with checks/native exact-unit review/local commit, then ledger and CLI. No unclosed native authority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 
