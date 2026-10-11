@@ -14,7 +14,8 @@ Advance H2/REQ-08 with structured, capture-bound action proposals and explicit e
 
 ## Tasks
 - [x] H2A — Closed offline in 214a9256c97adff9d546869d99a272a5800ebc22; native approved+acknowledged. New pure proposal schema and validate_action_proposal(proposal,capture,evidence_items); field-specific values, immutable capture/project/task binding, explicitly observed current fact and exact supporting evidence. No review transitions or executor. Route: delegated writer (new source/test files).
-- [ ] H2B — In progress, read-only mapping for a storage-only B1 slice; no writer active. Integrate proposals with existing roles and versioned consultative review/audit, subdividing storage/CLI work into small units as needed. No claimed authorization.
+- [ ] H2B1 — In progress; implementation/checks green, native review/commit pending. Persist immutable proposals plus exact referenced sanitized submission evidence, optional storage port APIs, idempotency/conflict guards and read-only catalogue queries. Route: one delegated writer; no CLI/roles/review/auth/executor changes.
+- [ ] H2B2 — Pending mapping after B1. Consume the catalogue and integrate consultative proposal inspection/review with existing roles in bounded units; resolve indispensable review policy first. No claimed authorization.
 - [ ] H2C — Pending product/security authorization. Define authenticated actor/role and specific-action authorization boundary before any executor; explicit human decisions required for real Trello actions.
 
 ## Acceptance and checks
@@ -28,7 +29,18 @@ Observe test-first RED/GREEN; tests reject wrong field/value, stale capture/hash
 - Writer mv333rkp-n-96x8: RED42tests1expected importerror; GREEN47focused/full540run538pass2skip/pruebas7pass; gitdiffcheckclean. New source/test308lines,6tests withsubcases; parent6pass. Pure schema and validator enforce observed current fact plus matching field evidence, wrongcapture/project/task/IDs and fabricatedpermissions rejected; original models unchanged. Native review-7c4b7c55ce601d69 approved6a936068…; exact acknowledgement burned911f2a66…; ASSESSmedium/consumedtrue/closedderived (no separate verifier). Commit214a9256c97adff9d546869d99a272a5800ebc22.
 - Supporting evidence is explicit metadata, not proof of membership in a capture; storage-verification assumed for SnapshotCapture. Review/authentication/executionpolicy remains unimplemented. No API/network/provider calls or role changes.
 
+## H2B1 mapped scope
+- Read-only mv336qdt-o-t4q4 completed: exact surfaces ports/storage.py, adapters/storage/sqlite.py and new tests/test_action_proposal_storage.py. No source changes. Parent cancelled nothing: cancellation raced with already completed scout; original final report recovered. Supplemental read-only continuation mv33kt1a-p-u5im is not a source writer.
+- APIs save_action_proposal(proposal,supporting_evidence), get_action_proposal(id), list_action_proposals(project), optional/nonabstract; reads return proposal plus frozen evidence. Catalogue keyed proposal_id, exact canonical submission SHA; sameID+samebody idempotent, differentbody rejected. Capture lookup/validation/insert one transaction.
+- Add idempotent catalogue DDL/index in a new explicit BEGIN IMMEDIATE after existing history migration/backfill, not base executescript; never alter original snapshot/run/evidence behavior. Read-only never creates/migrates. Missing catalogue clearly unsupported.
+- Freeze only explicitly referenced sanitized DTOs, not mutable evidence(id,run_id) rows. Digest proves byte consistency, not authorship, current live state, or capture association. Preserve pending/not_authorized/not_executed.
+- Target250-350source/testlines; >400stop/split. RED/GREEN new storage suite, existing storage/history/proposal/CLI/hybrid checks, fulltests,7evaluators, whitespace/native review then localcommit. No real DB/API/credentials or publishing.
+
+## H2B1 verification
+- Writer mv33p5we-q-sk2c completed3allowedpaths; source/test360addedlines (soft350 exceeded10, below400hardstop);7tempfiletests. REDmissingAPIs14expectederrors, subsequentreadonlyPermissionError/binarytamper RED failures; GREEN49focused/full547run545pass2skip/pruebas7pass; gitdiffcheckclean; parent7pass.
+- Optional typedtuple port APIs; separate transactional catalogue migration; capture verification/save atomic; exactbodySHA+metadata integrity checks; frozen selected DTOs survive later evidence replacement/mutation. SameIDidenticalretry succeeds, conflictingbody denied. Read-only noncreation/missingcatalogue errors preserved. No status/authorship/live-state/captureassociation claim. Caller sanitizedDTOprecondition unchanged. Review/commitpending.
+
 ## Next step
-H2Aclosed. Map minimalH2B1 catalogue before any writer. Freeze exact sanitized submission evidence: SQLite(id,run_id) evidence rows INSERTORREPLACE are not immutable references; provenance.id alone is insufficient. SHA consistency is not authorship or capture association. Resolve indispensable product/security policy with one focused question before crossing its boundary.
+H2Aclosed, B1scope mapped. Implement B1 only; source writer receives three exact paths. Freeze exact sanitized submission evidence: SQLite(id,run_id) evidence rows INSERTORREPLACE are not immutable references; provenance.id alone is insufficient. SHA consistency is not authorship or capture association. Resolve indispensable product/security policy with one focused question before crossing its boundary.
 
 Locator: odd/tasks/action-proposals.md

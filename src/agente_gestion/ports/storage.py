@@ -9,6 +9,7 @@ from agente_gestion.domain.run import ExecutionRun, StageExecutionRecord
 from agente_gestion.domain.findings import CandidateFinding, FindingVerification
 from agente_gestion.domain.llm import LLMCallAttempt
 from agente_gestion.domain.evidence import EvidenceItem
+from agente_gestion.domain.action_proposal import ActionProposal
 
 
 class StoragePort(ABC):
@@ -56,6 +57,19 @@ class StoragePort(ABC):
     def get_snapshot_capture(self, capture_id: str) -> Optional[SnapshotCapture]:
         """Retrieve a capture by exact JSON hash; optional storage capability."""
         raise NotImplementedError("Snapshot history unavailable")
+
+    def save_action_proposal(self, proposal: ActionProposal,
+                             supporting_evidence: list[EvidenceItem]) -> None:
+        """Persist already sanitized submission DTOs; optional, never grants permission."""
+        raise NotImplementedError("Action proposal catalogue unavailable")
+
+    def get_action_proposal(self, proposal_id: str) -> Optional[tuple[ActionProposal, list[EvidenceItem]]]:
+        """Return a frozen submission and its explicitly referenced evidence."""
+        raise NotImplementedError("Action proposal catalogue unavailable")
+
+    def list_action_proposals(self, project_id: str) -> list[tuple[ActionProposal, list[EvidenceItem]]]:
+        """List frozen submissions for a project; optional storage capability."""
+        raise NotImplementedError("Action proposal catalogue unavailable")
 
     @abstractmethod
     def save_evidence(self, run_id: str, evidence_items: list[EvidenceItem]) -> None:

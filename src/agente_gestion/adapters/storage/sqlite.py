@@ -27,6 +27,7 @@ from agente_gestion.domain.findings import (
 )
 from agente_gestion.domain.llm import LLMCallAttempt, GenerationStatus
 from agente_gestion.domain.evidence import EvidenceItem
+from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
 
 
 class SQLiteStorageAdapter(StoragePort):
@@ -206,6 +207,21 @@ class SQLiteStorageAdapter(StoragePort):
                                 ON snapshot_captures(project_id, captured_at, capture_id)""")
                 for row in conn.execute("SELECT data_json FROM snapshots"):
                     self._insert_capture(conn, row["data_json"])
+            # Catalogue migration is writer-only and independent of history backfill.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS action_proposals (
+                        proposal_id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        capture_id TEXT NOT NULL,
+                        schema_version TEXT NOT NULL,
+                        data_json TEXT NOT NULL,
+                        content_hash TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_action_proposals_project_order
+                                ON action_proposals(project_id, proposal_id)""")
         finally:
             conn.close()
 
@@ -272,6 +288,119 @@ class SQLiteStorageAdapter(StoragePort):
             row = conn.execute("SELECT * FROM snapshot_captures WHERE capture_id = ?",
                                (capture_id,)).fetchone()
             return self._parse_capture(row) if row else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _require_proposals(conn: sqlite3.Connection) -> None:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='action_proposals'").fetchone():
+            raise NotImplementedError("Action proposal catalogue unavailable; writer migration required")
+
+    @staticmethod
+    def _proposal_json(data: dict) -> str:
+        return json.dumps(data, sort_keys=True, separators=(',', ':'),
+                          ensure_ascii=False, allow_nan=False)
+
+    def _validate_submission(self, conn: sqlite3.Connection, raw: str):
+        try:
+            data = json.loads(raw)
+            if set(data) != {'proposal', 'evidence'} or self._proposal_json(data) != raw:
+                raise ValueError
+            proposal = ActionProposal.model_validate(data['proposal'])
+            evidence = [EvidenceItem.model_validate(item) for item in data['evidence']]
+            # Only explicitly referenced DTOs belong in the immutable submission.
+            if any(item.provenance.id not in proposal.evidence_ids for item in evidence):
+                raise ValueError
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise ValueError("Invalid action proposal submission schema") from None
+        self._require_history(conn)
+        row = conn.execute("SELECT * FROM snapshot_captures WHERE capture_id = ?",
+                           (proposal.observed_capture_id,)).fetchone()
+        if row is None:
+            raise ValueError("Action proposal capture unavailable")
+        try:
+            capture = self._parse_capture(row)
+            errors = validate_action_proposal(proposal, capture, evidence)
+        except (ValueError, TypeError, KeyError):
+            raise ValueError("Invalid action proposal capture") from None
+        if errors:
+            raise ValueError("Invalid action proposal bindings: " + ', '.join(errors))
+        return proposal, evidence
+
+    def _parse_proposal(self, conn: sqlite3.Connection, row: sqlite3.Row):
+        raw = row['data_json']
+        if type(raw) is not str or hashlib.sha256(raw.encode('utf-8')).hexdigest() != row['content_hash']:
+            raise ValueError("Action proposal integrity mismatch")
+        proposal, evidence = self._validate_submission(conn, raw)
+        metadata = (proposal.proposal_id, proposal.project_id,
+                    proposal.observed_capture_id, proposal.schema_version)
+        if metadata != tuple(row[key] for key in ('proposal_id', 'project_id', 'capture_id', 'schema_version')):
+            raise ValueError("Action proposal metadata mismatch")
+        return proposal, evidence
+
+    def save_action_proposal(self, proposal: ActionProposal,
+                             supporting_evidence: list[EvidenceItem]) -> None:
+        """Freeze full referenced, already source-normalized/sanitized DTOs.
+
+        Callers supply sanitized EvidenceItems; this is not a sanitizer.
+        SHA proves byte consistency only: not authorship, live state, permission,
+        or an evidence-to-capture association. Parsed models are not identity.
+        """
+        if self.read_only:
+            raise PermissionError("Action proposal catalogue is read-only")
+        try:
+            data = proposal.model_dump(mode='json', warnings='error')
+            if set(proposal.__dict__) - set(data):
+                raise ValueError
+            evidence_dtos = [item.model_dump(mode='json', warnings='error') for item in supporting_evidence]
+            selected = [item for item in evidence_dtos
+                        if item['provenance']['id'] in data['evidence_ids']]
+            raw = self._proposal_json({'proposal': data, 'evidence': selected})
+        except (ValueError, TypeError, AttributeError, KeyError):
+            raise ValueError("Invalid action proposal submission DTO") from None
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._require_proposals(conn)
+                frozen, _ = self._validate_submission(conn, raw)
+                old = conn.execute("SELECT * FROM action_proposals WHERE proposal_id = ?",
+                                   (frozen.proposal_id,)).fetchone()
+                if old:
+                    self._parse_proposal(conn, old)
+                    if old['data_json'] != raw:
+                        raise ValueError("Action proposal ID conflicts with stored submission")
+                    return
+                conn.execute("""INSERT INTO action_proposals
+                    (proposal_id, project_id, capture_id, schema_version, data_json, content_hash)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                    (frozen.proposal_id, frozen.project_id, frozen.observed_capture_id,
+                     frozen.schema_version, raw, hashlib.sha256(raw.encode('utf-8')).hexdigest()))
+        finally:
+            conn.close()
+
+    def get_action_proposal(self, proposal_id: str) -> Optional[tuple[ActionProposal, list[EvidenceItem]]]:
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN")
+                self._require_proposals(conn)
+                row = conn.execute("SELECT * FROM action_proposals WHERE proposal_id = ?",
+                                   (proposal_id,)).fetchone()
+                return self._parse_proposal(conn, row) if row else None
+        finally:
+            conn.close()
+
+    def list_action_proposals(self, project_id: str) -> list[tuple[ActionProposal, list[EvidenceItem]]]:
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN")
+                self._require_proposals(conn)
+                rows = conn.execute("""SELECT * FROM action_proposals WHERE project_id = ?
+                                       ORDER BY proposal_id""", (project_id,))
+                return [self._parse_proposal(conn, row) for row in rows]
         finally:
             conn.close()
 
