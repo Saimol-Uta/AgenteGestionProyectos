@@ -9,6 +9,8 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from agente_gestion.domain.snapshot import WeeklySnapshot
+from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
+from agente_gestion.agents.context import monitoring_choices
 from agente_gestion.domain.tasks import (
     TaskCard,
     DeterministicTaskMetrics,
@@ -32,6 +34,8 @@ from agente_gestion.domain.findings import (
 )
 from agente_gestion.domain.report import (
     MonitoringDraft,
+    DomainProposalRuleSet,
+    MonitoringRequestedChange,
     FinalReport,
     HumanDecisionState,
 )
@@ -158,6 +162,7 @@ class ProjectOrchestrator:
         project_id: Optional[str] = None,
         snapshot: Optional[WeeklySnapshot] = None,
         fixture_name: Optional[str] = None,
+        proposal_rules: Optional[DomainProposalRuleSet] = None,
     ) -> ExecutionRun:
         self._last_collection_result = None
         self._last_target_commit_sha = None
@@ -174,6 +179,33 @@ class ProjectOrchestrator:
 
         snapshot_hash = compute_sha256(snapshot)
         config_hash = self.config.to_hash()
+        proposal_codes = []
+        rules = None
+        task_evidence = []
+        collection = self._last_collection_result
+        # Identity here ties evidence to this collection result, not to an equal
+        # task ID/hash or a cached result from a previous load/execution.
+        if collection is not None and collection.snapshot is snapshot:
+            task_evidence = [e.model_copy(deep=True) for e in collection.evidence]
+        elif proposal_rules is not None:
+            proposal_codes.append("collection_unassociated")
+        if proposal_rules is not None:
+            rule_data = proposal_rules.model_dump(mode="json")
+            try:
+                rules = DomainProposalRuleSet.model_validate(rule_data)
+                for rule in rules.rules:
+                    rule.task_ids.sort()
+                    rule.allowed_values.sort(key=lambda v: json.dumps(v, default=str, sort_keys=True))
+                rules.rules.sort(key=lambda r: r.rule_id)
+                rule_data = rules.model_dump(mode="json")
+                if rules.project_id != proj_id or snapshot.project_id != proj_id:
+                    proposal_codes.append("project_mismatch")
+                    rules = None
+            except (ValueError, TypeError, AttributeError):
+                proposal_codes.append("invalid_rules")
+            config_hash = compute_sha256({"config": config_hash, "proposal_rules": rule_data,
+                "task_evidence": sorted((e.model_dump(mode="json") for e in task_evidence),
+                                        key=lambda e: json.dumps(e, sort_keys=True))})
 
         # 2. Check idempotence: if identical snapshot & config completed run exists, return it
         existing_run = self.sqlite.find_run_by_fingerprint(
@@ -209,7 +241,17 @@ class ProjectOrchestrator:
             is_simulated=getattr(self.elaborador_provider, "is_simulated", False) or self.config.is_simulated,
         )
         self.sqlite.save_run(run)
-        self.sqlite.save_snapshot(snapshot, content_hash=snapshot_hash)
+        capture = None
+        receipt_save = getattr(self.sqlite, "save_snapshot_with_capture_receipt", None)
+        if proposal_rules is not None and callable(receipt_save):
+            try:
+                capture = receipt_save(snapshot, content_hash=snapshot_hash)
+            except NotImplementedError:
+                self.sqlite.save_snapshot(snapshot, content_hash=snapshot_hash)
+        else:
+            self.sqlite.save_snapshot(snapshot, content_hash=snapshot_hash)
+        if proposal_rules is not None and capture is None:
+            proposal_codes.append("capture_unavailable")
 
         # Persist normalized evidence if composite collection occurred
         if self._last_collection_result and getattr(self._last_collection_result, "evidence", None):
@@ -331,6 +373,9 @@ class ProjectOrchestrator:
                 evidence_ids=monitoring_evidence_ids,
                 source_is_complete=snapshot.is_complete,
                 source_commit_sha=eval_commit_sha,
+                **({"proposal_rules": rules.model_copy(deep=True) if rules else None,
+                    "task_evidence": [e.model_copy(deep=True) for e in task_evidence]}
+                   if proposal_rules is not None and not proposal_codes else {}),
             )
             run.stages["monitoring"] = StageExecutionRecord(
                 stage_name="monitoring",
@@ -356,6 +401,9 @@ class ProjectOrchestrator:
                 run, snapshot, task_metrics, None, None, None,
                 coordinator, provider_errors, failure_reason, start_time, models_used
             )
+
+        self._persist_proposals(run, monitoring_draft, rules, capture, task_evidence,
+                                proposal_codes)
 
         # ================= STAGE 2: Code Quality (Revisor) =================
         stg2_start = time.time()
@@ -709,6 +757,73 @@ class ProjectOrchestrator:
         )
 
         return run
+
+    def _persist_proposals(self, run, draft, rules, capture, evidence, limitations):
+        """Catalogue recommendations only; pure fact checks do not prove chronology."""
+        codes = list(limitations)
+        saved, failures = 0, []
+        choices = []
+        if rules is None:
+            codes.append("missing_rules")
+        elif capture is not None and not codes:
+            choices, choice_codes = monitoring_choices(run.project_id, capture.snapshot.tasks,
+                [t.model_dump(mode="json") for t in capture.snapshot.tasks], rules, evidence)
+            codes.extend(choice_codes)
+        # Do not put arbitrary draft prose/exception text in the stage summary.
+        safe_codes = {"unknown_choice", "conflicting_selection", "proposal_context_budget",
+                      "field_not_visible", "missing_rules", "missing_evidence"}
+        codes.extend(c for c in (draft.proposal_limitations or []) if c in safe_codes)
+        selected = draft.requested_changes
+        if type(selected) is not list:
+            codes.append("invalid_choice")
+            selected = []
+        keys = [(str(getattr(c, "task_id", None)), str(getattr(c, "field", None))) for c in selected]
+        if len(set(keys)) != len(keys):
+            codes.append("conflicting_selection")
+            selected = []
+        for index, requested in enumerate(selected):
+            errors = []
+            canonical = None
+            try:
+                checked = MonitoringRequestedChange.model_validate(dict(requested.__dict__))
+                canonical = next((c for c in choices if c == checked), None)
+            except (ValueError, TypeError, AttributeError):
+                pass
+            if canonical is None:
+                errors = ["invalid_choice"]
+            else:
+                supporting = sorted((e for e in evidence if e.provenance.id in canonical.evidence_ids),
+                                    key=lambda e: e.provenance.id)
+                body = canonical.model_dump(mode="python")
+                body.pop("rule_id")
+                body["observed_capture_id"] = capture.capture_id
+                proposal_id = "proposal-" + compute_sha256({
+                    "snapshot": run.snapshot_hash, "config": run.config_hash,
+                    "choice": canonical.model_dump(mode="json"), "capture": capture.capture_id,
+                    "evidence": [e.model_dump(mode="json") for e in supporting]})
+                try:
+                    proposal = ActionProposal(proposal_id=proposal_id, **body)
+                    errors = validate_action_proposal(proposal, capture, supporting)
+                    if not errors:
+                        save = getattr(self.sqlite, "save_action_proposal", None)
+                        if not callable(save):
+                            raise NotImplementedError
+                        save(proposal, supporting)
+                        saved += 1
+                except NotImplementedError:
+                    errors = ["catalogue_unavailable"]
+                except ValueError:
+                    errors = ["catalogue_conflict"]
+                except Exception:
+                    errors = ["catalogue_error"]
+            if errors:
+                failures.append({"choice_index": index, "codes": errors})
+        summary = json.dumps({"selected": len(keys), "saved": saved,
+            "limitations": sorted(set(codes)), "failures": failures}, sort_keys=True)
+        run.stages["proposals"] = StageExecutionRecord(stage_name="proposals",
+            status=StageStatus.completed if saved else StageStatus.skipped,
+            output_summary=summary, completed_at=run.created_at)
+        self.sqlite.save_stage_result(run.run_id, run.stages["proposals"])
 
     def _collect_snapshot(
         self, project_id: str, now: datetime, source_fixture: Optional[str] = None
