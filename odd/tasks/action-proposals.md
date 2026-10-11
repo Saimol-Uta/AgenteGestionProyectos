@@ -100,7 +100,7 @@ Observe test-first RED/GREEN; tests reject wrong field/value, stale capture/hash
 - FreshINSPECT explicitd378738range committedOnlytrue excludeconfirmed EXACTa91bf4d7 original8paths. START review-e18990f1f35589a5 actualhostconsent,forecast1pi_host_relay review-reliability; finalapproved0668d348 exactackburn forA91. No scope substitution. AdvisoryR3-incomplete-change-validation report.py:81 nonblockingseparatelaterwork. B3fa currentcandidate remainedconsumedclosedderived, thencommittednormally.
 
 ## H2B2c owner-rule input scope
-- [ ] H2B2c — In progress, separateoptional local JSON ruleinput; no rulesdefaultNone/abstention remains.
+- [x] H2B2c — Closed offline in 29340e7930998e780399da1919b4a6f449675abc; native approved+acknowledged.
 - Fourpathsapplication/config.py,newadapters/sources/local_monitoring_rules.py,cli.py,newtests/test_monitoring_rule_config.py. Distinct monitoring_rules_path settings/YAML/environment and --monitoring-rules optionalCLI flag; neverreuse qualitypolicies_path/provider/source policies.
 - JSONDomainProposalRuleSet strictproject/task/field/value/rationaleimpact validation beforeexecution; staticerrors forinvalid/missing/foreignpolicyfiles, no paths/rawpayload/credentialleak. Explicitpolicynottrust/auth, no defaultfakechoices. execute receivesonlyvalidatedtypedoptionalrules, fingerprintalreadyincludesnormalizedrules. Existingofflinefake/quality/gates/reports/commands retained.
 - Target350source/test hard400. RED/GREEN localtempfiles/parser/config/CLIintegration tests/fullregression/nativeexactunitreview/localcommit. No YAMLruleparser/deps/network/realauth/execution/autoactions. C/D offlineidentityreview thencontrolleddryrun remainpending.
@@ -108,9 +108,24 @@ Observe test-first RED/GREEN; tests reject wrong field/value, stale capture/hash
 ## H2B2c verified handoff
 - Writer mv4c2jql-12-r34k completedONLY4authorizedpaths266added/7removedlines (66source200tests),8newtests. REDmissing-loaderimport; GREEN8new+33config+10CLI/full583run581pass2skip/pruebas7pass/diffclean. Currentdoc/headerpreserved.
 - Publicrun --monitoring-rules PATH overridesSettings/YAMLmonitoring_rules_path/environmentMONITORING_RULES_PATH, Nonepreserveslegacyexecution/cache+abstention. Newbounded1MiBJSONDomainProposalRuleSet loaderstrictprojectmatching/value/null/date/trustflags validation staticerrors; validatesBEFOREstorage/providercomposition, explicitinvalid/missing/foreignfile exit2 no partialrun.
-- Constraintsonlynotauth; currentobservation/evidence stillneeded, sparsefixturesno inventedactivity. No orchestrator/context/domain/storage/provider/fixturechanges, noactuation. Nativeexactunitreview/commitpending; SQLiteResourceWarningknown.
+- Constraintsonlynotauth; currentobservation/evidence stillneeded, sparsefixturesno inventedactivity. No orchestrator/context/domain/storage/provider/fixturechanges, noactuation. Nativee7ec43a43835620f approvede760c5b1 exactackburn8ce2035b ASSESSmediumconsumedtrueclosedderived; commit29340e7930998e780399da1919b4a6f449675abc; SQLiteResourceWarningknown.
+
+## H2B2c closure
+- Commit 29340e7930998e780399da1919b4a6f449675abc, native review-e7ec43a43835620f approved and acknowledged; the approved receipt stands. Advisory R3-duplicate-json-keys at local_monitoring_rules.py:23 is separate, non-blocking later work. No correction transition or reopening.
+- Eight new tests; 583 run, 581 passed, 2 opt-in skipped, 7 evaluator checks passed. SQLite ResourceWarning remains. No real action or authentication added.
+
+## H2C bounded offline units
+The original omnibus H2C task is refined into the three authoritative units below:
+- [ ] H2C1 — In progress: pure domain for technical eligibility, explicit offline actor claims, review decisions, dry-run permissions and event-folded projection. Only new domain/proposal_review.py and tests/test_proposal_review.py. Target <=350 changed source/test lines, hard stop >400.
+- [ ] H2C2 — Pending: append-only SQLite decision ledger, exact stored proposal JSON hash binding, CAS/version conflicts and idempotent replay. Separate port/storage/test unit; never alter immutable proposal rows.
+- [ ] H2C3 — Pending: CLI offline review and explicit dry-run authorization/denial/revocation, explicit actor argument without UID/environment fallback. No live executor.
+- Scout mv4c4ugv-13-faao completed read-only: existing human/report decisions have no actor and are not action approval; security.py protects remote providers, not human authentication. Current catalogue has no decision events or exposed stored-body hash.
+- Offline approval records an asserted identifier, not identity proof or organizational authority. Technical validation, human assertion, dry-run grant and execution remain separate. Owner rules and byte hashes grant no permission.
+- Initial projection pending / not_authorized / not_executed. Every event bound to exact project/proposal/capture/stored proposal-body hash and expected prior version; append-only fold with identical replay versus changed-content conflict. Pure unit receives adapter-verified body hash, does not fabricate one by reserializing parsed models.
+- Extra actor roles/authenticated flags/UID claims rejected; explicit nonempty actor claim has fixed asserted_offline provenance. Real execution always denied; only explicit dry-run permission after valid technical assessment and offline review.
+- Tests first for initial state, technical eligibility without approval, offline approval without permission, dry-run grant/deny/revoke, rejection, invalid transitions, forged/mutable claims, stale/mismatched bindings/version, replay/conflicts and capture/evidence failures. No storage/CLI changes in C1.
 
 ## Next step
-H2B2b2closed. B3closed; scopeowner-rulelocalJSONinputbeforeC/D. Newwriterlaunchpending; no unclosednativeauthority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
+H2B2b2closed. Rule input and pipeline closed. Launch only bounded H2C1 pure-domain writer; follow its completed handoff with checks/native exact-unit review/local commit, then ledger and CLI. No unclosed native authority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 
 Locator: odd/tasks/action-proposals.md
