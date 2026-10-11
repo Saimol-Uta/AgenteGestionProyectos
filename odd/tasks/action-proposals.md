@@ -183,6 +183,15 @@ The original omnibus H2C task is refined into the three authoritative units belo
 - Writer-only own migration with update/delete triggers; read-only unsupported legacy/missing never migrate/create. Tests CAS/revocation serialization, request conflict/replay, denied-first audits, staleness/ties/strict schema/hash/tamper/immutability/readonly and compatibility. Three source/test paths, target350 hard400.
 - Git root/branch stable. origin/mvp/real-sources now800298a; remote reflog says update by push, not performed by parent commands. No reset/pull/fetch/push authorized here, preserved local945c15e.
 
+## H2D2 verified handoff
+- Writer mv4ents0-1e-yuf0 completed only port/SQLite/new storage test, 345 added lines (142 tracked +203 tests), seven tempSQLite tests. D1/CLI unchanged.
+- RED missing append capability; GREEN7new/39adjacent/616run614pass2optinskips/7evaluator exact PYTHONPATH=src/diffcheck clean.
+- Optional append returns request/result/serverUTC/replayed tuple; historical getter request/result/serverUTC. Canonical request/result bytes + exact hashes/bindings/status verified, computed safety fields excluded from persisted result, reconstructed flags fixed.
+- Own writer-only migration after ledger, global request IDs and immutable UPDATE/DELETE triggers. Strict DTO preconnection; same BEGIN IMMEDIATE reads verified catalogue/evidence/events and parses capture inventory before filter, pure simulation before replay; current-SIMULATED identical canonical request/result retry original timestamp/no insert, changed-ID/conflict/now-denied retry stable error; first valid bound denial audited.
+- Historical lookup still available after revoke, no original proposal/task/capture/review mutation. Corrupt/missing/foreign bindings fail rollback, no invented denial receipt.
+- Worker omitted dedicated migration-failure and storage-date tests. Independent verifier mv4eu5yy-1h-atjy is exercising those with temporary DBs only. Native exact-unit review/local commit pending.
+- D3 scout completed stable CLI/parser/fixture map, two paths and explicit binding flags/historical audit routing. Confirm actual D2 availability via historical getter before writer; legitimate denied first attempts must reach append to persist audit, not be mistaken for corrupt binding.
+
 ## Next step
 H2B2b2closed. Rule input and pipeline closed. H2C closed offline. H2D1 closed. Launch only bounded H2D2 transaction/audit writer; then H2D3 CLI and full regression, followed by safe H3 mapping. Real execution remains blocked. No unclosed native authority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 

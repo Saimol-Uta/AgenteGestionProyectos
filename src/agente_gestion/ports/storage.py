@@ -11,6 +11,7 @@ from agente_gestion.domain.llm import LLMCallAttempt
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.action_proposal import ActionProposal
 from agente_gestion.domain.proposal_review import DecisionEvent, Projection
+from agente_gestion.domain.proposal_dry_run import DryRunRequest, DryRunResult
 
 
 class StoragePort(ABC):
@@ -87,6 +88,18 @@ class StoragePort(ABC):
     def append_proposal_decision(self, event: DecisionEvent) -> Projection:
         """Append with optimistic version checking; never grants live permission."""
         raise NotImplementedError("Proposal review ledger unavailable")
+
+    def append_proposal_dry_run(
+        self, request: DryRunRequest,
+    ) -> tuple[DryRunRequest, DryRunResult, str, bool]:
+        """Simulate under current guards; return UTC receipt and replay indicator."""
+        raise NotImplementedError("Proposal dry-run audit unavailable")
+
+    def get_proposal_dry_run(
+        self, project_id: str, proposal_id: str, request_id: str,
+    ) -> Optional[tuple[DryRunRequest, DryRunResult, str]]:
+        """Historical audit lookup, not permission for a new simulation."""
+        raise NotImplementedError("Proposal dry-run audit unavailable")
 
     @abstractmethod
     def save_evidence(self, run_id: str, evidence_items: list[EvidenceItem]) -> None:

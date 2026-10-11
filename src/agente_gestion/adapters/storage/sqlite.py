@@ -29,6 +29,7 @@ from agente_gestion.domain.llm import LLMCallAttempt, GenerationStatus
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
 from agente_gestion.domain.proposal_review import DecisionEvent, Projection, fold_decisions, _raw
+from agente_gestion.domain.proposal_dry_run import DryRunRequest, DryRunResult, _checked, _known_keys, simulate_proposal
 
 
 class SQLiteStorageAdapter(StoragePort):
@@ -242,6 +243,22 @@ class SQLiteStorageAdapter(StoragePort):
                     conn.execute(f"""CREATE TRIGGER IF NOT EXISTS proposal_decisions_no_{operation}
                         BEFORE {operation} ON proposal_decisions
                         BEGIN SELECT RAISE(ABORT, 'Proposal review ledger is append-only'); END""")
+            # Independent writer-only audit migration, after the review ledger.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS proposal_dry_runs (
+                    request_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL, proposal_id TEXT NOT NULL,
+                    capture_id TEXT NOT NULL, proposal_body_sha256 TEXT NOT NULL,
+                    permission_event_id TEXT NOT NULL, expected_version INTEGER NOT NULL,
+                    status TEXT NOT NULL, recorded_at TEXT NOT NULL,
+                    request_json TEXT NOT NULL, request_sha256 TEXT NOT NULL,
+                    result_json TEXT NOT NULL, result_sha256 TEXT NOT NULL
+                )""")
+                for operation in ('UPDATE', 'DELETE'):
+                    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS proposal_dry_runs_no_{operation}
+                        BEFORE {operation} ON proposal_dry_runs
+                        BEGIN SELECT RAISE(ABORT, 'Proposal dry-run audit is append-only'); END""")
         finally:
             conn.close()
 
@@ -516,6 +533,132 @@ class SQLiteStorageAdapter(StoragePort):
             with conn:
                 conn.execute("BEGIN")
                 return self._review_context(conn, event.project_id, event.proposal_id)[5]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _require_dry_runs(conn):
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='proposal_dry_runs'").fetchone():
+            raise NotImplementedError("Proposal dry-run audit unavailable; writer migration required")
+
+    def _parse_dry_run(self, conn, row):
+        try:
+            models = []
+            for prefix, model in [('request', DryRunRequest), ('result', DryRunResult)]:
+                raw = row[prefix + '_json']
+                if hashlib.sha256(raw.encode()).hexdigest() != row[prefix + '_sha256']:
+                    raise ValueError
+                checked = model.model_validate_json(raw, strict=True)
+                if self._proposal_json(checked.model_dump(mode='json',
+                        exclude=set(model.model_computed_fields))) != raw:
+                    raise ValueError
+                models.append(checked)
+            request, result = models
+            keys = tuple(DryRunRequest.model_fields)
+            if tuple(getattr(request, key) for key in keys) != tuple(row[key] for key in keys):
+                raise ValueError
+            stamp = datetime.fromisoformat(row['recorded_at'])
+            if (result.status != row['status'] or stamp.tzinfo != timezone.utc or
+                    stamp.isoformat() != row['recorded_at']):
+                raise ValueError
+            context = self._review_context(conn, request.project_id, request.proposal_id)
+            if context is None or (request.capture_id, request.proposal_body_sha256) != (
+                    context[1].capture_id, context[3]):
+                raise ValueError
+            return request, result, row['recorded_at']
+        except (ValueError, TypeError, AttributeError, KeyError):
+            raise ValueError("Proposal dry-run audit integrity mismatch") from None
+
+    def get_proposal_dry_run(self, project_id: str, proposal_id: str, request_id: str
+                             ) -> Optional[tuple[DryRunRequest, DryRunResult, str]]:
+        """Historical lookup: later revocation does not revoke the recorded receipt."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN")
+                self._require_dry_runs(conn)
+                row = conn.execute("SELECT * FROM proposal_dry_runs WHERE request_id=?",
+                                   (request_id,)).fetchone()
+                if row is None:
+                    return None
+                receipt = self._parse_dry_run(conn, row)
+                return receipt if (receipt[0].project_id, receipt[0].proposal_id) == (
+                    project_id, proposal_id) else None
+        finally:
+            conn.close()
+
+    def append_proposal_dry_run(self, request: DryRunRequest
+                                ) -> tuple[DryRunRequest, DryRunResult, str, bool]:
+        """Recheck guards before replay. Denied retries fail closed; inspect history.
+
+        BEGIN IMMEDIATE serializes permission/version reads with ledger writers.
+        No live invocation or mutable source/status write is performed.
+        """
+        if self.read_only:
+            raise PermissionError("Proposal dry-run audit is read-only")
+        request = _checked(DryRunRequest, request)  # Strict actual DTO, before connect.
+        raw = self._proposal_json(request.model_dump(mode='json'))
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._require_dry_runs(conn)
+                context = self._review_context(conn, request.project_id, request.proposal_id)
+                if context is None:
+                    raise ValueError("Proposal dry-run binding unavailable")
+                proposal, capture, evidence, digest, events, _ = context
+                submission = conn.execute('SELECT data_json FROM action_proposals WHERE proposal_id=?',
+                                          (request.proposal_id,)).fetchone()[0]
+                _known_keys(json.loads(submission), {'proposal': _raw(proposal),
+                                                    'evidence': [_raw(item) for item in evidence]})
+                if (request.capture_id, request.proposal_body_sha256) != (capture.capture_id, digest):
+                    raise ValueError("Proposal dry-run binding mismatch")
+                # Verify before filtering: forged scope metadata cannot hide a capture.
+                captures = []
+                for row in conn.execute("SELECT * FROM snapshot_captures"):
+                    item = self._parse_capture(row)
+                    _known_keys(json.loads(row['data_json']), _raw(item.snapshot))
+                    captures.append(item)
+                captures = [item for item in captures if item.snapshot.project_id == request.project_id]
+                result = simulate_proposal(request=request, proposal=proposal, capture=capture,
+                    evidence_items=evidence, proposal_body_sha256=digest, events=events,
+                    project_captures=captures)
+                result_raw = self._proposal_json(result.model_dump(mode='json',
+                    exclude=set(DryRunResult.model_computed_fields)))
+                old = conn.execute("SELECT * FROM proposal_dry_runs WHERE request_id=?",
+                                   (request.request_id,)).fetchone()
+                if old:
+                    receipt = self._parse_dry_run(conn, old)
+                    if old['request_json'] != raw:
+                        raise ValueError("request_id_conflict")
+                    if result.status != 'SIMULATED' or old['result_json'] != result_raw:
+                        raise ValueError("dry_run_retry_denied; inspect historical audit")
+                    return (*receipt, True)
+                stamp = datetime.now(timezone.utc).isoformat()
+                conn.execute("""INSERT INTO proposal_dry_runs
+                    (request_id, project_id, proposal_id, proposal_body_sha256, capture_id,
+                     permission_event_id, expected_version, status, recorded_at,
+                     request_json, request_sha256, result_json, result_sha256)
+                    VALUES (:request_id, :project_id, :proposal_id, :proposal_body_sha256,
+                            :capture_id, :permission_event_id, :expected_version, :status,
+                            :recorded_at, :request_json, :request_sha256, :result_json,
+                            :result_sha256)""", {
+                        'request_id': request.request_id,
+                        'project_id': request.project_id,
+                        'proposal_id': request.proposal_id,
+                        'proposal_body_sha256': request.proposal_body_sha256,
+                        'capture_id': request.capture_id,
+                        'permission_event_id': request.permission_event_id,
+                        'expected_version': request.expected_version,
+                        'status': result.status,
+                        'recorded_at': stamp,
+                        'request_json': raw,
+                        'request_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+                        'result_json': result_raw,
+                        'result_sha256': hashlib.sha256(result_raw.encode()).hexdigest(),
+                    })
+                return request, result, stamp, False
         finally:
             conn.close()
 
