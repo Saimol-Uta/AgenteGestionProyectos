@@ -28,6 +28,7 @@ from agente_gestion.domain.findings import (
 from agente_gestion.domain.llm import LLMCallAttempt, GenerationStatus
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
+from agente_gestion.domain.proposal_review import DecisionEvent, Projection, fold_decisions, _raw
 
 
 class SQLiteStorageAdapter(StoragePort):
@@ -222,6 +223,25 @@ class SQLiteStorageAdapter(StoragePort):
                 """)
                 conn.execute("""CREATE INDEX IF NOT EXISTS idx_action_proposals_project_order
                                 ON action_proposals(project_id, proposal_id)""")
+            # Independent writer-only ledger migration, after catalogue initialization.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS proposal_decisions (
+                    event_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL,
+                    capture_id TEXT NOT NULL,
+                    proposal_body_sha256 TEXT NOT NULL,
+                    ordered_version INTEGER NOT NULL CHECK(ordered_version > 0),
+                    data_json TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(project_id, proposal_id, ordered_version)
+                )""")
+                for operation in ('UPDATE', 'DELETE'):
+                    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS proposal_decisions_no_{operation}
+                        BEFORE {operation} ON proposal_decisions
+                        BEGIN SELECT RAISE(ABORT, 'Proposal review ledger is append-only'); END""")
         finally:
             conn.close()
 
@@ -401,6 +421,101 @@ class SQLiteStorageAdapter(StoragePort):
                 rows = conn.execute("""SELECT * FROM action_proposals WHERE project_id = ?
                                        ORDER BY proposal_id""", (project_id,))
                 return [self._parse_proposal(conn, row) for row in rows]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _require_review(conn: sqlite3.Connection) -> None:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='proposal_decisions'").fetchone():
+            raise NotImplementedError("Proposal review ledger unavailable; writer migration required")
+
+    def _review_context(self, conn, project_id, proposal_id):
+        self._require_review(conn)
+        self._require_proposals(conn)
+        row = conn.execute("SELECT * FROM action_proposals WHERE project_id=? AND proposal_id=?",
+                           (project_id, proposal_id)).fetchone()
+        if row is None:
+            return None
+        proposal, evidence = self._parse_proposal(conn, row)
+        capture = self._parse_capture(conn.execute(
+            "SELECT * FROM snapshot_captures WHERE capture_id=?", (proposal.observed_capture_id,)).fetchone())
+        digest, events = row['content_hash'], []
+        # Validate all row bindings before filtering: forged scope metadata must not
+        # silently omit an event from the requested ledger. No foreign payload escapes.
+        for stored in conn.execute("SELECT * FROM proposal_decisions ORDER BY ordered_version"):
+            raw = stored['data_json']
+            try:
+                if type(raw) is not str or hashlib.sha256(raw.encode()).hexdigest() != stored['content_hash']:
+                    raise ValueError
+                event = DecisionEvent.model_validate_json(raw)
+                metadata = (event.event_id, event.project_id, event.proposal_id, event.capture_id,
+                            event.proposal_body_sha256, event.expected_version + 1)
+                if metadata != tuple(stored[key] for key in ('event_id', 'project_id', 'proposal_id',
+                        'capture_id', 'proposal_body_sha256', 'ordered_version')):
+                    raise ValueError
+                if self._proposal_json(event.model_dump(mode='json')) != raw:
+                    raise ValueError
+                stamp = datetime.fromisoformat(stored['recorded_at'])
+                if stamp.tzinfo != timezone.utc or stamp.isoformat() != stored['recorded_at']:
+                    raise ValueError
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError("Proposal review ledger integrity mismatch") from None
+            if (event.project_id, event.proposal_id) == (project_id, proposal_id):
+                events.append(event)
+        projection = fold_decisions(proposal, capture, evidence, digest, events)
+        return proposal, capture, evidence, digest, events, projection
+
+    def get_proposal_review_state(
+        self, project_id: str, proposal_id: str,
+    ) -> Optional[tuple[str, list[DecisionEvent], Projection]]:
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN")
+                context = self._review_context(conn, project_id, proposal_id)
+                return (context[3], context[4], context[5]) if context else None
+        finally:
+            conn.close()
+
+    def append_proposal_decision(self, event: DecisionEvent) -> Projection:
+        """Global event IDs: identical retries only; cross-scope reuse conflicts.
+
+        Server recorded_at is UTC audit metadata, not an actor/authentication claim.
+        No catalogue/status/latest-snapshot writes; projection is always folded.
+        """
+        if self.read_only:
+            raise PermissionError("Proposal review ledger is read-only")
+        try:
+            event = DecisionEvent.model_validate(_raw(event))
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("Invalid proposal decision event") from None
+        raw = self._proposal_json(event.model_dump(mode='json'))
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                context = self._review_context(conn, event.project_id, event.proposal_id)
+                if context is None:
+                    raise ValueError("Proposal review binding unavailable")
+                proposal, capture, evidence, digest, events, _ = context
+                old = conn.execute("SELECT data_json FROM proposal_decisions WHERE event_id=?",
+                                   (event.event_id,)).fetchone()
+                if old and old['data_json'] != raw:
+                    raise ValueError("event_id_conflict")
+                fold_decisions(proposal, capture, evidence, digest, [*events, event])
+                if not old:
+                    conn.execute("""INSERT INTO proposal_decisions
+                        (event_id, project_id, proposal_id, capture_id, proposal_body_sha256,
+                         ordered_version, data_json, content_hash, recorded_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (event.event_id, event.project_id, event.proposal_id, event.capture_id,
+                         event.proposal_body_sha256, event.expected_version + 1, raw,
+                         hashlib.sha256(raw.encode()).hexdigest(), datetime.now(timezone.utc).isoformat()))
+            # Re-read committed rows in one consistent snapshot on this connection.
+            with conn:
+                conn.execute("BEGIN")
+                return self._review_context(conn, event.project_id, event.proposal_id)[5]
         finally:
             conn.close()
 

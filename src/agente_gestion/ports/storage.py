@@ -10,6 +10,7 @@ from agente_gestion.domain.findings import CandidateFinding, FindingVerification
 from agente_gestion.domain.llm import LLMCallAttempt
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.action_proposal import ActionProposal
+from agente_gestion.domain.proposal_review import DecisionEvent, Projection
 
 
 class StoragePort(ABC):
@@ -76,6 +77,16 @@ class StoragePort(ABC):
     def list_action_proposals(self, project_id: str) -> list[tuple[ActionProposal, list[EvidenceItem]]]:
         """List frozen submissions for a project; optional storage capability."""
         raise NotImplementedError("Action proposal catalogue unavailable")
+
+    def get_proposal_review_state(
+        self, project_id: str, proposal_id: str,
+    ) -> Optional[tuple[str, list[DecisionEvent], Projection]]:
+        """Verified exact submission hash, ordered ledger and derived offline state."""
+        raise NotImplementedError("Proposal review ledger unavailable")
+
+    def append_proposal_decision(self, event: DecisionEvent) -> Projection:
+        """Append with optimistic version checking; never grants live permission."""
+        raise NotImplementedError("Proposal review ledger unavailable")
 
     @abstractmethod
     def save_evidence(self, run_id: str, evidence_items: list[EvidenceItem]) -> None:

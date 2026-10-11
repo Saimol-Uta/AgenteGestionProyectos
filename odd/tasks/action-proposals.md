@@ -139,6 +139,12 @@ The original omnibus H2C task is refined into the three authoritative units belo
 - BEGIN IMMEDIATE append: verify stored raw submission/capture, ordered immutable ledger JSON/hash/metadata/binding, fold and CAS prior version before insert; identical replay safe, changed ID-content/stale/binding mismatch/conflict rollback. Commit then verified query response. Derive projection, never persist mutable authorization; real execution always blocked.
 - Tests exact raw digest+frozen evidence, capture/submission/ledger tamper, readonly/missing/legacy behavior, rollback, expected-version concurrency, identical replay and changed-content conflict. Target350 source/test changed lines, hard400; if larger split verified-read/migration from append/CAS, not silent expansion.
 
+## H2C2 verified handoff
+- Writer mv4cv6n7-16-vcv6 completed three authorized paths, 311 added lines (115 adapter, 11 port, 185 tests), seven new independently discovered tests. RED five tests missing APIs; migration RED was not separately observed. GREEN five initially, final41focused /596run594pass2skip/7evaluator/diffclean.
+- Optional get_proposal_review_state(project_id,proposal_id) -> verified stored envelope hash, ordered DecisionEvents, folded Projection or None; append_proposal_decision(event) -> committed reread Projection. Current catalogue submissions/snapshots/statuses unchanged, live execution false.
+- Explicit ledger migration transaction after catalogue; update/delete triggers enforce append-only, global event IDs identical replay after later events safe, cross-scope/changed content conflicts. Canonical event JSON/hash/binding/ordered version/UTC recorded_at verified; concurrent version-zero events only one accepted.
+- Reads scan all ledger metadata before project filtering and conservatively fail closed on unrelated corruption. Read-only legacy missing ledger NotImplementedError, writes PermissionError, missing databases not created, custom ports compatible. SQLite warning remains. Native exact-unit review/commit pending.
+
 ## Next step
 H2B2b2closed. Rule input and pipeline closed. C1 closed. Launch only bounded H2C2 ledger writer; follow completed handoff with checks/native exact-unit review/local commit, then explicit-actor CLI. No unclosed native authority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 
