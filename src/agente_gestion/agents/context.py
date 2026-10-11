@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 
 from agente_gestion.domain.tasks import TaskCard, TaskState, DeterministicTaskMetrics
 from agente_gestion.domain.code import CodeDiffSnippet, CIRunResult
-from agente_gestion.domain.report import MonitoringDraft
+from agente_gestion.domain.report import MonitoringDraft, DomainProposalRuleSet, MonitoringRequestedChange
+from agente_gestion.domain.action_proposal import _value, _same
+from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.policies import QualityRule, PolicyEvaluationResult
 
@@ -48,6 +50,87 @@ def estimate_tokens_from_data(data: Any) -> int:
     except Exception:
         raw_text = str(data)
     return max(1, len(raw_text) // 3 + 1)
+
+
+def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[EvidenceItem]]):
+    """Build only observed, visible, rule-backed choices; never infer change intent."""
+    choices, limitations = [], []
+    if rules is None:
+        return [], ["missing_rules"]
+    try:
+        rules = DomainProposalRuleSet.model_validate(rules.model_dump(mode="python"))
+    except (ValueError, TypeError, AttributeError):
+        return [], ["invalid_rules"]
+    if rules.project_id != project_id:
+        return [], ["project_mismatch"]
+    if not rules.rules:
+        return [], ["missing_rules"]
+    keys = [(tid, r.field) for r in rules.rules for tid in r.task_ids]
+    rule_ids = [r.rule_id for r in rules.rules]
+    if len(set(keys)) != len(keys) or len(set(rule_ids)) != len(rule_ids):
+        return [], ["conflicting_rules"]
+    visible = {row["id"]: row for row in rows}
+    for rule in rules.rules:
+        for tid in rule.task_ids:
+            cards = [t for t in tasks if t.id == tid]
+            code = None
+            if len(cards) != 1:
+                code = "unknown_task"
+            elif cards[0].has_contradiction:
+                code = "conflicting_task"
+            elif not cards[0].observed_fields or rule.field not in cards[0].observed_fields:
+                code = "field_not_observed"
+            elif tid not in visible or rule.field not in visible[tid]:
+                code = "field_not_visible"
+            if code:
+                limitations.append(code)
+                continue
+            card = cards[0]
+            try:
+                current = _value(rule.field, getattr(card, rule.field))
+            except (ValueError, TypeError):
+                limitations.append("invalid_current_fact")
+                continue
+            if current == TaskState.unknown:
+                limitations.append("unknown_current_fact")
+                continue
+            if not _same(rule.field, current, _value(rule.field, visible[tid][rule.field])):
+                limitations.append("current_fact_mismatch")
+                continue
+            matched = []
+            for item in evidence or []:
+                p = item.provenance
+                claims = [p.external_id] if p.external_id is not None else []
+                claims += [p.payload[k] for k in ("task_id", "card_id", "external_id") if k in p.payload]
+                mask = p.payload.get("observed_fields")
+                if (item.category != "task" or p.project_id != project_id or type(p.id) is not str or not p.id.strip()
+                        or not claims or any(type(c) is not str or c not in {tid, card.external_id} for c in claims)
+                        or rule.field not in p.payload or (mask is not None and
+                        (type(mask) not in (list, tuple) or rule.field not in mask))):
+                    continue
+                try:
+                    if _same(rule.field, current, _value(rule.field, p.payload[rule.field])):
+                        matched.append(p.id)
+                except (ValueError, TypeError):
+                    continue
+            if not matched or any(sum(e.provenance.id == i for e in evidence) != 1 for i in matched):
+                limitations.append("evidence_mismatch" if evidence else "missing_evidence")
+                continue
+            alternatives = []
+            for value in rule.allowed_values:
+                if _same(rule.field, current, value):
+                    limitations.append("no_change")
+                elif any(_same(rule.field, value, v) for v in alternatives):
+                    limitations.append("conflicting_rules")
+                    alternatives = []
+                    break
+                else:
+                    alternatives.append(value)
+            for value in alternatives:
+                choices.append(MonitoringRequestedChange(project_id=project_id, rule_id=rule.rule_id,
+                    task_id=tid, field=rule.field, current_value=current, proposed_value=value,
+                    evidence_ids=sorted(matched), rationale=rule.rationale, expected_impact=rule.expected_impact))
+    return choices, sorted(set(limitations))
 
 
 class ContextBuilder:

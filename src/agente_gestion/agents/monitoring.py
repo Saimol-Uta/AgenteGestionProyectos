@@ -6,10 +6,11 @@ from pydantic import BaseModel, Field
 
 from agente_gestion.domain.tasks import TaskCard, DeterministicTaskMetrics
 from agente_gestion.domain.code import CIRunResult
-from agente_gestion.domain.report import MonitoringDraft, TaskStateClaim
+from agente_gestion.domain.report import MonitoringDraft, TaskStateClaim, DomainProposalRuleSet
+from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.llm import GenerationRequest
 from agente_gestion.ports.llm import LLMProviderPort
-from agente_gestion.agents.context import ContextBuilder
+from agente_gestion.agents.context import ContextBuilder, ContextBudgetExceededError, monitoring_choices
 from agente_gestion.application.generation import StageInvocationCoordinator
 from agente_gestion.application.validation import SemanticValidator, ValidationError
 
@@ -53,6 +54,8 @@ class ProjectMonitoringAgent:
         evidence_ids: Optional[list[str]] = None,
         source_is_complete: Optional[bool] = None,
         source_commit_sha: Optional[str] = None,
+        proposal_rules: Optional[DomainProposalRuleSet] = None,
+        task_evidence: Optional[list[EvidenceItem]] = None,
     ) -> MonitoringDraft:
         available_task_ids = {t.id for t in tasks}
         valid_ev_ids = (set(evidence_ids) if evidence_ids else set()) | available_task_ids
@@ -82,6 +85,26 @@ class ProjectMonitoringAgent:
             request_fields={"role": "elaborador", "model": self.model, "schema_name": "monitoring_draft_v1"},
         )
 
+        choices, limitations = monitoring_choices(project_id, tasks, evidences_payload["tasks"],
+                                                 proposal_rules, task_evidence)
+        schema = MonitoringDraftSchema.model_json_schema()
+        if choices:
+            optional_context = context.model_copy(deep=True)
+            optional_context.data["proposal_choices"] = [dict(choice_id=f"choice-{i}",
+                **choice.model_dump(mode="json")) for i, choice in enumerate(choices)]
+            schema["properties"]["selected_choice_ids"] = {
+                "type": "array", "items": {"type": "string"},
+                "description": "Select only proposal_choices IDs, at most one per task/field; no permission granted."}
+            try:
+                evidences_payload = self.context_builder.runtime_payload(
+                    optional_context, instructions, schema, 512, capabilities.context_tokens,
+                    max_output_tokens=capabilities.max_output_tokens,
+                    request_fields={"role": "elaborador", "model": self.model, "schema_name": "monitoring_draft_v1"})
+            except ContextBudgetExceededError:
+                choices = []
+                limitations.append("proposal_context_budget")
+                schema = MonitoringDraftSchema.model_json_schema()
+
         selected_ids = {row["id"] for row in evidences_payload["tasks"]}
         omitted_tasks = [task for task in tasks if task.id not in selected_ids]
         tasks = [task for task in tasks if task.id in selected_ids]
@@ -95,7 +118,7 @@ class ProjectMonitoringAgent:
             instructions=instructions,
             evidences=evidences_payload,
             schema_name="monitoring_draft_v1",
-            json_schema=MonitoringDraftSchema.model_json_schema(),
+            json_schema=schema,
             model=self.model,
             max_generation_tokens=512,
         )
@@ -137,7 +160,20 @@ class ProjectMonitoringAgent:
             validator=validate_payload,
         )
 
+        selected = validated_dict.get("selected_choice_ids", [])
+        changes = []
+        lookup = {f"choice-{i}": c for i, c in enumerate(choices)}
+        if type(selected) is not list or any(type(i) is not str or i not in lookup for i in selected):
+            limitations.append("unknown_choice")
+        else:
+            changes = [lookup[i] for i in selected]
+            keys = [(c.task_id, c.field) for c in changes]
+            if len(set(keys)) != len(keys):
+                limitations.append("conflicting_selection")
+                changes = []
+
         return MonitoringDraft(
+            requested_changes=changes, proposal_limitations=sorted(set(limitations)),
             summary=validated_dict.get("summary", ""),
             task_state_claims=validated_dict.get("task_state_claims", []),
             risks=validated_dict.get("risks", []),
