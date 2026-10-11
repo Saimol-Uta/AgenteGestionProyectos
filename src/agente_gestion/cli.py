@@ -610,6 +610,43 @@ def history_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def proposals_command(args: argparse.Namespace) -> int:
+    """Browse verified proposals only; frozen supporting evidence is not exported."""
+    metadata_keys = (
+        "proposal_id", "schema_version", "project_id", "task_id", "observed_capture_id",
+        "field", "review_status", "authorization_status", "execution_status",
+    )
+    detail_keys = metadata_keys + (
+        "current_value", "proposed_value", "rationale", "expected_impact", "evidence_ids",
+    )
+    try:
+        storage = SQLiteStorageAdapter(db_path=args.db_path, read_only=True)
+        if args.proposals_operation == "list":
+            result = []
+            for proposal, _ in storage.list_action_proposals(args.project):
+                data = proposal.model_dump(mode="json")
+                row = {key: data[key] for key in metadata_keys}
+                row["supporting_evidence_count"] = len(proposal.evidence_ids)
+                result.append(row)
+        else:
+            record = storage.get_action_proposal(args.proposal_id)
+            if record is None or record[0].project_id != args.project:
+                sys.stderr.write("ERROR: Proposal not found.\n")
+                return 1
+            data = record[0].model_dump(mode="json")
+            result = {key: data[key] for key in detail_keys}
+        output = json.dumps(result)
+    except NotImplementedError:
+        sys.stderr.write("ERROR: Proposal catalogue unavailable; no migration performed.\n")
+        return 1
+    except Exception:
+        # SQLite/model errors can contain private submission or capture content.
+        sys.stderr.write("ERROR: Proposal read failed; check database integrity.\n")
+        return 1
+    print(output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agente_gestion",
@@ -680,6 +717,15 @@ def build_parser() -> argparse.ArgumentParser:
             history_parser.add_argument("current_capture", help="Current capture ID (not snapshot ID)")
         history_parser.add_argument("--db-path", required=True, help="Existing SQLite database; read-only")
 
+    parser_proposals = subparsers.add_parser("proposals", help="Read persisted proposals as JSON")
+    proposal_operations = parser_proposals.add_subparsers(dest="proposals_operation", required=True)
+    for operation in ("list", "show"):
+        proposal_parser = proposal_operations.add_parser(operation)
+        proposal_parser.add_argument("project", help="Project identifier")
+        if operation == "show":
+            proposal_parser.add_argument("proposal_id", help="Proposal ID")
+        proposal_parser.add_argument("--db-path", required=True, help="Existing SQLite database; read-only")
+
     return parser
 
 
@@ -695,6 +741,8 @@ def main() -> int:
         return decide_command(args)
     elif args.subcommand == "history":
         return history_command(args)
+    elif args.subcommand == "proposals":
+        return proposals_command(args)
     return 0
 
 

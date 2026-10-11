@@ -12,9 +12,9 @@ Mistral. La decisión final sigue siendo humana.
   un falso positivo por evidencia parcial y un 503 de Gemini. El grounding,
   la selección por rol y Quality híbrido se corrigieron offline; **falta
   repetir y validar T9 con Groq/Mistral real**.
-- **Pruebas automáticas:** el último cierre de Antigravity reportó 472
-  tests y 7 benchmarks offline aprobados. Estos resultados no certifican
-  por sí solos funcionamiento de las APIs en vivo.
+- **Pruebas automáticas (H2B2a, offline):** 552 ejecutadas, 550 aprobadas,
+  2 omitidas opt-in y 7 comprobaciones del evaluador aprobadas (no benchmarks
+  de rendimiento). No certifican funcionamiento de las APIs en vivo.
 
 [Diseño de referencia](ARCHITECTURA.md) ·
 [arquitectura implementada (línea base + actualización)](docs/arquitectura-implementada.md) ·
@@ -42,7 +42,34 @@ con stderr y código no cero, sin crear ni migrar datos.
 Ejemplo sintético reproducible: `planning_example()` en
 `tests/test_cli_history.py` persiste A/B en bases temporales y comprueba los
 cuatro cambios (responsable, fecha límite, prioridad, estado). Sin base real ni
-APIs; T9 sigue **PENDING**. H2, scheduler, UI y acciones externas siguen pendientes.
+APIs; T9 sigue **PENDING**. Scheduler, UI y acciones externas siguen pendientes.
+
+## Consulta local de propuestas (H2B2a, solo lectura)
+
+H2A aporta el contrato validado; H2B1 persiste propuestas y evidencia de apoyo
+congelada. H2B2a consulta ese catálogo existente sin crear/migrar datos ni cargar
+Settings, proveedores, orquestador o artefactos:
+
+```sh
+.venv/bin/python -m agente_gestion proposals list PROJECT --db-path DB
+.venv/bin/python -m agente_gestion proposals show PROJECT PROPOSAL_ID --db-path DB
+```
+
+`list` devuelve IDs, versión, proyecto/tarea/captura, campo, estados y
+`supporting_evidence_count`. `show` añade valores actual/propuesto, motivo,
+impacto e IDs de evidencia. Las fechas conservan su representación JSON;
+null, listas y estado desconocido no se sustituyen por hechos inventados.
+Nunca se exportan DTOs de apoyo, payloads, snippets, resúmenes, URLs de fuentes
+ni snapshots completos. Los campos propios de la propuesta sí se muestran:
+la proyección no es un sanitizador de texto libre.
+
+Base ausente, catálogo legado o registros inválidos fallan con error estático
+por stderr y código 1, sin crear archivos ni migrar; propuesta ausente o de otro
+proyecto devuelve el mismo error. Los estados siguen `pending`,
+`not_authorized`, `not_executed`: no hay envío/importación, revisión, transición,
+actor, autorización ni ejecución. La integridad comprobada no autentica autoría
+ni prueba asociación de evidencia a captura. Pruebas con SQLite temporal en
+`tests/test_cli_proposals.py`; no se abrió la base real y T9 sigue **PENDING**.
 
 ## Cumplimiento académico y continuidad
 

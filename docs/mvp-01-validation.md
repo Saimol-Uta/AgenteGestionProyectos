@@ -270,5 +270,41 @@ ya conocido y el rechazo argparse esperado; no hubo fallos.
 
 Límites: hechos persistidos y hash prueban consistencia/reproducibilidad, no
 operaciones ni autoría. La evidencia por run no se une arbitrariamente a
-capturas. No se abrió la base real ni se hicieron APIs, cambios de credenciales,
-H2, scheduler, UI, acciones externas, commits o staging.
+capturas. En H1D2 no se abrió la base real ni se hicieron APIs, cambios de
+credenciales, H2, scheduler, UI, acciones externas, commits o staging.
+El avance posterior H2A/H2B1/H2B2a se registra a continuación.
+
+### Avance H2A + H2B1 + H2B2a (offline)
+
+H2A implementó el contrato puro y su validación; H2B1 añadió el catálogo
+inmutable con evidencia de apoyo congelada (cierre suministrado: 547 ejecutados,
+545 aprobados, 2 omitidos y 7 comprobaciones del evaluador). H2B2a añade solamente
+`proposals list/show --db-path`: consulta SQLite con `read_only=True` y JSON por
+lista permitida de campos de propuesta, nunca DTOs de apoyo ni captura completa.
+REQ-08 sigue **PARCIAL**; revisión integrada, identidad, autorización y ejecución
+siguen pendientes. No se atribuyen actores ni asociaciones evidencia/captura.
+
+| Comando exacto | Resultado observado H2B2a |
+|---|---|
+| `.venv/bin/python -m unittest tests.test_cli_proposals tests.test_action_proposal_storage tests.test_cli_history tests.test_cli tests.test_cli_sources tests.test_hybrid_pipeline` | GREEN: 56/56 aprobados |
+| `.venv/bin/python -m unittest discover -s tests` | 552 ejecutados, 550 aprobados, 2 omitidos opt-in |
+| `.venv/bin/python -m unittest discover -s pruebas -p 'test_*.py'` | 7/7 aprobados: comprobaciones del evaluador, no rendimiento |
+| `git diff --check` | Sin errores de whitespace |
+
+RED observado antes de editar CLI: 62 tests, 10 errores esperados (con subcasos)
+por `proposals` ausente de argparse. La importación directa del TestCase de
+fixture duplicaba 6 tests preexistentes; se cambió a importar su módulo, dejando
+56 tests enfocados y cinco nuevos tests de CLI con subcasos.
+GREEN conserva run/source-check/decide/history y pipeline híbrido.
+
+Se verificaron claves/tipos/valores JSON exactos, estados fijos, fechas/null/listas,
+catálogo vacío y filtro de proyecto; show ausente/ajeno indistinguible;
+DB ausente/legada, registro malformado/modelo inválido y excepciones privadas
+con errores estáticos. Sentinelas PRIVATE en payload/resumen/snippet/URL de
+apoyo y detalle de snapshot no aparecen en stdout/stderr. Huellas de bytes,
+esquema, directorios y artefactos se conservan en éxito y error, denegando
+inicialización escritora, Settings, composición, proveedores y artefactos.
+Persisten ResourceWarning SQLite conocido y rechazo argparse esperado,
+sin fallos. No se abrió la base real ni se hicieron APIs/inferencia/red,
+lecturas de credenciales, migraciones CLI, staging o commits; T9 **PENDING**.
+La proyección no sanitiza los textos propios de la propuesta ni autentica autoría.
