@@ -20,9 +20,10 @@ condicional y síntesis Report.
 
 Esta asociación es **conceptual/pedagógica**, no una afirmación de que todos
 los agentes revisan propuestas de gestión ni de que exista un ejecutor
-autorizado de cambios. Falta implementar el circuito completo de propuesta
-estructurada → revisión → autorización específica → ejecución externa →
-auditoría. El REQ-08 queda **parcial** hasta probarlo.
+autorizado de cambios. H2 implementa propuesta estructurada → revisión técnica
+→ decisión offline → permiso de dry-run → simulación/auditoría, **sin ejecución
+externa**. REQ-08 queda **parcial**: faltan autenticación confiable, control de
+permisos reales y ejecución externa verificada.
 
 **Sin renunciar a funciones:** el acuerdo «sin cambiar código» se aplica
 solo a una refactorización cosmética para REQ-08. **Todos los requisitos del
@@ -95,6 +96,32 @@ o fuente incompatible retornan stderr estático y código no cero, sin dump de
 snapshot ni migración. Tests temporales comprueban bytes/esquema/artefactos sin
 cambios. REQ-03/10 siguen parciales; no cambia la autorización ni implementa H2,
 scheduler, UI o acciones. T9 real permanece PENDING.
+
+### Cierre H2 — propuestas y control exclusivamente offline
+
+Las entradas/reglas de Monitoring y reporte fundamentan propuestas; la revisión
+técnica se separa de la decisión del actor declarado offline, del permiso para
+simular y de la ejecución real **bloqueada**. Quality/Verifier siguen revisando
+código; Report no otorga permisos. El actor declarado no es autenticación,
+autoridad legal ni identidad del SO; iniciador desconocido no equivale al actor
+del permiso.
+
+Captura inmutable con hash del JSON exacto, catálogo/cuerpo almacenado y evidencia
+congelada se verifican antes de usar decisiones del ledger append-only. SHA-256
+prueba integridad, no autoría ni pertenencia externa de evidencia. La CLI
+`proposals state/decide/dry-run/audit` usa esos datos locales, sin proveedores,
+fábrica de fuentes ni puente de ejecución; [plantillas y flags](../README.md#decisiones-y-simulación-de-propuestas-h2-cerrado-solo-offline).
+
+El dry-run admite únicamente los cinco campos de la propuesta almacenada:
+`start_date`, `due_date`, `priority`, `assignee_ids`, `state`. Exige TaskSource
+completo, campos observados y última captura almacenada única, no estado vivo
+de Trello. Empates, obsolescencia, evidencia/permiso ausentes y versión incorrecta
+bloquean; se audita la primera denegación legítima. Replay revalida incluso tras
+revocación o nueva captura. Auditoría histórica de solo lectura puede conservar
+`SIMULATED`, sin certificar permiso actual ni permitir nueva ejecución:
+`not_executed`, `live=false`. H2 está cerrado **offline**, no REQ completos ni T9.
+Validación independiente reportada: 623 ejecutadas, 621 aprobadas, 2 opt-in
+omitidas y 7 comprobaciones del evaluador, no benchmarks; sin rerun documental.
 
 ### Evidencia real y brecha para cierre T9
 

@@ -27,6 +27,9 @@ Fuentes → Orquestador + métricas → Monitoring (Ejecutor/seguimiento)
         → Informe y decisión del gestor humano (CLI/SQLite)
 ```
 
+H2 añade el circuito de propuestas/revisión/decisión/simulación **solo offline**;
+no extiende esta decisión sobre reportes a permisos reales (detalle del cierre abajo).
+
 ### Flujo completo que pide el docente y aún debemos terminar
 
 ```text
@@ -55,8 +58,8 @@ Los once requisitos provienen del documento universitario; las prioridades son *
 | **REQ-05** Acciones correctivas | Alta | **Parcial** | `suggested_actions` y recomendaciones textuales en informes. | Propuestas estructuradas de fechas, prioridad, responsable/estado, alternativas, revisión, aprobación, ejecución y resultado verificable. |
 | **REQ-06** Reporte semanal | Media | **Parcial** | `ReportAgent` genera JSON/Markdown y métricas al invocar `run`. | Scheduler semanal, reporte por categoría/estado/desviación, historial de propuestas aprobadas/rechazadas/ejecutadas y distribución/notificación. |
 | **REQ-07** Revisión de código | Alta | **Parcial avanzado** | Lector GitHub diffs con SHA, `CodeQualityAgent`, `SemanticValidator`, `VerifierAgent`, reglas Q1–Q3 y adapters híbridos. | Validar T9 híbrido en vivo, revisar cobertura real de errores/duplicaciones/mantenibilidad/vulnerabilidades y ejecutar análisis periódicos sin editar código automáticamente. |
-| **REQ-08** Tres roles y autorización | Alta | **Parcial (mapeo documentado)** | Orquestador; Monitoring (ejecución analítica), Quality (revisión código), Verifier auxiliar, Report (síntesis consultiva), `decide` humano. | Revisión de propuestas de acción de gestión, autorización explícita sobre cada acción y ejecución posterior controlada; preservar autoridad humana. |
-| **REQ-09** Interacción/gestión | Alta | **Parcial** | Reportes y `decide --decision approved|rejected|changes_requested|postponed`. | Notificaciones, presentación de riesgos y justificación por propuesta, solicitudes de autorización, cambios a propuesta antes de ejecutarla. |
+| **REQ-08** Tres roles y autorización | Alta | **Parcial (H2 implementado SOLO OFFLINE)** | Propuestas fundamentadas, revisión técnica, decisión de actor declarado, permiso específico de dry-run y simulación auditada; separados de Quality/Verifier/Report. | Autenticación confiable, permisos reales y ejecución externa controlada/verificada; actor offline no otorga autoridad real. |
+| **REQ-09** Interacción/gestión | Alta | **Parcial (H2 implementado SOLO OFFLINE)** | Reportes, decisiones sobre informes y `proposals state/decide/dry-run/audit`: decisión explícita ligada a hash/versión y auditoría local. | Interacción/notificaciones H3, identidad confiable y control real antes de ejecutar; no confundir simulación con cambios externos. |
 | **REQ-10** Trazabilidad | Alta | **Parcial avanzado** | SQLite registra runs, stages, snapshots, evidence, findings, verifications, llm_calls, reports y human_decisions. | Registrar identidad/autorización del actor por operación y cambios externos efectivamente ejecutados con before/after, timestamp y evidencia. |
 | **REQ-11** Seguridad | Alta | **Parcial** | `SecretStr`, `.env` ignorado, sanitización de entradas, operaciones de lectura y opt-in remoto. | Permisos por identidad/rol, protección integral del almacenamiento de credenciales, políticas de envío remoto por proyecto, auditoría y pruebas de autorización. |
 
@@ -92,22 +95,43 @@ Normalizar prioridad/responsables/fechas, exponer planificación consultable y e
 
 **Avance H1D2 (CLI offline):** `history list/compare --db-path` consulta SQLite directamente con `read_only=True`, sin Settings/composición/proveedores/artefactos ni migraciones. Lista solo metadatos; compara IDs de captura explícitos (distintos de snapshot IDs reutilizables), conservando contexto, before/after y advertencias. Datos observados + hash permiten reproducir diferencias, no atribuir actores u operaciones; evidencia por run puede no estar disponible y no se inventa su asociación. Tests temporales cubren cuatro cambios exactos, comparación idéntica, errores sanitizados y no mutación.
 
-**Salida pendiente del hito completo:** quedan vistas completas y riesgos justificables sin falsas inferencias de dependencias no registradas. REQ-03/10 siguen parciales por validación integrada en vivo y acciones/autorización/auditoría pendientes. El avance H2 comprende H2A, el catálogo H2B1 y la consulta de solo lectura H2B2a descritos abajo; scheduler y UI no están implementados. T9 permanece PENDING.
+**Salida pendiente del hito completo:** quedan vistas completas y riesgos justificables sin falsas inferencias de dependencias no registradas. REQ-03/10 siguen parciales por validación integrada en vivo y acciones/autorización/auditoría pendientes. H2 ya cerró su circuito exclusivamente offline, descrito abajo; scheduler y UI no están implementados. T9 permanece PENDING.
 
 ### Hito H2 — Propuestas, revisión, aprobación, ejecución segura (REQ-03/05/08/09/10/11)
 
 Definir `ActionProposal` (acción, objetivo, valor anterior y propuesto, motivo, evidencia, impacto, autor); revisión de validez técnica y autorización separadas; petición al gestor, identidad/permiso, token de aprobación vinculado a versión, ejecutor Trello de lista permitida y verificación posterior de cambio; manejo idempotente de rechazos/duplicados y trazabilidad. **Nunca hacer escrituras sin autorización**. Mantener tres roles académicos y Verifier auxiliar; implementar nuevas funciones sin «recrear» agentes existentes.
 
-**Avance H2A (dominio puro, offline):** `ActionProposal` versionada admite solo `start_date`, `due_date`, `priority`, `assignee_ids` y `state`, con valores actual/propuesto, motivo, impacto y IDs de evidencia. `validate_action_proposal` comprueba vínculo captura/hash/proyecto, tarea única, observación explícita, valor actual y evidencia de apoyo sin mutación. Conserva null/desconocido/vacío y rechaza coerciones, contradicciones, duplicados y cambios nulos. Las propuestas permanecen `pending`, `not_authorized`, `not_executed`; no hay integración, transición de revisión, actores autorizados ni ejecutor. Se presupone captura autoritativa desde almacenamiento verificado: no se rehashea el modelo legado. La evidencia pasada valida metadatos de tarea, **no demuestra pertenencia a la captura inmutable**. REQ-08 sigue PARCIAL y T9 PENDING.
+**Avance histórico H2A (dominio puro, offline):** `ActionProposal` versionada admite solo `start_date`, `due_date`, `priority`, `assignee_ids` y `state`, con valores actual/propuesto, motivo, impacto y IDs de evidencia. `validate_action_proposal` comprueba vínculo captura/hash/proyecto, tarea única, observación explícita, valor actual y evidencia de apoyo sin mutación. Conserva null/desconocido/vacío y rechaza coerciones, contradicciones, duplicados y cambios nulos. Las propuestas permanecen `pending`, `not_authorized`, `not_executed`; no hay integración, transición de revisión, actores autorizados ni ejecutor. Se presupone captura autoritativa desde almacenamiento verificado: no se rehashea el modelo legado. La evidencia pasada valida metadatos de tarea, **no demuestra pertenencia a la captura inmutable**. REQ-08 sigue PARCIAL y T9 PENDING.
 
-**Avance H2B1/H2B2a (offline):** catálogo inmutable con digest del JSON exacto, evidencia de apoyo congelada y consultas que validan integridad/captura/hechos. `proposals list PROJECT --db-path DB` y `proposals show PROJECT PROPOSAL_ID --db-path DB` usan SQLite directo en solo lectura, sin Settings, composición, proveedores, artefactos ni migración. JSON por lista permitida: metadatos/conteo en list; campos propios conocidos de la propuesta en show, sin DTOs/payloads/snippets/resúmenes/URLs de apoyo ni snapshot completo. Ausencia/proyecto ajeno son indistinguibles en show; errores estáticos no exponen contenido privado. No hay transiciones, actores, autenticación, autorización ni ejecutor; la consistencia no prueba autoría ni pertenencia de evidencia a captura. REQ-08 sigue **PARCIAL**. Verificación actual: 552 tests ejecutados, 550 aprobados, 2 omitidos y 7 comprobaciones del evaluador (no rendimiento), solo bases temporales; base real no abierta y T9 **PENDING**.
+**Avance histórico H2B1/H2B2a (offline):** catálogo inmutable con digest del JSON exacto, evidencia de apoyo congelada y consultas que validan integridad/captura/hechos. `proposals list PROJECT --db-path DB` y `proposals show PROJECT PROPOSAL_ID --db-path DB` usan SQLite directo en solo lectura, sin Settings, composición, proveedores, artefactos ni migración. JSON por lista permitida: metadatos/conteo en list; campos propios conocidos de la propuesta en show, sin DTOs/payloads/snippets/resúmenes/URLs de apoyo ni snapshot completo. Ausencia/proyecto ajeno son indistinguibles en show; errores estáticos no exponen contenido privado. No hay transiciones, actores, autenticación, autorización ni ejecutor; la consistencia no prueba autoría ni pertenencia de evidencia a captura. REQ-08 sigue **PARCIAL**. Verificación de ese corte: 552 tests ejecutados, 550 aprobados, 2 omitidos y 7 comprobaciones del evaluador (no rendimiento), solo bases temporales; base real no abierta y T9 **PENDING**.
 
-**Salida pendiente H2B2b/H2C:** demo de una reprogramación propuesta, revisada, aprobada por gestor, ejecutada y auditada; rechazo demuestra cero escrituras. Antes de implementar autorización/ejecución deben resolverse identidad, permisos y política de revisión.
+**Cierre H2 (D1–D3 y C1–C3, SOLO OFFLINE):** propuestas fundamentadas desde
+entradas/reglas de Monitoring y reporte; revisión técnica separada de decisión
+del actor declarado, permiso de dry-run y ejecución real bloqueada. Captura
+inmutable/hash exacto almacenado, catálogo/evidencia congelada y ledger
+append-only conservan trazabilidad, no autentican ni conceden autoridad legal
+o identidad del SO. `state` muestra hash/versión/captura verificados; los flags
+son explícitos y no se copian automáticamente como permiso.
+
+Dry-run usa solo los cinco campos de la propuesta almacenada, TaskSource
+completo/observado y última captura almacenada única; bloquea empates,
+obsolescencia, falta de evidencia/permiso y versión incorrecta. Primera
+denegación legítima auditada; replay revalida tras revocación/nueva captura.
+`audit` histórico de solo lectura no convierte un `SIMULATED` previo en permiso
+actual: `not_executed`, `live=false`, iniciador desconocido, sin proveedores,
+fábrica de fuentes ni puente de ejecución. [CLI y límites](../README.md#decisiones-y-simulación-de-propuestas-h2-cerrado-solo-offline).
+
+**Salida real pendiente:** autenticación confiable, permisos reales y ejecución
+Trello controlada con verificación posterior; no autorizada en este cierre.
+623 ejecutadas/621 aprobadas/2 opt-in omitidas + 7 evaluadores offline, no
+benchmarks. REQ-08/09 siguen parciales; T9 real sigue **PENDING**.
 
 ### Hito H3 — Reportería y notificación automática (REQ-04/06/09/10)
 
 Scheduler semanal configurado y ejecución bajo entorno confiable; reportes que separen métricas, riesgos, pendientes, acciones propuestas/aprobadas/rechazadas/ejecutadas; notificaciones y entrega consultable con control de duplicados/errores.
 
+**Pendiente:** scheduler y outbox; viernes es solo preferencia blanda, no
+configuración. El responsable debe definir explícitamente día, hora y ventana.
 **Salida:** evidencia de programación y entrega semanal, incluyendo fallos controlados.
 
 ### Hito H4 — Seguridad y calidad integral (REQ-07/10/11)

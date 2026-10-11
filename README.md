@@ -12,9 +12,9 @@ Mistral. La decisión final sigue siendo humana.
   un falso positivo por evidencia parcial y un 503 de Gemini. El grounding,
   la selección por rol y Quality híbrido se corrigieron offline; **falta
   repetir y validar T9 con Groq/Mistral real**.
-- **Pruebas automáticas (H2B2a, offline):** 552 ejecutadas, 550 aprobadas,
+- **Pruebas automáticas (cierre H2, offline):** 623 ejecutadas, 621 aprobadas,
   2 omitidas opt-in y 7 comprobaciones del evaluador aprobadas (no benchmarks
-  de rendimiento). No certifican funcionamiento de las APIs en vivo.
+  de rendimiento). Verificación independiente; no certifica APIs en vivo.
 
 [Diseño de referencia](ARCHITECTURA.md) ·
 [arquitectura implementada (línea base + actualización)](docs/arquitectura-implementada.md) ·
@@ -65,11 +65,46 @@ la proyección no es un sanitizador de texto libre.
 
 Base ausente, catálogo legado o registros inválidos fallan con error estático
 por stderr y código 1, sin crear archivos ni migrar; propuesta ausente o de otro
-proyecto devuelve el mismo error. Los estados siguen `pending`,
-`not_authorized`, `not_executed`: no hay envío/importación, revisión, transición,
-actor, autorización ni ejecución. La integridad comprobada no autentica autoría
-ni prueba asociación de evidencia a captura. Pruebas con SQLite temporal en
+proyecto devuelve el mismo error. En el corte histórico H2B2a los estados eran `pending`,
+`not_authorized`, `not_executed`; el cierre H2 añade el circuito offline siguiente.
+La integridad comprobada no autentica autoría ni prueba asociación de evidencia
+externa a captura. Pruebas con SQLite temporal en
 `tests/test_cli_proposals.py`; no se abrió la base real y T9 sigue **PENDING**.
+
+## Decisiones y simulación de propuestas (H2 cerrado, solo offline)
+
+Las propuestas fundamentadas usan entradas/reglas de Monitoring y reporte;
+la revisión técnica no es aprobación humana ni permiso. El catálogo y la
+evidencia congelada se vinculan a la captura inmutable verificada y al hash
+del cuerpo exacto almacenado; las decisiones quedan en un ledger append-only.
+
+Plantillas, **no acciones sobre un proyecto real** (sustituir marcadores por
+identificadores verificados; elegir una sola decisión de la lista):
+
+```text
+PYTHONPATH=src .venv/bin/python -m agente_gestion proposals state PROJECT PROPOSAL_ID --db-path DB
+PYTHONPATH=src .venv/bin/python -m agente_gestion proposals decide PROJECT PROPOSAL_ID --decision approve_offline|reject|authorize_dry_run|deny|revoke --actor ID --event-id ID --expected-version N --proposal-body-sha256 SHA --db-path DB
+PYTHONPATH=src .venv/bin/python -m agente_gestion proposals dry-run PROJECT PROPOSAL_ID --request-id ID --capture-id CAP --permission-event-id EVENT --expected-version N --proposal-body-sha256 SHA --db-path DB
+PYTHONPATH=src .venv/bin/python -m agente_gestion proposals audit PROJECT PROPOSAL_ID REQUEST_ID --db-path DB
+```
+
+`state` devuelve SHA-256 del cuerpo exacto verificado, versión actual y captura.
+El llamador debe verificar y aportar flags explícitos: no hay copia automática
+que convierta esos datos en confianza o permiso por defecto. `--actor` afirma
+una identidad offline: no autentica, no concede autoridad legal ni identidad
+del SO. `approve_offline` no equivale al permiso específico `authorize_dry_run`.
+La identidad iniciadora queda desconocida, no se atribuye automáticamente al
+actor que declara el permiso.
+
+El dry-run usa **solo la propuesta almacenada** para `start_date`, `due_date`,
+`priority`, `assignee_ids` o `state`, con TaskSource completo/observado y una
+única última captura **almacenada**, no Trello vivo. Empates, captura obsoleta,
+falta de evidencia/permiso o versión incorrecta bloquean; la primera denegación
+legítima queda auditada. El replay revalida y puede rechazarse tras revocación
+o nueva captura. `audit` es histórico y de solo lectura: un `SIMULATED` anterior
+no acredita permiso vigente ni habilita otra ejecución. Se conserva
+`not_executed` y `live=false`; no hay proveedores, fábrica de fuentes ni puente
+de ejecución. **T9 real y escrituras Trello siguen pendientes y no autorizados.**
 
 ## Cumplimiento académico y continuidad
 
@@ -94,8 +129,9 @@ componentes:
 roles.** No es un recorte del alcance: se implementarán todos los requisitos
 REQ-01 a REQ-11 del documento del docente **y** las funcionalidades
 adicionales propuestas que resulten justificadas. REQ-08 permanece **parcial**
-hasta completar revisión de propuestas, autorización humana y ejecución
-controlada de cambios. Consultar la
+aunque revisión, decisiones y dry-run ya están implementados **solo offline**:
+faltan autenticación confiable, permisos reales y ejecución controlada de cambios.
+Consultar la
 [matriz de cumplimiento y roadmap](docs/requisitos-y-plan-de-implementacion.md)
 para evidencias, brechas y prioridades.
 

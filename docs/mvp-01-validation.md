@@ -308,3 +308,42 @@ Persisten ResourceWarning SQLite conocido y rechazo argparse esperado,
 sin fallos. No se abrió la base real ni se hicieron APIs/inferencia/red,
 lecturas de credenciales, migraciones CLI, staging o commits; T9 **PENDING**.
 La proyección no sanitiza los textos propios de la propuesta ni autentica autoría.
+
+## H2 — bitácora final, cierre exclusivamente offline
+
+**Fuente:** evidencia de cierre suministrada; no se repitieron pruebas para esta
+actualización documental pasiva. Revisiones técnicas/de fuente cerradas; todos
+los candidatos siguientes tienen aprobación nativa y acuse exacto.
+
+| Unidad | Commit |
+|---|---|
+| D1 | `945c15e` |
+| D2 | `c6d5277` |
+| D3 | `ef898c1` |
+| C1 | `7836216` |
+| C2 | `2c069a9` |
+| C3 | `9e1e1f0` |
+
+La validación de fuente avanzó por cierres de 603, 609, 616 y **623 ejecutadas**.
+Última comprobación independiente: **623 ejecutadas, 621 aprobadas, 2 omitidas
+opt-in** (`test_real_ollama_local_smoke`, `test_real_gemini_remote_smoke`) y
+**7 comprobaciones offline del evaluador**, no benchmarks. Slice enfocado:
+49 aprobadas; ayuda CLI y diff limpios. ResourceWarning SQLite conocido no
+bloqueante. No sumar slices solapados ni tratar skips como aceptación en vivo.
+
+H2 cubre propuestas fundamentadas, revisión técnica, decisiones de actor
+declarado offline, permiso específico de dry-run y auditoría append-only sobre
+captura/hash exacto almacenado y catálogo/evidencia congelados. Dry-run utiliza
+solo propuesta almacenada y última captura almacenada única completa/observada;
+replay revalida permisos/versiones incluso tras revocación o nueva captura.
+Auditoría histórica no acredita permiso actual: `not_executed`, `live=false`;
+iniciador desconocido, sin autenticación real ni autoridad legal/SO, proveedores,
+fábrica de fuentes o puente de ejecución. Ver [contrato y CLI](../README.md#decisiones-y-simulación-de-propuestas-h2-cerrado-solo-offline).
+
+**Límites:** T9 real y ejecución Trello no autorizados; no aceptación live.
+REQ-08/09 siguen parciales por identidad/permiso y ejecución real pendientes.
+H3 scheduler/outbox pendientes (viernes es preferencia, requiere responsable,
+día/hora/ventana explícitos); H4 seguridad/calidad continúa después.
+Documentación sin cambio de comportamiento: no hay RED significativo;
+verificación proporcional mediante lectura cruzada estructural y
+`git diff --check`, sin runtime, APIs, credenciales ni reruns.
