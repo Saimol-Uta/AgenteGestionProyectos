@@ -561,6 +561,21 @@ class SQLiteStorageAdapter(StoragePort):
             conn.close()
 
     def save_snapshot(self, snapshot: WeeklySnapshot, content_hash: Optional[str] = None) -> None:
+        self._save_snapshot(snapshot, content_hash, receipt=False)
+
+    def save_snapshot_with_capture_receipt(
+        self, snapshot: WeeklySnapshot, content_hash: Optional[str] = None,
+    ) -> SnapshotCapture:
+        """Return verified stored JSON identity only after the atomic save commits.
+
+        A receipt proves stored byte consistency, not authorship or permission.
+        The caller hash remains legacy latest-row metadata, never capture identity.
+        """
+        return self._save_snapshot(snapshot, content_hash, receipt=True)
+
+    def _save_snapshot(
+        self, snapshot: WeeklySnapshot, content_hash: Optional[str], *, receipt: bool,
+    ) -> Optional[SnapshotCapture]:
         raw = snapshot.model_dump_json()
         conn = self._get_connection()
         try:
@@ -569,6 +584,13 @@ class SQLiteStorageAdapter(StoragePort):
                 # history-table lookup. Both writes commit or roll back together.
                 conn.execute("BEGIN IMMEDIATE")
                 self._insert_capture(conn, raw)
+                if receipt:
+                    capture_id = self._capture_metadata(raw)[0]
+                    row = conn.execute("SELECT * FROM snapshot_captures WHERE capture_id = ?",
+                                       (capture_id,)).fetchone()
+                    self._parse_capture(row)
+                    if row["data_json"] != raw:
+                        raise ValueError("Snapshot capture conflicts with stored JSON")
                 conn.execute(
                     """
                     INSERT INTO snapshots (
@@ -590,6 +612,11 @@ class SQLiteStorageAdapter(StoragePort):
                         content_hash,
                     ),
                 )
+            if receipt:
+                # Re-read the actual row using the same connection after commit.
+                row = conn.execute("SELECT * FROM snapshot_captures WHERE capture_id = ?",
+                                   (capture_id,)).fetchone()
+                return self._parse_capture(row)
         finally:
             conn.close()
 

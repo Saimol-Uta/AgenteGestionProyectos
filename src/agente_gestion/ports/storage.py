@@ -45,6 +45,12 @@ class StoragePort(ABC):
         """Persist a captured weekly snapshot."""
         raise NotImplementedError
 
+    def save_snapshot_with_capture_receipt(
+        self, snapshot: WeeklySnapshot, content_hash: Optional[str] = None,
+    ) -> SnapshotCapture:
+        """Save and return the exact stored capture; optional storage capability."""
+        raise NotImplementedError("Snapshot capture receipts unavailable")
+
     @abstractmethod
     def get_snapshot(self, snapshot_id: str) -> Optional[WeeklySnapshot]:
         """Retrieve a persisted weekly snapshot by ID."""
