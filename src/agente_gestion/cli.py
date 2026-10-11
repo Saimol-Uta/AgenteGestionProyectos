@@ -7,6 +7,11 @@ import time
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from pydantic import TypeAdapter
+from agente_gestion.domain.proposal_review import (
+    Decision, DecisionEvent, Digest, OfflineActorClaim, Version, fold_decisions,
+)
+
 FULL_SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 
 from agente_gestion.application.config import Settings, SystemConfig
@@ -633,7 +638,81 @@ def history_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _review_json(projection, events) -> str:
+    """Explicit metadata only, never supporting DTOs or proposal free prose."""
+    keys = ("project_id", "proposal_id", "capture_id", "proposal_body_sha256",
+            "version", "review_status", "authorization_status", "permission_scope",
+            "execution_status")
+    result = {key: getattr(projection, key) for key in keys}
+    result.update(schema_version="proposal_review_v1", real_execution_allowed=False,
+                  identity_verified=False, actor_trust="asserted_offline",
+                  authorization_limit="dry_run_only",
+                  assertion_notice="offline_human_assertion_not_authorship_proof_or_legal_grant")
+    event_keys = ("event_id", "project_id", "proposal_id", "capture_id",
+                  "proposal_body_sha256", "expected_version", "decision")
+    result["events"] = [dict(
+        {key: getattr(event, key) for key in event_keys},
+        actor={"actor_id": event.actor.actor_id, "provenance": "asserted_offline"})
+        for event in events]
+    return json.dumps(result)
+
+
+def proposal_review_command(args: argparse.Namespace) -> int:
+    """Offline human assertion, not identity/authorship proof or a legal grant."""
+    try:
+        for value in (args.project, args.proposal_id):
+            OfflineActorClaim(actor_id=value)  # Strict, explicit nonblank identifiers.
+        deciding = args.proposals_operation == "decide"
+        if deciding:
+            actor = OfflineActorClaim(actor_id=args.actor)
+            OfflineActorClaim(actor_id=args.event_id)
+            digest = TypeAdapter(Digest).validate_python(args.proposal_body_sha256)
+            version = TypeAdapter(Version).validate_python(args.expected_version)
+            decision = TypeAdapter(Decision).validate_python(args.decision)
+        storage = SQLiteStorageAdapter(db_path=args.db_path, read_only=True)
+        state = storage.get_proposal_review_state(args.project, args.proposal_id)
+        if state is None:
+            raise ValueError
+        stored_digest, events, projection = state
+        if deciding:
+            if digest != stored_digest:
+                raise ValueError
+            event = DecisionEvent(event_id=args.event_id, project_id=args.project,
+                proposal_id=args.proposal_id, capture_id=projection.capture_id,
+                proposal_body_sha256=digest, expected_version=version,
+                actor=actor, decision=decision)
+            prior = next((item for item in events if item.event_id == event.event_id), None)
+            if prior is not None:
+                if prior != event:
+                    raise ValueError
+                # Retry after later events returns current state without writer setup.
+            else:
+                if version != projection.version:
+                    raise ValueError
+                record = storage.get_action_proposal(args.proposal_id)
+                capture = storage.get_snapshot_capture(projection.capture_id)
+                if record is None or capture is None or record[0].project_id != args.project:
+                    raise ValueError
+                # Eligibility comes from actual verified inputs, not projection status.
+                fold_decisions(record[0], capture, record[1], stored_digest, [*events, event])
+                # CAS/global ID conflicts remain transactionally guarded by the adapter.
+                writer = SQLiteStorageAdapter(db_path=args.db_path)
+                projection = writer.append_proposal_decision(event)
+                state = storage.get_proposal_review_state(args.project, args.proposal_id)
+                if state is None:
+                    raise ValueError
+                _, events, projection = state
+        output = _review_json(projection, events)
+    except Exception:
+        sys.stderr.write("ERROR: Proposal review request failed.\n")
+        return 2
+    print(output)
+    return 0
+
+
 def proposals_command(args: argparse.Namespace) -> int:
+    if args.proposals_operation in ("state", "decide"):
+        return proposal_review_command(args)
     """Browse verified proposals only; frozen supporting evidence is not exported."""
     metadata_keys = (
         "proposal_id", "schema_version", "project_id", "task_id", "observed_capture_id",
@@ -750,6 +829,21 @@ def build_parser() -> argparse.ArgumentParser:
         if operation == "show":
             proposal_parser.add_argument("proposal_id", help="Proposal ID")
         proposal_parser.add_argument("--db-path", required=True, help="Existing SQLite database; read-only")
+
+    for operation in ("state", "decide"):
+        review_parser = proposal_operations.add_parser(operation, description=(
+            "Offline human assertion: identity unverified; dry-run only, "
+            "not authorship proof or a legal grant. Live execution always blocked."))
+        review_parser.add_argument("project", help="Explicit project identifier")
+        review_parser.add_argument("proposal_id", help="Explicit proposal identifier")
+        review_parser.add_argument("--db-path", required=True, help="Existing SQLite database")
+        if operation == "decide":
+            review_parser.add_argument("--decision", required=True, choices=[
+                "approve_offline", "reject", "authorize_dry_run", "deny", "revoke"])
+            review_parser.add_argument("--actor", required=True, help="Unverified asserted identifier")
+            review_parser.add_argument("--event-id", required=True)
+            review_parser.add_argument("--expected-version", required=True, type=int)
+            review_parser.add_argument("--proposal-body-sha256", required=True)
 
     return parser
 

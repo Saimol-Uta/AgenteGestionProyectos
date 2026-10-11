@@ -154,6 +154,12 @@ The original omnibus H2C task is refined into the three authoritative units belo
 - Allowlisted JSON excludes proposal/evidence payload/snippets/free prose, states asserted_offline identity unverified, authorization dry-run only and live execution false. Real authorization/executor/report-to-action bridge absent. Existing run/history/proposals list/show preserved.
 - Tests success, approve without grant, dry-run grant/deny/revoke/reject, replay after later event, changed-ID conflict/CAS/bodyhash, missing/legacy/corrupt/foreign nonmutation/writer initialization guard, privacy and required flags. No schema/domain changes here.
 
+## H2C3 verified handoff
+- Writer mv4dbha7-18-1rb3 completed two authorized paths, 282 added lines (94 CLI, 188 tests), seven genuine temporary-SQLite tests. RED missing parser plus18handler failures before implementation; GREEN42focused /603run601pass2skip/7evaluator/diffclean. Evaluator command used PYTHONPATH=src:pruebas; no performance benchmark claimed.
+- State/decide explicit dispatch, local strict input validation, read-only scope/digest/version/capture/event/actual technical-fold preflight. Exact typed replay after later events returns current state without writer setup, conflicting/stale/invalid/missing/legacy/corrupt input static exit2.
+- JSON allowlists bindings, version, decisions, asserted actor and dry-run-only/unverified/livefalse metadata; no proposal prose or supporting DTO payload. Existing commands retained. Concurrent races and global foreign-scope event IDs remain adapter transactional checks and can fail after writer initialization; no stronger preflight guarantee claimed.
+- No providers/source composition/execution added. Actors remain assertions, not authentication/legal grants. Native exact-unit review/commit pending.
+
 ## Next step
 H2B2b2closed. Rule input and pipeline closed. C1 and C2 closed. Launch only bounded H2C3 explicit-actor CLI writer; follow completed handoff with checks/native exact-unit review/local commit, then controlled offline dry-run. No unclosed native authority. Bind/persist through actual stored receipt in H2B2b3 later; unsupportedcustomstorage preserveslegacyanalysis. H2C/D offline/liveblocked andH3/H4follow safely. No realauth/execution/T9 or repeated decision.
 
