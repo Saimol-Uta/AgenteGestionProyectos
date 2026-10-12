@@ -69,38 +69,65 @@ def _task_grounding_errors(draft: MonitoringDraft, tasks: list[TaskCard]) -> lis
         task = task_map.get(claim.task_id)
         if task is None or claim.state != task.state:
             errors.append(f"Task state claim '{claim.task_id}' contradicts deterministic TaskCard.state.")
-    narrative = "\n".join([draft.summary, *draft.risks, *draft.suggested_actions, draft.ci_status_note or ""])
+    narratives = [draft.summary, *draft.risks, *draft.suggested_actions, draft.ci_status_note or ""]
     state_patterns = {
         "in_progress": r"\b(?:in[_ ]progress|en curso|en progreso|en proceso)\b",
-        "completed": r"\b(?:completed|complete|finished|completad[oa]|finalizad[oa]|terminad[oa])\b",
+        "completed": r"\b(?:completed|complete|finished|completad[oa]s?|finalizad[oa]s?|terminad[oa]s?)\b",
         "pending": r"\b(?:pending|pendiente)\b",
         "unknown": r"\b(?:unknown|desconocid[oa])\b",
         "blocked": r"\b(?:blocked|bloquead[oa])\b",
     }
-    active_task_ids: set[str] = set()
-    for sentence in re.split(r"[.!?\n]+", narrative):
-        text = _normalized(sentence)
-        named_task_ids = set()
-        for task in tasks:
-            # Match identifiers/titles as complete tokens, not T1 inside T10.
-            names = (task.id, task.title)
-            if any(name and re.search(r"(?<!\w)" + re.escape(_normalized(name)) + r"(?!\w)", text) for name in names):
-                named_task_ids.add(task.id)
-        mentioned.update(named_task_ids)
-        states = {state for state, pattern in state_patterns.items() if re.search(pattern, text)}
-        if named_task_ids:
-            active_task_ids = named_task_ids
-        elif states and len(active_task_ids) > 1:
-            errors.append("Insufficient task-status attribution after multiple task mentions; cite the exact task ID or request additional context.")
-            continue
-        # Keep discourse context rather than guessing a growing set of pronouns.
-        # State-bearing follow-ups inherit a single task; unresolved attribution
-        # fails closed. Non-state project/metric prose remains unrestricted.
-        for task_id in active_task_ids if states else ():
-            task = task_map[task_id]
-            for state in states:
-                if task.state.name != state:
-                    errors.append(f"Narrative task '{task.id}' state '{state}' contradicts deterministic '{task.state.value}'.")
+    # Complete-token matches preserve ID boundaries and exact title aliases.
+    name_patterns = {
+        task.id: [re.compile(r"(?<!\w)" + re.escape(_normalized(name)) + r"(?!\w)")
+                  for name in (task.id, task.title) if name]
+        for task in tasks
+    }
+    task_subject = "|".join(pattern.pattern for patterns in name_patterns.values() for pattern in patterns)
+    project_subject = r"(?:(?:el|the|este|this|nuestro|our)\s+)?(?:proyecto|project)\b"
+    next_subject = project_subject
+    if task_subject:
+        next_subject += r"|(?:(?:la tarea|the task)\s+)?(?:" + task_subject + ")"
+    clause_boundary = re.compile(r"(?:\s+(?:y|and|pero|but)\s+|[,;]\s*)(?=(?:" + next_subject + "))")
+    attribution_error = "Insufficient task-status attribution after multiple task mentions; cite the exact task ID or request additional context."
+    for narrative in narratives:
+        # Separate output fields/items have no shared discourse antecedent.
+        active_task_ids: set[str] = set()
+        for sentence in re.split(r"[.!?\n]+", narrative):
+            text = _normalized(sentence)
+            name_spans = [match.span() for patterns in name_patterns.values()
+                          for pattern in patterns for match in pattern.finditer(text)]
+            # Do not split conjunctions that are part of an exact task title.
+            boundaries = [match for match in clause_boundary.finditer(text)
+                          if not any(start <= match.start() < end for start, end in name_spans)]
+            starts = [0, *(match.end() for match in boundaries)]
+            ends = [*(match.start() for match in boundaries), len(text)]
+            unbound_task_ids: set[str] = set()
+            for start, end in zip(starts, ends):
+                clause = text[start:end].strip()
+                named_task_ids = {task_id for task_id, patterns in name_patterns.items()
+                                  if any(pattern.search(clause) for pattern in patterns)}
+                mentioned.update(named_task_ids)
+                states = {state for state, pattern in state_patterns.items() if re.search(pattern, clause)}
+                if re.match(project_subject, clause) and not named_task_ids:
+                    # Scope only: project assertions are not verified as facts.
+                    active_task_ids = set()
+                    unbound_task_ids = set()
+                    continue
+                if named_task_ids:
+                    # A coordinated subject without its own state must not be
+                    # discarded in favor of the last/nearest task identifier.
+                    active_task_ids = unbound_task_ids | named_task_ids
+                    unbound_task_ids = active_task_ids if not states else set()
+                if states and len(active_task_ids) > 1:
+                    errors.append(attribution_error)
+                    continue
+                # Preserve justified single-task adjacent status follow-ups.
+                for task_id in active_task_ids if states else ():
+                    task = task_map[task_id]
+                    for state in states:
+                        if task.state.name != state:
+                            errors.append(f"Narrative task '{task.id}' state '{state}' contradicts deterministic '{task.state.value}'.")
     for task_id in mentioned:
         if task_id not in draft.referenced_task_ids or task_id not in draft.evidence_ids:
             errors.append(f"Mentioned task '{task_id}' must occur in referenced_task_ids and evidence_ids.")

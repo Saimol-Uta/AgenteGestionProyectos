@@ -93,6 +93,39 @@ def validation_diagnostics(errors):
         (r"Mentioned task '[\s\S]*' must occur in referenced_task_ids and evidence_ids\.",
          "missing_task_grounding", ["referenced_task_ids", "evidence_ids"],
          "Mentioned task requires both task and evidence references."),
+        (
+            r"Duplicate referenced task ID in draft: '[\s\S]*'\.",
+            "duplicate_task_reference",
+            ["referenced_task_ids"],
+            "Task reference occurs more than once.",
+        ),
+        (
+            r"Duplicate referenced evidence ID in draft: '[\s\S]*'\.",
+            "duplicate_evidence_reference",
+            ["evidence_ids"],
+            "Evidence reference occurs more than once.",
+        ),
+        (
+            r"Insufficient task-status attribution after multiple task mentions; cite the exact task ID or request additional context\.",
+            "ambiguous_task_status_attribution",
+            ["summary", "risks", "suggested_actions", "ci_status_note"],
+            "Narrative task status requires explicit attribution.",
+        ),
+        (
+            r"Narrative task '[\s\S]*' state "
+            r"'(?:in_progress|completed|pending|unknown|blocked)' "
+            r"contradicts deterministic "
+            r"'(?:en_curso|completada|pending|bloqueada|desconocido)'\.",
+            "narrative_task_state_mismatch",
+            ["summary", "risks", "suggested_actions", "ci_status_note"],
+            "Narrative task state contradicts deterministic state.",
+        ),
+        (
+            r"Narrative references an omitted task outside selected evidence; request additional context\.",
+            "omitted_task_reference",
+            ["summary", "risks", "suggested_actions", "ci_status_note"],
+            "Narrative refers to a task outside selected evidence.",
+        ),
     )
     for error in errors:
         code, fields, message = "unclassified_validation_error", [], "Unclassified validator rejection."

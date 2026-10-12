@@ -117,6 +117,171 @@ class EvidenceGroundingTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ProjectMonitoringAgent(provider).run("p", self.metrics, [task], evidence_ids=["T1"])
 
+    def grounding_errors(self, draft: MonitoringDraft, tasks: list[TaskCard]) -> list[str]:
+        return SemanticValidator.validate_monitoring_draft(
+            draft, {task.id for task in tasks}, self.metrics,
+            available_evidence_ids={task.id for task in tasks}, tasks=tasks,
+        )
+
+    def test_attribution_explicit_distinct_states_in_one_sentence(self):
+        tasks = [TaskCard(id="T1", title="Build migration", state=TaskState.completed),
+                 TaskCard(id="T2", title="Deploy service", state=TaskState.pending)]
+        draft = MonitoringDraft(
+            summary="La tarea T1 está completada y la tarea T2 está pendiente.",
+            referenced_task_ids=["T1", "T2"], evidence_ids=["T1", "T2"],
+        )
+        self.assertEqual(self.grounding_errors(draft, tasks), [])
+
+    def test_attribution_project_subject_does_not_change_task_state(self):
+        task = TaskCard(id="T1", title="Build migration", state=TaskState.pending)
+        draft = MonitoringDraft(
+            summary="La tarea T1 está pendiente. El proyecto está completado.",
+            referenced_task_ids=["T1"], evidence_ids=["T1"],
+        )
+        # This boundary checks task attribution only. It does not establish
+        # project completion or endorse that independent project assertion.
+        self.assertEqual(self.grounding_errors(draft, [task]), [])
+
+    def test_attribution_real_narrative_contradiction_rejected(self):
+        task = TaskCard(id="T1", title="Build migration", state=TaskState.pending)
+        draft = MonitoringDraft(
+            summary="La tarea T1 está completada.",
+            referenced_task_ids=["T1"], evidence_ids=["T1"],
+            task_state_claims=[{"task_id": "T1", "state": TaskState.pending}],
+        )
+        errors = self.grounding_errors(draft, [task])
+        self.assertEqual(errors, [
+            "Narrative task 'T1' state 'completed' contradicts deterministic 'pending'."
+        ])
+        with self.assertRaises(ValidationError):
+            SemanticValidator.assert_valid(errors)
+
+    def test_attribution_incorrect_structured_state_rejected(self):
+        task = TaskCard(id="T1", title="Build migration", state=TaskState.pending)
+        draft = MonitoringDraft(
+            summary="La tarea T1 está pendiente.",
+            referenced_task_ids=["T1"], evidence_ids=["T1"],
+            task_state_claims=[{"task_id": "T1", "state": TaskState.completed}],
+        )
+        errors = self.grounding_errors(draft, [task])
+        self.assertEqual(errors, [
+            "Task state claim 'T1' contradicts deterministic TaskCard.state."
+        ])
+        with self.assertRaises(ValidationError):
+            SemanticValidator.assert_valid(errors)
+
+    def test_attribution_nonexistent_task_reference_rejected(self):
+        task = TaskCard(id="T1", title="Build migration", state=TaskState.pending)
+        draft = MonitoringDraft(summary="Weekly summary", referenced_task_ids=["UNKNOWN"],
+                                evidence_ids=["UNKNOWN"])
+        errors = self.grounding_errors(draft, [task])
+        self.assertEqual(errors, [
+            "Referenced task ID 'UNKNOWN' does not exist in available task context.",
+            "Referenced evidence ID 'UNKNOWN' does not exist in supplied context.",
+        ])
+        with self.assertRaises(ValidationError):
+            SemanticValidator.assert_valid(errors)
+
+    def test_attribution_mentioned_task_requires_both_grounding_lists(self):
+        task = TaskCard(id="T1", title="Build migration", state=TaskState.pending)
+        for refs, evidence in (([], ["T1"]), (["T1"], []), ([], [])):
+            with self.subTest(refs=refs, evidence=evidence):
+                draft = MonitoringDraft(summary="La tarea T1 está pendiente.",
+                                        referenced_task_ids=refs, evidence_ids=evidence)
+                errors = self.grounding_errors(draft, [task])
+                self.assertEqual(errors, [
+                    "Mentioned task 'T1' must occur in referenced_task_ids and evidence_ids."
+                ])
+                with self.assertRaises(ValidationError):
+                    SemanticValidator.assert_valid(errors)
+
+    def test_attribution_known_task_outside_selected_context_rejected(self):
+        full_context = [TaskCard(id="T1", title="Build migration", state=TaskState.pending),
+                        TaskCard(id="T2", title="Deploy service", state=TaskState.completed)]
+        selected = full_context[:1]
+        omitted = full_context[1]
+        self.assertIn(omitted, full_context)
+        self.assertNotIn(omitted, selected)
+        draft = MonitoringDraft(summary="La tarea T2 está completada.",
+                                referenced_task_ids=[omitted.id], evidence_ids=[omitted.id])
+        # Selected-subset membership only, not ContextBuilder/agent integration.
+        # The same known task is valid with the full context, unlike UNKNOWN.
+        self.assertEqual(self.grounding_errors(draft, full_context), [])
+        errors = self.grounding_errors(draft, selected)
+        self.assertEqual(errors, [
+            "Referenced task ID 'T2' does not exist in available task context.",
+            "Referenced evidence ID 'T2' does not exist in supplied context.",
+        ])
+        with self.assertRaises(ValidationError):
+            SemanticValidator.assert_valid(errors)
+
+    def test_attribution_ambiguous_followup_rejected_with_static_diagnostic(self):
+        tasks = [TaskCard(id="T1", title="Build migration", state=TaskState.pending),
+                 TaskCard(id="T2", title="Deploy service", state=TaskState.pending)]
+        draft = MonitoringDraft(
+            summary="Las tareas T1 y T2 figuran en el listado. Está pendiente.",
+            referenced_task_ids=["T1", "T2"], evidence_ids=["T1", "T2"],
+            task_state_claims=[{"task_id": task.id, "state": task.state} for task in tasks],
+        )
+        errors = self.grounding_errors(draft, tasks)
+        self.assertEqual(errors, [
+            "Insufficient task-status attribution after multiple task mentions; "
+            "cite the exact task ID or request additional context."
+        ])
+        with self.assertRaises(ValidationError):
+            SemanticValidator.assert_valid(errors)
+
+    def test_local_binding_rejects_only_the_incorrect_explicit_task(self):
+        tasks = [TaskCard(id="T1", title="Build migration", state=TaskState.completed),
+                 TaskCard(id="T2", title="Deploy service", state=TaskState.pending)]
+        for summary in (
+            "La tarea T1 está completada y la tarea T2 está en curso.",
+            "T1 is completed and T2 is in progress.",
+            "Build migration is completed and Deploy service is in progress.",
+        ):
+            with self.subTest(summary=summary):
+                draft = MonitoringDraft(summary=summary, referenced_task_ids=["T1", "T2"],
+                                        evidence_ids=["T1", "T2"])
+                self.assertEqual(self.grounding_errors(draft, tasks), [
+                    "Narrative task 'T2' state 'in_progress' contradicts deterministic 'pending'."
+                ])
+
+    def test_grouped_task_subject_does_not_bind_only_the_last_identifier(self):
+        tasks = [TaskCard(id="T1", title="Build migration", state=TaskState.pending),
+                 TaskCard(id="T2", title="Deploy service", state=TaskState.completed)]
+        for summary in ("T1 y T2 están completadas.", "T1 and T2 are completed.",
+                        "Build migration and Deploy service are completed."):
+            with self.subTest(summary=summary):
+                draft = MonitoringDraft(summary=summary, referenced_task_ids=["T1", "T2"],
+                                        evidence_ids=["T1", "T2"])
+                self.assertEqual(self.grounding_errors(draft, tasks), [
+                    "Insufficient task-status attribution after multiple task mentions; "
+                    "cite the exact task ID or request additional context."
+                ])
+
+    def test_project_subject_clears_stale_task_context_for_later_status(self):
+        task = TaskCard(id="T1", title="Build migration", state=TaskState.pending)
+        for summary in (
+            "La tarea T1 está pendiente. El proyecto figura en el listado. Está completado.",
+            "T1 is pending. The project is listed. It is completed.",
+            "T1 is pending and the project is completed. It is completed.",
+        ):
+            with self.subTest(summary=summary):
+                draft = MonitoringDraft(summary=summary, referenced_task_ids=["T1"],
+                                        evidence_ids=["T1"])
+                self.assertEqual(self.grounding_errors(draft, [task]), [])
+
+    def test_task_discourse_does_not_leak_between_narrative_fields(self):
+        task = TaskCard(id="T1", title="Build migration", state=TaskState.pending)
+        for field in ("risks", "suggested_actions", "ci_status_note"):
+            with self.subTest(field=field):
+                value = "It is completed." if field == "ci_status_note" else ["It is completed."]
+                draft = MonitoringDraft(summary="T1 is pending.", referenced_task_ids=["T1"],
+                                        evidence_ids=["T1"], **{field: value})
+                # Independent field text has no task antecedent. This does not
+                # endorse its unrelated completion assertion as a fact.
+                self.assertEqual(self.grounding_errors(draft, [task]), [])
+
     def test_unknown_coverage_does_not_prove_missing_tests(self):
         for claim in ("Coverage is unavailable, therefore tests are missing.",
                       "No hay cobertura disponible, por tanto faltan pruebas.",
