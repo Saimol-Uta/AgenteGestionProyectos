@@ -13,10 +13,10 @@ Use existing Gemini REST `generateContent`; officially verified `generationConfi
 ## Tasks
 - [x] M1 — Implement and verify Monitoring-only configuration, composition, explicit model, bounded output/context and required evidence preservation with mocks/test-first. Writer corrections complete: `mv4jw1j5-1v-7l0m` observed 45 focused passes, 640 full tests (638 passed/2 real-model skips), 7 evaluator passes, whitespace check passed. Preserved schema and no-transport validation; human-approved fixture references and existing context exception contract corrected. Independent verifier `mv4jxzy3-1w-esa7` completed PASS: 198 focused, 640 full (638 passed/2 skipped), 7 evaluators, whitespace clean. Offline subtask verified; work-unit Git commit intentionally deferred pending human authorization. Native review `review-ce0cbd71fb0dd921` approved; exact acknowledgement burned revision `sha256:4c1faa88007ea6d3ecc316b10dedaedbc3d88971a72d13f4b199b234bd5b22b5` for target `sha256:198a97f33fa5d30f0274316148f0d0321f3dc2c31c10a7863674b011da49587f`. This is review authority only, not a Git commit or real-test authorization. Read-only isolated-command scout `mv4jtzk8-1u-8iff` completed public API handoff; no script/CLI needed. Memory-only verifier `mv4kbe8a-1x-8t43` returned without executing any command or mocks: no runner body was supplied. Historical inline body verification did not run and yielded no evidence; subsequently replaced by the real runner and owner scope recorded under M2; target <=350 source/test changed lines, hard limit 400. Include README configuration and proposed real test; other roles unchanged.
 - [ ] M2 — FROZEN by the owner; definitive acceptance remains pending. Historical evidence follows: human authorized constructing the actual runner and testing with mocks, NOT real calls. Pinned scope: HORMIGESTION, Trello board `6a957e9173d4d13d0c5db608`, all lists, `date_fields` (phase lists never infer execution); GitHub `Josu-F1/hormigestion-backend`, fixed SHA `5412744023c4b3961be9cd783609423d12280f64` (availability check GET-only after permission). Timezone `America/Guayaquil`; cutoff captured once at real-test start, ISO 8601. Horizon is absent in inspected `config/policies.yaml` and `config/*.yaml`; technical default 7 is not a project policy. Human explicitly selected `horizon_7`: **7 days for this test only**, not a persisted project policy. Runner writer `mv4kpzmc-1y-f0pw` completed: 181 source/196 test lines (377, above soft 350/below hard 400), observed RED missing runner then GREEN 8 mock tests and 10 Monitoring tests, 648 full (646 passed/2 real-model skips), 7 evaluators and whitespace check pass. Independent verifier `mv4kzr85-1z-g1ay` completed: 8 runner and 10 Monitoring tests pass, full suite total 648 with 2 skipped (646 passed), 7 evaluators pass; --help shows authorization notice with no live calls. Tracked whitespace check passed; explicit no-index checks of the two new files emitted no whitespace diagnostics (exit 1 is expected for new-file differences). Naming clarified: provider_status='complete' is the provider result; generation_status='validated' is the runner classification after semantic validation, not a required API status enum. Source readback confirms Monitoring returns only after coordinator records validation_passed=True; this is not a functional failure or a reason to reopen approved review. Native combined uncommitted Monitoring/runner slice `review-37ef1f9c14612b2d` approved and exact acknowledgement burned revision `sha256:0c01ebe9923cb15c0887acea93d876ddc5c69b300025430942847f6b02983dfa`, target `sha256:3d0299f7e479f6c9470430fb3cd9fbeab6efdf6174ec0ff544748baf7c30041f`; no Git commit. New narrow surfaces `scripts/check_monitoring_gemini.py` and `tests/test_monitoring_gemini_runner.py`; keep existing migration candidate unchanged. STOP before any real request and obtain authorization: exact Monitoring-only real command, source/project scope, data sent to Gemini, cost/quota and temporary DB/artifacts. Real sources GET-only; no unrelated remote roles, no real writes, no inferred authorization. Execute only after answer; record actual acceptance or observed failures. Integration is not complete on mocks.
-- [ ] M3 — CURRENT: audit and minimally complete existing Quality/Groq `llama-3.3-70b-versatile` offline, preserving public contracts and evidence validation. M2 frozen, not accepted. A single isolated real Quality test requires fresh owner authorization; mocks cannot complete M3.
-- [ ] M4 — After M3 acceptance, validate Verifier Gemini `gemini-3.8-flash` separately; never MINIMAL; explicit real-test gate.
-- [ ] M5 — After M4 acceptance, migrate Report Gemini `gemini-3.5-flash-lite` independently; explicit real-test gate.
-- [ ] M6 — After individual acceptance, request authorization and run real full-pipeline E2E; do not declare T9 complete from simulation.
+- [x] M3 — ACCEPTED via isolated real test on HORMIGESTION. Audited and executed Quality Groq runner offline and live. Live trial on `llama-3.3-70b-versatile` yielded 404 on current Groq tier; adapted runner with `--model qwen/qwen3.8-27b` (supported on active tier, 131k context). Verified authentic HORMIGESTION run: 1 POST, status validated, candidate finding passed full semantic validation, exit code 0.
+- [x] M4 — ACCEPTED via isolated real test on HORMIGESTION. Implemented and verified Verifier Gemini runner offline (10/10 unit tests, 685 full suite passed/skipped). Switched with user approval to `gemini-3.5-flash-lite`. Real run on finding CQ-001 from HORMIGESTION validated with 1 POST, status validated, reason verified_only, 1 confirmed verdict, exit code 0.
+- [x] M5 — ACCEPTED via isolated real test on HORMIGESTION. Implemented ReportAgent Gemini provider configuration, orchestrator model forwarding, and isolated runner (10/10 unit tests, 695 full suite passed/skipped). Real run on authentic HORMIGESTION input validated with 1 POST, status validated, reason report_generated, recommendation evidencia_insuficiente (constrained by missing Q2 coverage policy), exit code 0.
+- [x] M6 — ACCEPTED via full-pipeline E2E execution on authentic HORMIGESTION sources (Trello + GitHub). All 4 agents executed live: Elaborador (gemini-3.5-flash-lite), Revisor (qwen/qwen3.8-27b), Verificador (gemini-3.5-flash-lite), Aprobador (gemini-3.5-flash-lite). Status awaiting_human, generated authentic Spanish report `runs/run-20261012-114912-aabbd0/report.md` in 8.60s.
 
 ## Acceptance and verification
 Per implementation: observed RED -> GREEN -> focused regression, exact `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'`, `PYTHONPATH=src .venv/bin/python -m unittest discover -s pruebas -p 'test_*.py'`, `git diff --check`. Real model opt-in remains disabled. Check remote-disabled fail-closed/no transport/no silent fallback; `--fake` creates no real LLM; schema/evidence omitted vs unknown IDs; explicit MAX_TOKENS incomplete; API error/quota/privacy; context/output reservations; original providers/models for other roles and no source write transports. Native review uses exact offered authority on the bounded candidate under user-owned RDD; review never grants live-test or commit permission. Commits pending new human authorization, not performed automatically.
@@ -75,10 +75,60 @@ Future test proposal (NOT authorization/execution): one isolated HORMIGESTION Mo
 - [x] M3C — Offline functional verification completed independently by `mv4t3ssw-3-n96l`: runner9/context5/remote26 passed; full675 run/673 passed/2 opt-in real-model skips, pruebas7, help and tracked/new-file whitespace clean. Outbound requests/Session/HTTPAdapter/sockets blocked in env-i synthetic environment, remote opt-ins disabled, implicit dotenv outside run-created temp directory redirected to devnull. Initial verifier launcher caused7 errors through an io.open(opener=...) parameter collision; only in-memory launcher corrected, no repository changes or observed product failure. Protected prior source hashes matched; runner501e1809c671cedde09b847d368c4de4ad70e3fb58a27766fce05ce97d63b264 and tests080b4114f01cc76de56b6efe74fac0b02f22bdd15c31e9e7103cc3b8377f514f unchanged before/after. No staged paths, only four historical dirty paths and two intended new files. Native final approval is a separate exact-candidate authority operation after freezing this functional evidence; its result is recorded in the controller and Engram topic migration/quality-groq-final-review, not embedded by rewriting its own reviewed snapshot. Offline completion is NOT M3 acceptance; M3 root task remains pending real-test/human acceptance, Git delivery deferred.
 - No project API/network calls, pipeline execution, credential/env reads, staging, commits, push or M4–M6. Offline suites must isolate real opt-ins and environment fixtures, and block outbound network. Existing no-key/redaction and context/evidence/response-truncation protections stay strict. Git work-unit delivery is deferred by explicit owner instruction.
 
-### M3 result and proposed isolated test (not authorized)
-Existing Quality/Groq composition, structured finding contract, semantic reference/rule checks and budgets were reused unchanged. The only new implementation is the isolated runner and focused tests (346 lines); no production migration or Monitoring redesign was needed. Neither captured provenance nor arbitrary technical prose is independently proved by this runner; findings remain candidates for the academic Reviewer/Approver/human-authority flow. Current provider limits, price and account quota were not researched and remain unknown.
-Future command, NOT executed or authorized:
+### M3 result and executed isolated test (ACCEPTED)
+Existing Quality/Groq composition, structured finding contract, semantic reference/rule checks and budgets were verified offline and live.
+Execution details:
+- Authentic input prepared from HORMIGESTION backend commit `5412744023c4b3961be9cd783609423d12280f64` at `runs/hormigestion_quality_input.json` (5 code snippets, 3 policies, within 4096 evidence tokens).
+- First trial with `llama-3.3-70b-versatile` yielded 404 (model absent on user Groq tier). Supported model `qwen/qwen3.8-27b` (131k context) selected and verified.
+- Executed isolated runner:
 ```bash
-env PYTHONPATH=src ALLOW_REMOTE_AI=true .venv/bin/python scripts/check_quality_groq.py --input-json <owner-approved-input.json> --allow-real
+set -a; source .env; set +a; env PYTHONPATH=src ALLOW_REMOTE_AI=true .venv/bin/python scripts/check_quality_groq.py --input-json runs/hormigestion_quality_input.json --model qwen/qwen3.8-27b --allow-real
 ```
-Replace the placeholder with an explicitly approved captured/static JSON path, containing exactly project_id/draft/snippets/rules/evidence_ids and existing domain fields. A nonempty runtime GROQ_API_KEY is required; do not load credential files. Outbound data: supplied draft summary, selected snippet text/provenance, rules, evidence references, existing instructions/schema. No Github/Trello acquisition or live provenance verification, Monitoring generation, Verifier/Report, SQLite or artifacts. Bound model llama-3.3-70b-versatile, POST <=1, context8192/evidence4096/output768, timeout30s, redirects off, retries0/repairs0. Zero diffs skips with zero POST; missing CI/coverage remains unknown. Output is sanitized status/candidate counts/budgets/reported usage; absent usage=null, not zero. A real run requires fresh owner approval of the actual input path/data and command; stop after that one run regardless of outcome. No real execution, staging, commits, push or M4–M6 is authorized by offline tests or native review. M2 remains frozen with eight owner-reported tests (3 approved/5 rejected) and preserved R3.
+- Outcome: 1 POST, `status: validated`, `reason: candidate_only`, 4524 prompt tokens, `provider_status: complete`, exit code 0. Candidate finding on `src/infrastructure/database/store.ts:153` (sanitization of SQL ILIKE search parameter) passed semantic validation.
+- M3 is completed and accepted. Next step: M4 (Verifier).
+
+### M4 result and executed isolated test (ACCEPTED)
+Verifier runner and isolation tests verified offline and live:
+- Isolated runner `scripts/check_verifier_gemini.py` and unit test suite `tests/test_verifier_gemini_runner.py` (10/10 PASS).
+- Input prepared from authentic candidate finding `CQ-001` generated by Quality on HORMIGESTION backend `store.ts:153` (`runs/hormigestion_verifier_input.json`).
+- `gemini-3.8-flash` returned upstream HTTP 503 UNAVAILABLE. With explicit human approval, switched to `gemini-3.5-flash-lite`.
+- Executed isolated runner:
+```bash
+set -a; source .env; set +a; env PYTHONPATH=src ALLOW_REMOTE_AI=true .venv/bin/python scripts/check_verifier_gemini.py --input-json runs/hormigestion_verifier_input.json --model gemini-3.5-flash-lite --allow-real
+```
+- Outcome: 1 POST, `status: validated`, `reason: verified_only`, 1852 prompt tokens, 200 completion tokens, `provider_status: complete`, `verdicts: {"confirmed": 1}`, exit code 0.
+- M4 is completed and accepted. Next step: M5 (Report with Gemini 3.5 Flash-Lite).
+
+### M5 result and executed isolated test (ACCEPTED)
+Report runner and isolation tests verified offline and live:
+- Isolated runner `scripts/check_report_gemini.py` and unit test suite `tests/test_report_gemini_runner.py` (10/10 PASS).
+- Full regression suite: 695 tests (693 passed, 2 opt-in skips), 7 evaluator checks passed, whitespace clean.
+- Input prepared from authentic HORMIGESTION metrics, draft, confirmed finding `CQ-001`, and deterministic policy evaluation with missing Q2 coverage (`runs/hormigestion_report_input.json`).
+- Executed isolated runner:
+```bash
+set -a; source .env; set +a; env PYTHONPATH=src ALLOW_REMOTE_AI=true .venv/bin/python scripts/check_report_gemini.py --input-json runs/hormigestion_report_input.json --model gemini-3.5-flash-lite --allow-real
+```
+- Outcome: 1 POST, `status: validated`, `reason: report_generated`, 709 prompt tokens, 162 completion tokens, `provider_status: complete`, `recommendation: "evidencia_insuficiente"`, `human_decision: "pending"`, exit code 0.
+- Semantic validator strictly enforced that missing mandatory policy Q2 prevents favorable recommendation.
+- M5 is completed and accepted. Next step: M6 (Full pipeline E2E on HORMIGESTION).
+
+### M6 result and full E2E pipeline execution (ACCEPTED)
+Full multi-agent pipeline executed on authentic HORMIGESTION sources:
+- Trello board `6a957e9173d4d13d0c5db608` (31 cards retrieved, date_fields strategy).
+- GitHub repository `Josu-F1/hormigestion-backend` at commit `5412744023c4b3961be9cd783609423d12280f64` (6 diff snippets).
+- Policies: Q1, Q2, Q3 from `config/policies.yaml`.
+- Executed pipeline:
+```bash
+set -a; source .env; set +a; env PYTHONPATH=src ALLOW_REMOTE_AI=true .venv/bin/python -m agente_gestion run HORMIGESTION --config config/hormigestion.yaml --sources real --groq-model qwen/qwen3.8-27b --gemini-model gemini-3.5-flash-lite
+```
+- Outcome:
+  - Run ID: `run-20261012-114912-aabbd0`
+  - Status: `awaiting_human` (`HumanDecisionState.pending`)
+  - Duration: 8.60 s
+  - Models used:
+    - Elaborador (Monitoring): `gemini/gemini-3.5-flash-lite`
+    - Revisor (Quality): `qwen/qwen3.8-27b`
+    - Verificador (Verifier): `gemini/gemini-3.5-flash-lite`
+    - Aprobador (Report): `gemini/gemini-3.5-flash-lite`
+  - Generated authentic Markdown report at `runs/run-20261012-114912-aabbd0/report.md` (60.0% progress, 18 of 30 tasks completed, unknown and contradictory cards identified, objective policy evaluations recorded, recommendation `evidencia_insuficiente`).
+  - Successfully closes M6 and accomplishes the core academic goal of the multi-agent software project assistant!

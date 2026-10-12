@@ -61,7 +61,7 @@ def _build_orchestrator(
     Any,
 ]:
     """Factory helper creating orchestrator and storage/provider adapters for a run."""
-    if not config.is_fake and config.monitoring_provider == "gemini":
+    if not config.is_fake and (config.monitoring_provider == "gemini" or config.report_provider == "gemini"):
         assert_remote_allowed(config.allow_remote_ai)
     monitoring_output = config.monitoring_max_generation_tokens or (
         2048 if config.monitoring_provider == "gemini" and not config.is_fake else 512
@@ -121,10 +121,24 @@ def _build_orchestrator(
                 context_tokens=config.quality_context_window or 4096,
                 max_output_tokens=config.quality_max_output_tokens or 768,
             )
-        aprobador = OllamaProvider(
-            base_url=config.ollama_base_url,
-            model=config.ollama_report_model,
-        )
+        if config.report_provider == "gemini":
+            raw_report_key = (
+                config.gemini_api_key.get_secret_value()
+                if hasattr(config.gemini_api_key, "get_secret_value")
+                else str(config.gemini_api_key or "")
+            )
+            aprobador = GeminiProvider(
+                api_key=raw_report_key,
+                model=config.gemini_report_model,
+                allow_remote_ai=config.allow_remote_ai,
+                context_tokens=8192,
+                max_output_tokens=768,
+            )
+        else:
+            aprobador = OllamaProvider(
+                base_url=config.ollama_base_url,
+                model=config.ollama_report_model,
+            )
 
         if config.allow_remote_ai and config.gemini_api_key:
             raw_key = (
@@ -229,8 +243,16 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         overrides["github_commit_sha"] = args.commit
     if getattr(args, "branch", None):
         overrides["github_branch"] = args.branch
+    if getattr(args, "monitoring_provider", None):
+        overrides["monitoring_provider"] = args.monitoring_provider
     if getattr(args, "quality_provider", None):
         overrides["quality_provider"] = args.quality_provider
+    if getattr(args, "report_provider", None):
+        overrides["report_provider"] = args.report_provider
+    if getattr(args, "groq_model", None):
+        overrides["groq_model"] = args.groq_model
+    if getattr(args, "gemini_model", None):
+        overrides["gemini_model"] = args.gemini_model
     if getattr(args, "due_soon_days", None) is not None:
         overrides["due_soon_days"] = args.due_soon_days
 
@@ -865,7 +887,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--ollama-base-url", default=None, help="Ollama server URL (defaults to http://127.0.0.1:11435)")
     parser_run.add_argument("--db-path", default=None, help="Path to SQLite database file")
     parser_run.add_argument("--output-dir", default=None, help="Directory to save runs artifacts")
+    parser_run.add_argument("--monitoring-provider", choices=["ollama", "gemini"], default=None, help="LLM provider for ProjectMonitoringAgent ('ollama', 'gemini')")
     parser_run.add_argument("--quality-provider", choices=["ollama", "groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral')")
+    parser_run.add_argument("--groq-model", default=None, help="Model identifier for Groq quality reviewer")
+    parser_run.add_argument("--gemini-model", default=None, help="Model identifier for Gemini verifier")
+    parser_run.add_argument("--report-provider", choices=["ollama", "gemini"], default=None, help="LLM provider for ReportAgent ('ollama', 'gemini')")
     parser_run.add_argument("--env-file", default=None, help="Path to custom .env file (defaults to .env)")
     parser_run.add_argument("--due-soon-days", type=int, default=None, help="Inclusive near-due window in days (nonnegative; default 7)")
     parser_run.add_argument("--monitoring-rules", default=None, metavar="PATH",

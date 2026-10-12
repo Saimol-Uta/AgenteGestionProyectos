@@ -59,6 +59,8 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             merged["quality_timeout_seconds"] = exec_sec["quality_timeout_seconds"]
         if "verifier_timeout_seconds" in exec_sec:
             merged["verifier_timeout_seconds"] = exec_sec["verifier_timeout_seconds"]
+        if "quality_max_output_tokens" in exec_sec:
+            merged["quality_max_output_tokens"] = exec_sec["quality_max_output_tokens"]
 
     if "providers" in file_data and isinstance(file_data["providers"], dict):
         prov_sec = file_data["providers"]
@@ -73,6 +75,8 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             q_sec = prov_sec["quality"]
             if "provider" in q_sec:
                 merged["quality_provider"] = q_sec["provider"]
+            if "max_output_tokens" in q_sec:
+                merged["quality_max_output_tokens"] = q_sec["max_output_tokens"]
             if "model" in q_sec:
                 eff_prov = str(q_sec.get("provider", "groq")).lower()
                 if eff_prov == "groq":
@@ -81,11 +85,29 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
                     merged["mistral_model"] = q_sec["model"]
                 elif eff_prov == "ollama":
                     merged["ollama_quality_model"] = q_sec["model"]
+        if "report" in prov_sec and isinstance(prov_sec["report"], dict):
+            rep_sec = prov_sec["report"]
+            if "provider" in rep_sec:
+                merged["report_provider"] = rep_sec["provider"]
+            if "model" in rep_sec:
+                eff_prov = str(rep_sec.get("provider", "gemini")).lower()
+                if eff_prov == "gemini":
+                    merged["gemini_report_model"] = rep_sec["model"]
+                elif eff_prov == "ollama":
+                    merged["ollama_report_model"] = rep_sec["model"]
+        if "remote" in prov_sec and isinstance(prov_sec["remote"], dict):
+            rem_sec = prov_sec["remote"]
+            if "model" in rem_sec:
+                merged["gemini_model"] = rem_sec["model"]
 
     if "roles" in file_data and isinstance(file_data["roles"], dict):
         roles_sec = file_data["roles"]
+        if "elaborador" in roles_sec and roles_sec["elaborador"] in ("gemini", "ollama"):
+            merged["monitoring_provider"] = roles_sec["elaborador"]
         if "revisor" in roles_sec and roles_sec["revisor"] in ("groq", "mistral", "ollama"):
             merged["quality_provider"] = roles_sec["revisor"]
+        if "aprobador" in roles_sec and roles_sec["aprobador"] in ("gemini", "ollama"):
+            merged["report_provider"] = roles_sec["aprobador"]
 
     if "sources" in file_data and isinstance(file_data["sources"], dict):
         src_sec = file_data["sources"]
@@ -231,6 +253,14 @@ class Settings(BaseSettings):
     ollama_monitoring_model: str = Field(default="qwen3.5:2b-q4_K_M")
     ollama_quality_model: str = Field(default="qwen3.5:4b-q4_K_M")
     ollama_report_model: str = Field(default="qwen3.5:2b-q4_K_M")
+    report_provider: str = Field(
+        default="ollama",
+        description="LLM provider for ReportAgent ('ollama', 'gemini'). Default: ollama.",
+    )
+    gemini_report_model: str = Field(
+        default="gemini-3.5-flash-lite",
+        description="Gemini model identifier for report synthesis.",
+    )
     gemini_api_key: Optional[SecretStr] = Field(
         default=None,
         repr=False,

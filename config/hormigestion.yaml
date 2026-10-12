@@ -1,0 +1,38 @@
+project:
+  id: HORMIGESTION
+  timezone: America/Guayaquil
+  allow_remote_ai: true
+
+execution:
+  due_soon_days: 7
+  max_llm_calls_per_run: 8
+  quality_timeout_seconds: 120
+  verifier_timeout_seconds: 120
+  quality_max_output_tokens: 4096
+
+providers:
+  remote:
+    model: gemini-3.5-flash-lite
+  quality:
+    provider: groq
+    model: qwen/qwen3.8-27b
+    max_output_tokens: 4096
+  report:
+    provider: gemini
+    model: gemini-3.5-flash-lite
+
+roles:
+  elaborador: gemini
+  revisor: groq
+  aprobador: gemini
+
+sources:
+  mode: real
+  policies_path: config/policies.yaml
+  trello:
+    board_id: "6a957e9173d4d13d0c5db608"
+    state_strategy: "date_fields"
+  github:
+    owner: "Josu-F1"
+    repo: "hormigestion-backend"
+    commit_sha: "5412744023c4b3961be9cd783609423d12280f64"

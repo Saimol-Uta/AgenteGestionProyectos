@@ -653,6 +653,7 @@ class ProjectOrchestrator:
         try:
             report_agent = ReportAgent(
                 provider=self.aprobador_provider,
+                model=getattr(self.aprobador_provider, "model", "qwen3.5:2b-q4_K_M"),
                 coordinator=coordinator,
             )
             final_report = report_agent.run(

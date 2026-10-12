@@ -77,11 +77,11 @@ def parse_input(data):
     return draft, snippets, rules
 
 
-def run(data, *, allow_real=False):
+def run(data, *, allow_real=False, model=MODEL):
     transport = OnePost()
     coordinator = StageInvocationCoordinator(GlobalBudgetTracker(max_calls=1),
                                              max_transient_retries=0, max_repair_attempts=0)
-    report = {"status": "failed", "reason": "input_rejected", "model": MODEL,
+    report = {"status": "failed", "reason": "input_rejected", "model": model,
               "posts": 0, "attempts": 0, "candidate_count": 0,
               "provider_status": None, "prompt_tokens": None, "completion_tokens": None,
               "context_tokens": 8192, "evidence_tokens": 4096, "output_tokens": 768,
@@ -98,10 +98,10 @@ def run(data, *, allow_real=False):
         if not os.environ.get("GROQ_API_KEY"):
             return report
         key = SecretStr(os.environ["GROQ_API_KEY"])
-        provider = GroqProvider(api_key=key.get_secret_value(), model=MODEL,
+        provider = GroqProvider(api_key=key.get_secret_value(), model=model,
                                 allow_remote_ai=True, context_tokens=8192,
                                 max_output_tokens=768, transport=transport)
-        agent = CodeQualityAgent(provider, model=MODEL, coordinator=coordinator,
+        agent = CodeQualityAgent(provider, model=model, coordinator=coordinator,
                                  context_builder=ContextBuilder(default_budget_tokens=4096),
                                  max_output_tokens=768, timeout_seconds=30)
         report["reason"] = "generation_rejected"
@@ -134,6 +134,7 @@ def main(argv=None):
     parser = SafeParser(description="Isolated Quality check; real calls require fresh human permission.")
     parser.add_argument("--input-json", required=True, help="Explicit captured/static domain JSON, not credentials")
     parser.add_argument("--allow-real", action="store_true", help="Also requires ALLOW_REMOTE_AI=true")
+    parser.add_argument("--model", default=MODEL, help="Model identifier")
     try:
         args = parser.parse_args(argv)
         path = Path(args.input_json)
@@ -148,7 +149,7 @@ def main(argv=None):
             raw = stream.read(1_000_001)
         if len(raw) > 1_000_000:
             raise ValueError("input size")
-        report = run(json.loads(raw), allow_real=args.allow_real)
+        report = run(json.loads(raw), allow_real=args.allow_real, model=args.model)
     except Exception:
         report = {"status": "failed", "reason": "input_rejected", "posts": 0, "attempts": 0}
     print(json.dumps(report, sort_keys=True))
