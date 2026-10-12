@@ -15,6 +15,7 @@ from agente_gestion.domain.proposal_review import (
 
 FULL_SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 
+from agente_gestion.application.security import assert_remote_allowed
 from agente_gestion.application.config import Settings, SystemConfig
 from agente_gestion.application.orchestrator import ProjectOrchestrator, OrchestratorConfig
 from agente_gestion.adapters.sources.factory import (
@@ -60,17 +61,11 @@ def _build_orchestrator(
     Any,
 ]:
     """Factory helper creating orchestrator and storage/provider adapters for a run."""
-    sqlite_storage = SQLiteStorageAdapter(db_path=config.db_path)
-    artifact_storage = ArtifactStorageAdapter(base_dir=config.runs_dir)
-
-    if effective_mode == "real":
-        source_adapter = create_composite_source(
-            config,
-            commit_sha=config.github_commit_sha,
-            transport=transport,
-        )
-    else:
-        source_adapter = FixtureSourcesAdapter(fixtures_dir=config.fixtures_dir)
+    if not config.is_fake and config.monitoring_provider == "gemini":
+        assert_remote_allowed(config.allow_remote_ai)
+    monitoring_output = config.monitoring_max_generation_tokens or (
+        2048 if config.monitoring_provider == "gemini" and not config.is_fake else 512
+    )
 
     if config.is_fake:
         print("INFO: Mode '--fake' activated. Using clearly simulated deterministic provider.")
@@ -79,10 +74,18 @@ def _build_orchestrator(
         verificador = FakeProvider(model="fake-gemini-flash")
         aprobador = FakeProvider(model="fake-qwen-2b")
     else:
-        elaborador = OllamaProvider(
-            base_url=config.ollama_base_url,
-            model=config.ollama_monitoring_model,
-        )
+        if config.monitoring_provider == "gemini":
+            elaborador = GeminiProvider(
+                api_key=config.gemini_api_key.get_secret_value() if config.gemini_api_key else "",
+                model=config.gemini_monitoring_model,
+                allow_remote_ai=config.allow_remote_ai,
+                context_tokens=8192,
+            )
+        else:
+            elaborador = OllamaProvider(
+                base_url=config.ollama_base_url,
+                model=config.ollama_monitoring_model,
+            )
         if config.quality_provider == "groq":
             raw_groq_key = (
                 config.groq_api_key.get_secret_value()
@@ -143,7 +146,22 @@ def _build_orchestrator(
         else:
             verificador = None
 
+    capabilities = elaborador.get_capabilities()
+    if (monitoring_output > capabilities.max_output_tokens
+            or monitoring_output + 64 >= capabilities.context_tokens):
+        raise ValueError("Monitoring output reservation exceeds configured provider limits")
+
+    sqlite_storage = SQLiteStorageAdapter(db_path=config.db_path)
+    artifact_storage = ArtifactStorageAdapter(base_dir=config.runs_dir)
+    if effective_mode == "real":
+        source_adapter = create_composite_source(
+            config, commit_sha=config.github_commit_sha, transport=transport,
+        )
+    else:
+        source_adapter = FixtureSourcesAdapter(fixtures_dir=config.fixtures_dir)
+
     orchestrator_config = OrchestratorConfig(
+        monitoring_max_generation_tokens=monitoring_output,
         project_id=config.project_id,
         default_fixture=config.default_fixture,
         allow_remote_ai=config.allow_remote_ai,

@@ -21,6 +21,37 @@ Mistral. La decisión final sigue siendo humana.
 [registro de validación inicial y evolución](docs/mvp-01-validation.md) ·
 [matriz REQ-01…REQ-11 y plan de implementación](docs/requisitos-y-plan-de-implementacion.md).
 
+## Monitoring con Gemini (M1, aceptación real pendiente)
+
+Solo Monitoring puede optar por `MONITORING_PROVIDER=gemini` y
+`GEMINI_MONITORING_MODEL=gemini-3.5-flash-lite`, con `ALLOW_REMOTE_AI=true`
+y `GEMINI_API_KEY`. El opt-in no autoriza una prueba real. Sin permiso remoto
+se rechaza antes de crear proveedores, fuentes o almacenamiento; no hay fallback.
+Quality, Verifier (`GEMINI_MODEL`) y Report conservan su configuración anterior.
+
+`MONITORING_MAX_GENERATION_TOKENS` admite 1–8192: por defecto 2048 con Gemini
+(o 4096 explícitos), 512 con Ollama. La composición rechaza valores incompatibles
+con los límites del proveedor. Gemini Monitoring usa una ventana operativa de
+8192, evidencia limitada a 4096 y reserva exacta de salida, esquema/prompt y margen;
+no adopta la ventana publicitada de un millón. Alternativa local:
+`MONITORING_PROVIDER=ollama`, conservando `OLLAMA_MONITORING_MODEL` y sus límites.
+`.env.example` queda pendiente por guard; no se accedió ni se modificó.
+
+**STOP tras pruebas offline:** `run` ejecuta todos los roles; `--fake` sustituye
+los cuatro LLM, pero **no** desactiva fuentes reales ni almacenamiento.
+No usar ninguno como prueba real aislada de Monitoring. Comando Fish pendiente
+de autorización y validación offline de un inline Python acotado (sin nuevo CLI).
+Blueprint: `Settings(_env_file=None)` con alcance explícito de proyecto, tablero,
+listas, repositorio y SHA; `create_task_source(...).get_tasks(project_id)` y
+`create_ci_source(...).get_ci_results(project_id, SHA)` solo GET; calcular métricas
+con cutoff/timezone aprobados y seleccionar CI mediante `match_ci_for_commit`.
+Invocar únicamente `ProjectMonitoringAgent` con `GeminiProvider` Lite, modelo
+explícito, 2048 tokens, ventana 8192 y `StageInvocationCoordinator` con
+`GlobalBudgetTracker(1)`, cero reparaciones y cero reintentos. Sin SQLite/artefactos
+ni otros roles. Se enviarán tareas seleccionadas, métricas, IDs y CI, no diffs ni
+credenciales; revisar/redactar esos datos antes de autorizar una llamada de hasta
+2048 tokens de salida. La aceptación incremental exige esa prueba real, aún pendiente.
+
 ## Historial de planificación (H1D2, offline)
 
 Consulta una base existente sin Settings, proveedores, artefactos ni migraciones:

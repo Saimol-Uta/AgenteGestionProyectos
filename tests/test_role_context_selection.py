@@ -178,7 +178,8 @@ class RoleContextSelectionTests(unittest.TestCase):
         bodies = []
         def transport(*args, payload=None, **kwargs):
             bodies.append(payload)
-            return {"body": {"message": {"content": json.dumps({"summary": "Global progress summary"})}, "done": True}}
+            return {"body": {"message": {"content": json.dumps({"summary": "Global progress summary",
+                    "referenced_task_ids": [], "evidence_ids": []})}, "done": True}}
         provider = OllamaProvider(context_tokens=4096, max_output_tokens=768, transport=transport)
         ProjectMonitoringAgent(provider).run("p", self.metrics, self.tasks)
         self.assertEqual(len(bodies), 1)

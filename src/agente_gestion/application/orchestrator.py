@@ -92,9 +92,11 @@ class OrchestratorConfig:
         commit_sha: Optional[str] = None,
         target_commit_sha: Optional[str] = None,
         due_soon_days: int = 7,
+        monitoring_max_generation_tokens: int = 512,
     ):
         if verifier_timeout_seconds <= 0:
             raise ValueError("verifier_timeout_seconds must be positive")
+        self.monitoring_max_generation_tokens = monitoring_max_generation_tokens
         self.project_id = project_id
         self.default_fixture = default_fixture
         self.allow_remote_ai = allow_remote_ai
@@ -360,6 +362,8 @@ class ProjectOrchestrator:
         try:
             monitoring_agent = ProjectMonitoringAgent(
                 provider=self.elaborador_provider,
+                model=getattr(self.elaborador_provider, "model", "qwen3.5:2b-q4_K_M"),
+                max_generation_tokens=self.config.monitoring_max_generation_tokens,
                 coordinator=coordinator,
             )
             monitoring_evidence_ids = [t.id for t in snapshot.tasks]

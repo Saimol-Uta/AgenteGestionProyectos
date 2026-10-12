@@ -367,14 +367,15 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
         fake.enqueue_responses([
             GenerationResult(
                 status=GenerationStatus.complete,
-                structured_data={"summary": "Invented", "referenced_task_ids": ["T_UNKNOWN_99"]},
+                structured_data={"summary": "Invented", "referenced_task_ids": ["T_UNKNOWN_99"],
+                                 "evidence_ids": ["T_UNKNOWN_99"]},
                 provider="fake_simulated",
                 model="qwen3.5:2b-q4_K_M",
                 duration_seconds=0.1,
             ),
             GenerationResult(
                 status=GenerationStatus.complete,
-                structured_data={"summary": "Fixed", "referenced_task_ids": ["T2"]},
+                structured_data={"summary": "Fixed", "referenced_task_ids": ["T2"], "evidence_ids": ["T2"]},
                 provider="fake_simulated",
                 model="qwen3.5:2b-q4_K_M",
                 duration_seconds=0.1,
@@ -452,7 +453,7 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
             ),
             GenerationResult(
                 status=GenerationStatus.complete,
-                structured_data={"summary": "Recovered", "referenced_task_ids": ["T2"]},
+                structured_data={"summary": "Recovered", "referenced_task_ids": ["T2"], "evidence_ids": ["T2"]},
                 provider="fake_simulated",
                 model="qwen3.5:2b-q4_K_M",
                 duration_seconds=0.1,

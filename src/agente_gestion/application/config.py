@@ -225,6 +225,9 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:11435",
         description="Ollama server base URL. Default port 11435 per ARCHITECTURA.v1.",
     )
+    monitoring_provider: str = Field(default="ollama")
+    gemini_monitoring_model: str = Field(default="gemini-3.5-flash-lite")
+    monitoring_max_generation_tokens: Optional[int] = Field(default=None, gt=0, le=8192)
     ollama_monitoring_model: str = Field(default="qwen3.5:2b-q4_K_M")
     ollama_quality_model: str = Field(default="qwen3.5:4b-q4_K_M")
     ollama_report_model: str = Field(default="qwen3.5:2b-q4_K_M")
@@ -480,6 +483,13 @@ class Settings(BaseSettings):
                 return True
             raise ValueError(f"Invalid boolean value for allow_remote_ai: {v!r}")
         return bool(v)
+
+    @field_validator("monitoring_provider", mode="before")
+    @classmethod
+    def parse_monitoring_provider(cls, value: Any) -> str:
+        if not isinstance(value, str) or value.strip().lower() not in ("ollama", "gemini"):
+            raise ValueError("monitoring_provider must be 'ollama' or 'gemini'")
+        return value.strip().lower()
 
     @field_validator("quality_provider", mode="before")
     @classmethod

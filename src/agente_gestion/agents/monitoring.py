@@ -17,14 +17,35 @@ from agente_gestion.application.validation import SemanticValidator, ValidationE
 
 class MonitoringDraftSchema(BaseModel):
     """Concise schema for LLM structured output. Metric fields are never computed by LLM."""
-    summary: str = Field(description="Narrative progress summary")
-    task_state_claims: list[TaskStateClaim] = Field(default_factory=list)
-    risks: list[str] = Field(default_factory=list, description="Project delivery risks identified")
-    suggested_actions: list[str] = Field(default_factory=list, description="Concrete actions suggested for manager")
-    referenced_task_ids: list[str] = Field(default_factory=list, description="Explicit task IDs cited")
-    evidence_ids: list[str] = Field(default_factory=list, description="Explicit evidence IDs cited")
-    ci_status_note: Optional[str] = Field(default=None, description="Observations regarding CI build and tests")
 
+    summary: str = Field(description="Narrative progress summary")
+
+    task_state_claims: list[TaskStateClaim] = Field(default_factory=list)
+
+    risks: list[str] = Field(
+        default_factory=list,
+        description="Project delivery risks identified"
+    )
+
+    suggested_actions: list[str] = Field(
+        default_factory=list,
+        description="Concrete actions suggested for manager"
+    )
+
+    referenced_task_ids: list[str] = Field(
+        ...,
+        description="OBLIGATORIO: incluye el ID exacto de cada tarea mencionada en el análisis. Usa [] si no mencionas tareas."
+    )
+
+    evidence_ids: list[str] = Field(
+        ...,
+        description="OBLIGATORIO: incluye el ID exacto de cada tarea mencionada, además de otras evidencias citadas. Usa [] si no hay referencias."
+    )
+
+    ci_status_note: Optional[str] = Field(
+        default=None,
+        description="Observations regarding CI build and tests"
+    )
 
 class ProjectMonitoringAgent:
     """
@@ -39,10 +60,12 @@ class ProjectMonitoringAgent:
         model: str = "qwen3.5:2b-q4_K_M",
         coordinator: Optional[StageInvocationCoordinator] = None,
         context_builder: Optional[ContextBuilder] = None,
+        max_generation_tokens: int = 512,
     ):
         self.context_builder = context_builder or ContextBuilder()
         self.provider = provider
         self.model = model
+        self.max_generation_tokens = max_generation_tokens
         self.coordinator = coordinator or StageInvocationCoordinator()
 
     def run(
@@ -74,13 +97,17 @@ class ProjectMonitoringAgent:
             "- Repite el ID exacto al afirmar estados; no uses pronombres o frases de estado sin atribucion clara despues de mencionar varias tareas.\n"
         )
 
+        capabilities = self.provider.get_capabilities()
+        if (self.max_generation_tokens <= 0
+                or self.max_generation_tokens > capabilities.max_output_tokens
+                or self.max_generation_tokens + 64 >= capabilities.context_tokens):
+            raise ContextBudgetExceededError("Monitoring output reservation exceeds configured provider limits")
         context = self.context_builder.build_monitoring_context(
             project_id, metrics, tasks, ci_result, sorted(valid_ev_ids), strict_budget=True,
             source_is_complete=source_is_complete, source_commit_sha=source_commit_sha,
         )
-        capabilities = self.provider.get_capabilities()
         evidences_payload = self.context_builder.runtime_payload(
-            context, instructions, MonitoringDraftSchema.model_json_schema(), 512,
+            context, instructions, MonitoringDraftSchema.model_json_schema(), self.max_generation_tokens,
             capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
             request_fields={"role": "elaborador", "model": self.model, "schema_name": "monitoring_draft_v1"},
         )
@@ -97,7 +124,7 @@ class ProjectMonitoringAgent:
                 "description": "Select only proposal_choices IDs, at most one per task/field; no permission granted."}
             try:
                 evidences_payload = self.context_builder.runtime_payload(
-                    optional_context, instructions, schema, 512, capabilities.context_tokens,
+                    optional_context, instructions, schema, self.max_generation_tokens, capabilities.context_tokens,
                     max_output_tokens=capabilities.max_output_tokens,
                     request_fields={"role": "elaborador", "model": self.model, "schema_name": "monitoring_draft_v1"})
             except ContextBudgetExceededError:
@@ -120,11 +147,12 @@ class ProjectMonitoringAgent:
             schema_name="monitoring_draft_v1",
             json_schema=schema,
             model=self.model,
-            max_generation_tokens=512,
+            max_generation_tokens=self.max_generation_tokens,
         )
 
         def validate_payload(data: dict[str, Any]) -> list[str]:
             try:
+                MonitoringDraftSchema.model_validate(data)
                 candidate = MonitoringDraft(
                     summary=data.get("summary", ""),
                     task_state_claims=data.get("task_state_claims", []),
