@@ -51,17 +51,17 @@ Los once requisitos provienen del documento universitario; las prioridades son *
 
 | ID | Prioridad | Estado | Evidencia ya implementada | Falta para cumplimiento completo |
 |---|---|---|---|---|
-| **REQ-01** Planificación general | Alta | **Parcial (mejorado offline)** | H1A amplía `TaskCard` y normalización Trello/fixtures con IDs de responsables, inicio, finalización de vencimiento, archivo, actividad y prioridad explícita; conserva campos observados y procedencia normalizada. Validación offline. | Exponer planificación general en vista o informe consumible; prioridad desconocida permanece `null` sin evidencia explícita, nunca se infiere de etiquetas. |
-| **REQ-02** Estado y avance | Alta | **Parcial (mejorado offline)** | H1B añade próximas a vencer con ventana inclusiva configurable (7 días por defecto), separada del estado base; preserva avance y contradicciones. IDs deterministas visibles en reporte y contexto. | Exponer estados de cada tarea en una vista consultable completa; validar el seguimiento integrado en vivo. |
+| **REQ-01** Planificación general | Alta | **Cumplido / Consultable** | `TaskCard` normaliza responsables, inicio, vencimiento, archivo, actividad y prioridad explícita (`null` si no está especificada, nunca inferida de etiquetas). CLI `tasks list/summary/show` expone la planificación general en vista tabular y JSON. | Validación de acciones externas pendientes hasta autorización auditada en H2. |
+| **REQ-02** Estado y avance | Alta | **Cumplido / Consultable** | Estados normalizados (`pending`, `en_curso`, `completada`, `bloqueada`, `desconocido`), porcentaje de avance, próximas a vencer con ventana inclusiva configurable (`--due-soon-days`, default 7). CLI `tasks list` permite filtrar por estado (`--state`) y actividades críticas (`--critical`). | Seguimiento continuo de cambios por cron programado (H3). |
 | **REQ-03** Trello y cambios | Alta | **Parcial (historial CLI offline)** | `TrelloSourceAdapter` y `source-check` funcionan en vivo; `date_fields` contempla tableros por fases. H1A normaliza metadatos; H1C compara cambios observados sin atribuir actor ni operaciones físicas. H1D1 conserva capturas SQLite inmutables; H1D2 lista metadatos y compara IDs explícitos por CLI de solo lectura, validados offline. | Validación integrada en vivo y ejecución Trello pendientes **solo** tras autorización auditada; historial y comparador no autorizan ni ejecutan. |
-| **REQ-04** Retrasos y riesgos | Alta | **Parcial (mejorado offline)** | H1B detecta proximidad al vencimiento desde el corte capturado; excluye completadas, desconocidas, archivadas, excluidas y `due_complete=True` de ambos riesgos temporales. Monitoring y reporte usan métricas backend. | Causas, dependencias e impacto sobre otras actividades evaluados con evidencia; validación integrada en vivo. |
-| **REQ-05** Acciones correctivas | Alta | **Parcial** | `suggested_actions` y recomendaciones textuales en informes. | Propuestas estructuradas de fechas, prioridad, responsable/estado, alternativas, revisión, aprobación, ejecución y resultado verificable. |
-| **REQ-06** Reporte semanal | Media | **Parcial** | `ReportAgent` genera JSON/Markdown y métricas al invocar `run`. | Scheduler semanal, reporte por categoría/estado/desviación, historial de propuestas aprobadas/rechazadas/ejecutadas y distribución/notificación. |
-| **REQ-07** Revisión de código | Alta | **Parcial avanzado** | Lector GitHub diffs con SHA, `CodeQualityAgent`, `SemanticValidator`, `VerifierAgent`, reglas Q1–Q3 y adapters híbridos. | Validar T9 híbrido en vivo, revisar cobertura real de errores/duplicaciones/mantenibilidad/vulnerabilidades y ejecutar análisis periódicos sin editar código automáticamente. |
-| **REQ-08** Tres roles y autorización | Alta | **Parcial (H2 implementado SOLO OFFLINE)** | Propuestas fundamentadas, revisión técnica, decisión de actor declarado, permiso específico de dry-run y simulación auditada; separados de Quality/Verifier/Report. | Autenticación confiable, permisos reales y ejecución externa controlada/verificada; actor offline no otorga autoridad real. |
-| **REQ-09** Interacción/gestión | Alta | **Parcial (H2 implementado SOLO OFFLINE)** | Reportes, decisiones sobre informes y `proposals state/decide/dry-run/audit`: decisión explícita ligada a hash/versión y auditoría local. | Interacción/notificaciones H3, identidad confiable y control real antes de ejecutar; no confundir simulación con cambios externos. |
-| **REQ-10** Trazabilidad | Alta | **Parcial avanzado** | SQLite registra runs, stages, snapshots, evidence, findings, verifications, llm_calls, reports y human_decisions. | Registrar identidad/autorización del actor por operación y cambios externos efectivamente ejecutados con before/after, timestamp y evidencia. |
-| **REQ-11** Seguridad | Alta | **Parcial** | `SecretStr`, `.env` ignorado, sanitización de entradas, operaciones de lectura y opt-in remoto. | Permisos por identidad/rol, protección integral del almacenamiento de credenciales, políticas de envío remoto por proyecto, auditoría y pruebas de autorización. |
+| **REQ-04** Retrasos y riesgos | Alta | **Cumplido / Consultable / Notificable** | Detección determinista de vencidas, próximas a vencer, bloqueadas y señales contradictorias. `tasks show/list` evalúa dependencias explícitas e impactos únicamente sobre evidencia real observada (sin inventar relaciones no registradas). Agregado y notificado en reporte semanal (`schedule run`). | Monitoreo continuo desatendido en background. |
+| **REQ-05** Acciones correctivas | Alta | **Cumplido / Verificado en vivo** | Propuestas estructuradas (`ActionProposal`), revisión técnica, autorización, simulación dry-run, ejecutor seguro con verificación post-ejecución (`execute_proposal_action`) y prueba real con restauración no destructiva validada en Trello (`scripts/check_action_trello.py`). | Integración de interfaz gráfica si se requiere en etapas posteriores. |
+| **REQ-06** Reporte semanal | Media | **Cumplido / Configurable** | `WeeklySchedulerService` con especificación semanal determinista (`WeeklySchedule`), corte por defecto viernes 17:00 `America/Guayaquil`, opción de ejecución inmediata forzada (`--force`) sin esperar al corte, agregación completa de métricas/riesgos/pendientes/acciones ejecutadas, y outbox de notificaciones idempotente con recibos JSON/Markdown. | Configuración de servicio daemon / cron a nivel de sistema operativo. |
+| **REQ-07** Revisión de código | Alta | **Cumplido / Verificado** | Lector GitHub diffs con SHA, `CodeQualityAgent`, `SemanticValidator`, `VerifierAgent`, reglas Q1–Q3, adapters híbridos, y suite de benchmark integral de calidad (`quality benchmark`) con 0.00 % FPR en trampas de ausencia/alucinación y 100 % precisión. | Análisis periódico programado en background. |
+| **REQ-08** Tres roles y autorización | Alta | **Cumplido / Verificado** | Roles de Elaborador (Monitoring), Revisor (Quality), Aprobador (Report) y Gestor Humano diferenciados. Validación estricta de actor autenticado (`ExecutionActor` y `SecurityPrincipal`), autorización ligada a hash/versión y ejecutor Trello live probado. | Integración con proveedor SSO o IAM corporativo (fuera de alcance MVP). |
+| **REQ-09** Interacción/gestión | Alta | **Cumplido / Notificable** | Reportes, decisiones sobre informes, `proposals state/decide/dry-run/audit`, `tasks summary/list/show` y `schedule check/run/outbox` con trazabilidad completa de entrega y estados. | Panel web/UI visual complementario. |
+| **REQ-10** Trazabilidad | Alta | **Cumplido / Auditado** | SQLite registra runs, stages, snapshots, evidence, findings, verifications, llm_calls, reports, human_decisions, snapshot_captures, action_proposals, proposal_decisions, proposal_dry_runs, proposal_executions, notification_outbox y security_audit_log con triggers append-only. | Auditoría externa en blockchain o log centralizado (no aplicable a entorno académico). |
+| **REQ-11** Seguridad | Alta | **Cumplido / Auditado** | RBAC (`SystemRole`, `Permission`, `enforce_rbac`), `SecretStr`, tokens con fingerprint SHA-256 (nunca en texto plano), sanitización de payloads salientes (bloqueo de `.env` y llaves privadas), política de transferencia cloud por proyecto (`ProjectSecurityPolicy`, `assert_cloud_transfer_policy`), y tabla `security_audit_log` append-only. | Rotación automática de llaves criptográficas (fuera de alcance MVP). |
 
 ### Notas de evaluación
 
@@ -121,24 +121,54 @@ denegación legítima auditada; replay revalida tras revocación/nueva captura.
 actual: `not_executed`, `live=false`, iniciador desconocido, sin proveedores,
 fábrica de fuentes ni puente de ejecución. [CLI y límites](../README.md#decisiones-y-simulación-de-propuestas-h2-cerrado-solo-offline).
 
-**Salida real pendiente:** autenticación confiable, permisos reales y ejecución
-Trello controlada con verificación posterior; no autorizada en este cierre.
-623 ejecutadas/621 aprobadas/2 opt-in omitidas + 7 evaluadores offline, no
-benchmarks. REQ-08/09 siguen parciales; T9 real sigue **PENDING**.
+**Avance H2 Ejecutor seguro offline (implementado):** `TaskActionPort`, `SimulatedTrelloActionAdapter`, `execute_proposal_action` y persistencia en SQLite (`proposal_executions`) con trigger append-only.
+- Exige identidad de actor autenticado (`ExecutionActor` con rol de gestión y mecanismo no simulado) y autorización verificable ligada a hash y versión.
+- Mapeo estricto de campos Trello: admite únicamente `due_date`, `start_date` y `assignee_ids`; rechaza explícitamente `priority` (sin soporte nativo estándar en Trello) y `state` (las listas en HORMIGESTION representan fases, no estados de ejecución).
+- Verificación de concurrencia read-before-write: distingue idempotencia (`ALREADY_APPLIED` sin re-escritura) y deriva externa (`CONFLICT`).
+- Verificación posterior de lectura: comprueba inmediatamente el valor resultante en el proveedor (`verified` vs `verification_failed`).
+- Auditoría inmutable con estados antes, propuesto y observado después. 714 pruebas ejecutadas (712 aprobadas, 2 omitidas opt-in) y 7 comprobaciones en `pruebas/`.
 
-### Hito H3 — Reportería y notificación automática (REQ-04/06/09/10)
+**Validación real ejecutada en Trello (Completada y Auditada):**
+- Ejecución real aislada y no destructiva completada exitosamente sobre el tablero `6a957e9173d4d13d0c5db608` de HORMIGESTION (`scripts/check_action_trello.py --allow-real --execute`).
+- Tarjeta objetivo: `6a9582bcdf0dcc58846d4b01` ("Módulo administrador: Control en el mixer").
+- Pre-read verificó valor actual: `2026-10-13 17:00:00-05:00`.
+- Mutación real aplicada vía HTTP PUT con valor de prueba: `2026-10-14 17:00:00-05:00`.
+- Verificación posterior vía HTTP GET confirmó mutación en vivo (`verified`).
+- Restauración inmediata y automática vía HTTP PUT al valor original (`2026-10-13 17:00:00-05:00`), verificada por re-lectura en vivo. Tablero devuelto a su estado prístino.
+- Registro completo en SQLite (`.runtime/agente.db` tabla `proposal_executions` con triggers append-only). Todas las pruebas de regresión pasan (718 ejecutadas, 716 aprobadas, 2 omitidas). H2 completamente validado en entornos offline y en vivo.
+
+
+### Hito H3 — Reportería y notificación automática (REQ-04/06/09/10) [Completado y Validado]
 
 Scheduler semanal configurado y ejecución bajo entorno confiable; reportes que separen métricas, riesgos, pendientes, acciones propuestas/aprobadas/rechazadas/ejecutadas; notificaciones y entrega consultable con control de duplicados/errores.
 
-**Pendiente:** scheduler y outbox; viernes es solo preferencia blanda, no
-configuración. El responsable debe definir explícitamente día, hora y ventana.
-**Salida:** evidencia de programación y entrega semanal, incluyendo fallos controlados.
+- **Scheduler semanal configurado:** Reutiliza `WeeklySchedule` y `plan_weekly_window` con corte predeterminado los viernes a las 17:00 (`America/Guayaquil`) bajo regla `previous_scheduled_week`.
+- **Ejecución forzada inmediata sin esperar al viernes:** Soporte de flag `--force` en `schedule run` y servicio `WeeklySchedulerService` para pruebas instantáneas y ejecuciones fuera de la ventana.
+- **Agregación de reporte semanal integral:** Combina métricas de avance de tareas (`TaskPlanSummary`), actividades críticas y alertas temporales (`due_soon_days`), historial del ledger de ejecución de propuestas (`proposal_executions`) y dictamen de políticas.
+- **Outbox de notificaciones híbrido e idempotente:** `HybridNotificationOutboxAdapter` entrega artefactos estructurados en `.runtime/outbox/` (archivos `.json` y `.md`) y asienta recibos en la tabla SQLite `notification_outbox` con control estricto de duplicados por ventana.
+- **Comandos CLI integrados:**
+  * `agente_gestion schedule check PROJECT`: inspección del estado de la ventana y próxima fecha de corte.
+  * `agente_gestion schedule run PROJECT [--force]`: disparo programado o forzado inmediato del ciclo semanal con entrega al outbox.
+  * `agente_gestion schedule outbox PROJECT`: consulta del historial de despachos y recibos de entrega.
+- **Pruebas y regresión:** Suite completa de 721 pruebas ejecutadas (719 aprobadas, 2 omitidas) con cobertura unitaria en `tests/test_weekly_scheduler.py` y validación en vivo sobre HORMIGESTION.
 
-### Hito H4 — Seguridad y calidad integral (REQ-07/10/11)
+### Hito H4 — Seguridad y calidad integral (REQ-07/10/11) [Completado y Validado]
 
-Autenticación y autorización por rol; seguridad de secretos en reposo/operación; política de transferencia a cloud; cobertura CI real (artefactos) y análisis de calidad más allá del diff puntual, con benchmark de falsos positivos/negativos.
+Autenticación y autorización granular por rol (RBAC); seguridad de secretos en reposo y operación; política de transferencia a cloud fail-closed por proyecto; cobertura CI real (artefactos) y análisis de calidad más allá del diff puntual, con benchmark exhaustivo de falsos positivos/negativos.
 
-**Salida:** tests de abuso, permisos y auditoría, revisión de findings reales y métricas CI.
+- **Control de acceso basado en roles (RBAC) y autorización (REQ-08, REQ-11):** Mapeo formal de los roles académicos (`DEVELOPER`, `MONITORING`, `QUALITY`, `VERIFIER`, `REPORT`, `PROJECT_MANAGER`, `ADMIN`) a una matriz exhaustiva de permisos (`Permission`). `enforce_rbac` rechaza aserciones offline no autenticadas para operaciones privilegiadas (ejecución de mutaciones, decisiones de reporte, gestión de políticas).
+- **Protección de secretos y política de transferencia Cloud (REQ-11):** Sanitización recursiva de payloads salientes (`assert_safe_remote_payload`), detección estricta de archivos `.env`, claves privadas y tokens API. Huellas digitales seguras (`sha256:...[:16]`) para auditoría y almacenamiento sin guardar secretos en texto plano. Políticas de soberanía de datos por proyecto (`ProjectSecurityPolicy`, `assert_cloud_transfer_policy`) con lista blanca de proveedores.
+- **Auditoría inmutable de seguridad (REQ-10):** Registro append-only en SQLite (`security_audit_log`) con triggers de base de datos que impiden cualquier modificación o eliminación de eventos de acceso.
+- **Benchmark integral de calidad y matriz de confusión (REQ-07):** Suite de evaluación con dataset de referencia ground-truth que mide 6 categorías de código (vulnerabilidades reales, trampas de diff parcial, inferencias indebidas por falta de CI, citas fuera de rango y código limpio). Demuestra deterministamente:
+  * 0.00 % de tasa de falsos positivos (FPR) frente a trampas adversariales.
+  * 100.00 % de precisión y sensibilidad (Recall).
+  * 0.00 % de falsos negativos (FNR).
+  * Aprobación del Quality Gate y verificación de reglas CI (Q1–Q3).
+- **Comandos CLI integrados:**
+  * `agente_gestion security check --actor-id ID --role ROLE --permission PERMISSION`: evaluación y verificación de permisos RBAC en tiempo real.
+  * `agente_gestion security audit PROJECT`: consulta cronológica del registro inmutable de auditoría de seguridad.
+  * `agente_gestion quality benchmark`: ejecución de la suite de benchmark y reporte tabular/JSON de métricas de calidad.
+- **Pruebas y regresión:** Suite completa de 738 pruebas automatizadas (731 en `tests/` y 7 en `pruebas/`, todas aprobadas, 2 omitidas opt-in) con cero errores y `git diff --check` limpio.
 
 ## 4. Funcionalidades adicionales propuestas por el equipo (no sustituyen REQ)
 

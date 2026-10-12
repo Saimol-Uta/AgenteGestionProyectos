@@ -75,6 +75,62 @@ Ejemplo sintético reproducible: `planning_example()` en
 cuatro cambios (responsable, fecha límite, prioridad, estado). Sin base real ni
 APIs; T9 sigue **PENDING**. Scheduler, UI y acciones externas siguen pendientes.
 
+## Consulta de planificación y estado de tareas (`tasks`, H1)
+
+Permite consultar la planificación del proyecto, los estados normalizados de cada tarea y las actividades críticas directamente desde las capturas de snapshots almacenadas en SQLite:
+
+```sh
+# Resumen general del plan y avance
+.venv/bin/python -m agente_gestion tasks summary PROJECT [--db-path DB] [--due-soon-days N] [--json]
+
+# Listado de tareas con filtros de estado y criticidad
+.venv/bin/python -m agente_gestion tasks list PROJECT [--state pending|en_curso|completada|bloqueada|desconocido] [--critical] [--assignee ID] [--list-name FASE] [--json]
+
+# Inspección detallada de una tarea específica con dependencias e impacto
+.venv/bin/python -m agente_gestion tasks show PROJECT TASK_ID [--db-path DB] [--json]
+```
+
+Si no se especifica `--capture-id`, consulta automáticamente la **última captura de snapshot** registrada para el proyecto. `--critical` filtra actividades vencidas, próximas a vencer, bloqueadas o con señales contradictorias. Las dependencias e impactos se detectan exclusivamente a partir de evidencia explícita.
+
+## Scheduler semanal y Outbox de notificaciones (`schedule`, H3)
+
+Gestiona la programación periódica de reportes semanales, la evaluación determinista de cortes y el despacho de notificaciones con control de duplicados e idempotencia:
+
+```sh
+# Inspeccionar estado de la ventana semanal programada
+.venv/bin/python -m agente_gestion schedule check PROJECT [--db-path DB] [--eval-time ISO] [--json]
+
+# Ejecutar el ciclo de reportería semanal programado (respeta corte y evita duplicados)
+.venv/bin/python -m agente_gestion schedule run PROJECT [--channel file|sqlite|console|all] [--json]
+
+# Forzar la ejecución inmediata para pruebas sin esperar al corte del viernes a las 17:00
+.venv/bin/python -m agente_gestion schedule run PROJECT --force [--due-soon-days N] [--json]
+
+# Listar el historial de despachos y recibos generados en el outbox
+.venv/bin/python -m agente_gestion schedule outbox PROJECT [--db-path DB] [--json]
+```
+
+Por defecto, el scheduler evalúa la ventana semanal correspondiente a los **viernes a las 17:00 (`America/Guayaquil`)** bajo la regla `previous_scheduled_week`. El flag `--force` permite ejecutar pruebas bajo demanda en cualquier momento sin esperar al corte semanal. Los reportes entregados generan artefactos estructurados en `.runtime/outbox/` (en formatos `.json` y `.md`) y se asientan de forma auditable en la tabla SQLite `notification_outbox`.
+
+## Control de acceso por roles (RBAC) y Benchmark de calidad (`security` y `quality`, H4)
+
+Implementa la seguridad y autorización de los roles académicos (`DEVELOPER`, `MONITORING`, `QUALITY`, `VERIFIER`, `REPORT`, `PROJECT_MANAGER`, `ADMIN`), la protección de secretos en reposo/tránsito, las políticas de soberanía cloud y la suite de evaluación de calidad objetiva:
+
+```sh
+# Verificar permisos RBAC de un actor en tiempo real
+.venv/bin/python -m agente_gestion security check --actor-id dev-1 --role developer --permission read_tasks
+.venv/bin/python -m agente_gestion security check --actor-id dev-1 --role developer --permission execute_action # (denegado)
+
+# Consultar historial inmutable de auditoría de seguridad
+.venv/bin/python -m agente_gestion security audit PROJECT [--db-path DB] [--json]
+
+# Ejecutar el benchmark integral de calidad y matriz de confusión (REQ-07, REQ-11)
+.venv/bin/python -m agente_gestion quality benchmark [--json]
+```
+
+La suite de benchmark evalúa vulnerabilidades reales frente a trampas adversariales de diffs parciales e inferencias infundadas, reportando matriz de confusión con tasa de falsos positivos (FPR = 0.00 %) y precisión del 100 %.
+
+
 ## Consulta local de propuestas (H2B2a, solo lectura)
 
 H2A aporta el contrato validado; H2B1 persiste propuestas y evidencia de apoyo

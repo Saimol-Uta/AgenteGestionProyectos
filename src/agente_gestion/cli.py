@@ -40,11 +40,29 @@ from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
 from agente_gestion.domain.task_comparison import compare_task_snapshots
+from agente_gestion.domain.tasks import TaskState
+from agente_gestion.application.tasks_query import (
+    TaskFilter,
+    build_task_plan_summary,
+    format_plan_summary,
+    format_task_detail,
+    format_tasks_table,
+    query_tasks_view,
+)
 from agente_gestion.ports.source_errors import (
     SourceError,
     SourceErrorCategory,
     SourceProvider,
 )
+from agente_gestion.domain.security_rbac import (
+    Permission,
+    PermissionDeniedSecurityError,
+    SecurityPrincipal,
+    SystemRole,
+    enforce_rbac,
+)
+from agente_gestion.quality.benchmark import run_quality_benchmark
+
 
 
 def _build_orchestrator(
@@ -862,6 +880,285 @@ def proposals_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def tasks_command(args: argparse.Namespace) -> int:
+    """Query and inspect project planning, tasks, and critical risks from stored snapshots."""
+    try:
+        storage = SQLiteStorageAdapter(db_path=args.db_path, read_only=True)
+        if getattr(args, "capture_id", None):
+            capture = storage.get_snapshot_capture(args.capture_id)
+            if capture is None or capture.snapshot.project_id != args.project:
+                sys.stderr.write(f"ERROR: Capture '{args.capture_id}' not found for project '{args.project}'.\n")
+                return 1
+        else:
+            captures = storage.list_snapshot_captures(args.project)
+            if not captures:
+                sys.stderr.write(f"ERROR: No snapshot captures found for project '{args.project}'.\n")
+                return 1
+            capture = captures[-1]
+
+        due_soon_days = getattr(args, "due_soon_days", 7)
+        if due_soon_days is None:
+            due_soon_days = 7
+
+        if args.tasks_operation == "summary":
+            summary = build_task_plan_summary(
+                snapshot=capture.snapshot,
+                capture_id=capture.capture_id,
+                due_soon_days=due_soon_days,
+            )
+            if getattr(args, "json", False):
+                print(summary.model_dump_json(indent=2))
+            else:
+                print(format_plan_summary(summary))
+            return 0
+
+        elif args.tasks_operation == "list":
+            state_filter = TaskState(args.state) if getattr(args, "state", None) else None
+            task_filter = TaskFilter(
+                state=state_filter,
+                critical_only=getattr(args, "critical", False),
+                assignee_id=getattr(args, "assignee", None),
+                list_name=getattr(args, "list_name", None),
+                due_soon_days=due_soon_days,
+            )
+            summary, views = query_tasks_view(
+                snapshot=capture.snapshot,
+                capture_id=capture.capture_id,
+                filters=task_filter,
+            )
+            if getattr(args, "json", False):
+                print(json.dumps([v.model_dump(mode="json") for v in views], indent=2))
+            else:
+                print(format_plan_summary(summary) + "\n\n" + format_tasks_table(views))
+            return 0
+
+        elif args.tasks_operation == "show":
+            summary, views = query_tasks_view(
+                snapshot=capture.snapshot,
+                capture_id=capture.capture_id,
+                filters=TaskFilter(due_soon_days=due_soon_days),
+            )
+            matched = next((v for v in views if v.id == args.task_id), None)
+            if matched is None:
+                sys.stderr.write(f"ERROR: Task '{args.task_id}' not found in snapshot capture '{capture.capture_id}'.\n")
+                return 1
+            if getattr(args, "json", False):
+                print(matched.model_dump_json(indent=2))
+            else:
+                print(format_task_detail(matched))
+            return 0
+
+        sys.stderr.write(f"ERROR: Unknown tasks operation '{args.tasks_operation}'.\n")
+        return 1
+
+    except NotImplementedError:
+        sys.stderr.write("ERROR: Snapshot storage unavailable in legacy database; no migration performed.\n")
+        return 1
+    except Exception as e:
+        sys.stderr.write(f"ERROR: Tasks query failed; check database integrity: {str(e)}\n")
+        return 1
+
+
+def schedule_command(args: argparse.Namespace) -> int:
+    try:
+        from pathlib import Path
+        from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+        from agente_gestion.application.weekly_scheduler import (
+            WeeklySchedulerService,
+            get_default_schedule,
+        )
+        from agente_gestion.adapters.outbox.hybrid_outbox import HybridNotificationOutboxAdapter
+
+        db_path = getattr(args, "db_path", ".runtime/agente.db") or ".runtime/agente.db"
+        storage = SQLiteStorageAdapter(db_path)
+        outbox = HybridNotificationOutboxAdapter(storage)
+        service = WeeklySchedulerService(storage, outbox)
+
+        project_id = args.project
+        weekday = getattr(args, "weekday", 4)
+        local_time = getattr(args, "local_time", "17:00")
+        schedule = get_default_schedule(project_id, weekday=weekday, local_time=local_time)
+
+        eval_time = None
+        if getattr(args, "eval_time", None):
+            eval_time = datetime.fromisoformat(args.eval_time)
+
+        if args.schedule_operation == "check":
+            status = service.check_schedule(project_id, schedule, eval_time=eval_time)
+            if getattr(args, "json", False):
+                print(status.model_dump_json(indent=2))
+            else:
+                w = status.window
+                print("=" * 70)
+                print(f"ESTADO DEL SCHEDULER SEMANAL — PROYECTO: {project_id}")
+                print("=" * 70)
+                print(f"Corte programado:          Viernes {schedule.local_time} ({schedule.timezone})")
+                print(f"Regla de ventana:          {schedule.window_rule}")
+                print(f"ID de Ventana Semanal:     {w.window_id}")
+                print(f"Último corte transcurrido: {w.elapsed_boundary_local.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                print(f"Próximo corte programado:  {w.next_boundary_local.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                print(f"Evaluado en:               {status.evaluated_at.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                print(f"¿Ventana alcanzada (due)?: {'SÍ' if status.is_due else 'NO (corte futuro)'}")
+                print(f"¿Despachado en outbox?:    {'SÍ (' + status.last_receipt.delivery_id + ')' if status.is_dispatched and status.last_receipt else 'NO'}")
+                print(f"¿Listo para ejecución?:    {'SÍ' if status.can_run_scheduled else 'NO (usa --force para forzar ejecución inmediata)'}")
+                print("=" * 70)
+            return 0
+
+        elif args.schedule_operation == "run":
+            force = getattr(args, "force", False)
+            channel = getattr(args, "channel", "all")
+            due_soon_days = getattr(args, "due_soon_days", 7)
+
+            res = service.run_scheduled_cycle(
+                project_id=project_id,
+                schedule=schedule,
+                eval_time=eval_time,
+                force=force,
+                channel=channel,
+                due_soon_days=due_soon_days,
+            )
+            if getattr(args, "json", False):
+                print(res.model_dump_json(indent=2))
+            else:
+                print("=" * 70)
+                print("EJECUCIÓN DEL CICLO SEMANAL DE REPORTERÍA Y OUTBOX")
+                print("=" * 70)
+                print(f"Proyecto:                 {project_id}")
+                print(f"Estado de ejecución:      {res.status}")
+                print(f"ID de Ventana:            {res.window_id}")
+                if res.receipt:
+                    print(f"ID de Despacho (Outbox):  {res.receipt.delivery_id}")
+                    print(f"Canal de entrega:         {res.receipt.channel}")
+                    print(f"Estado de entrega:        {res.receipt.status}")
+                    if res.receipt.file_path:
+                        print(f"Archivo generado:         {res.receipt.file_path}")
+                if res.reason:
+                    print(f"Detalle / Motivo:         {res.reason}")
+                print("=" * 70)
+            return 0 if res.status == "EXECUTED" else 1
+
+        elif args.schedule_operation == "outbox":
+            receipts = service.outbox.list_receipts(project_id)
+            if getattr(args, "json", False):
+                print(json.dumps([r.model_dump(mode="json") for r in receipts], indent=2))
+            else:
+                print("=" * 75)
+                print(f"HISTORIAL DE DESPACHOS EN OUTBOX — PROYECTO: {project_id}")
+                print("=" * 75)
+                if not receipts:
+                    print("No hay despachos registrados en el outbox para este proyecto.")
+                else:
+                    print(f"{'ID ENTREGA':<16} {'CANAL':<8} {'ESTADO':<18} {'FECHA DESPACHO (UTC)':<24} {'ARCHIVO'}")
+                    print("-" * 75)
+                    for r in receipts:
+                        f_name = Path(r.file_path).name if r.file_path else "-"
+                        print(f"{r.delivery_id:<16} {r.channel:<8} {r.status:<18} {r.dispatched_at.strftime('%Y-%m-%d %H:%M:%S'):<24} {f_name}")
+                print("=" * 75)
+            return 0
+
+        sys.stderr.write(f"ERROR: Unknown schedule operation '{args.schedule_operation}'.\n")
+        return 1
+
+    except Exception as e:
+        sys.stderr.write(f"ERROR: Schedule operation failed: {str(e)}\n")
+        return 1
+
+
+def security_command(args: argparse.Namespace) -> int:
+    try:
+        if args.security_operation == "check":
+            principal = SecurityPrincipal(
+                actor_id=args.actor_id,
+                role=SystemRole(args.role),
+                auth_mechanism=args.auth_mechanism,
+                auth_token=args.auth_token,
+            )
+            req_perm = Permission(args.permission)
+            entry = enforce_rbac(principal, req_perm, project_id=getattr(args, "project", "GLOBAL"))
+            if getattr(args, "json", False):
+                print(entry.model_dump_json(indent=2))
+            else:
+                print("SECURITY CHECK: GRANTED")
+                print(f"Actor ID:            {entry.actor_id}")
+                print(f"Role:                {entry.role}")
+                print(f"Permission Checked:  {entry.permission_checked}")
+                print(f"Decision:            {entry.decision}")
+                print(f"Token Fingerprint:   {entry.token_fingerprint}")
+            return 0
+        elif args.security_operation == "audit":
+            db_path = getattr(args, "db_path", ".runtime/agente.db")
+            storage = SQLiteStorageAdapter(db_path=db_path)
+            events = storage.list_security_audit_events(args.project)
+            if getattr(args, "json", False):
+                print(json.dumps([e.model_dump(mode="json") for e in events], indent=2))
+            else:
+                print("=" * 80)
+                print(f"HISTORIAL DE AUDITORÍA DE SEGURIDAD (RBAC) — PROYECTO: {args.project}")
+                print("=" * 80)
+                if not events:
+                    print("No hay eventos de auditoría de seguridad registrados.")
+                else:
+                    print(f"{'FECHA (UTC)':<20} {'ACTOR':<16} {'ROL':<14} {'PERMISIÓN':<20} {'DECISIÓN':<10}")
+                    print("-" * 80)
+                    for e in events:
+                        ts = e.recorded_at.strftime('%Y-%m-%d %H:%M:%S')
+                        print(f"{ts:<20} {e.actor_id:<16} {e.role:<14} {e.permission_checked:<20} {e.decision:<10}")
+                print("=" * 80)
+            return 0
+        sys.stderr.write(f"ERROR: Unknown security operation '{args.security_operation}'.\n")
+        return 1
+    except PermissionDeniedSecurityError as e:
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "status": "denied",
+                "actor_id": e.actor_id,
+                "role": e.role,
+                "permission": e.permission,
+                "reason": e.reason,
+            }, indent=2))
+        else:
+            sys.stderr.write(f"SECURITY CHECK: ACCESS DENIED\n{str(e)}\n")
+        return 1
+    except Exception as e:
+        sys.stderr.write(f"ERROR: Security operation failed: {str(e)}\n")
+        return 1
+
+
+def quality_command(args: argparse.Namespace) -> int:
+    try:
+        if args.quality_operation == "benchmark":
+            report = run_quality_benchmark()
+            if getattr(args, "json", False):
+                print(report.model_dump_json(indent=2))
+            else:
+                print("=" * 70)
+                print("BENCHMARK INTEGRAL DE CALIDAD Y FALSOS POSITIVOS (REQ-07, REQ-11)")
+                print("=" * 70)
+                m = report.metrics
+                print(f"Muestras evaluadas:          {m.samples_total}")
+                print(f"Verdaderos Positivos (TP):   {m.true_positives}")
+                print(f"Verdaderos Negativos (TN):   {m.true_negatives} (incluye trampas neutralizadas)")
+                print(f"Falsos Positivos (FP):       {m.false_positives}")
+                print(f"Falsos Negativos (FN):       {m.false_negatives}")
+                print("-" * 70)
+                print(f"Precisión (Precision):       {m.precision * 100:.2f}%")
+                print(f"Sensibilidad (Recall):       {m.recall * 100:.2f}%")
+                print(f"Especificidad:               {m.specificity * 100:.2f}%")
+                print(f"Tasa Falsos Positivos (FPR): {m.false_positive_rate * 100:.2f}% (Meta: 0.00%)")
+                print(f"Tasa Falsos Negativos (FNR): {m.false_negative_rate * 100:.2f}%")
+                print("-" * 70)
+                print(f"Comprobación de Reglas CI:   {len(report.ci_rules_evaluated)} reglas evaluadas")
+                print(f"Dictamen de Calidad:         {'APROBADO (PASSED)' if report.passed_quality_gate else 'FALLIDO (FAILED)'}")
+                print(f"Resumen:                     {report.summary}")
+                print("=" * 70)
+            return 0 if report.passed_quality_gate else 1
+        sys.stderr.write(f"ERROR: Unknown quality operation '{args.quality_operation}'.\n")
+        return 1
+    except Exception as e:
+        sys.stderr.write(f"ERROR: Quality operation failed: {str(e)}\n")
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agente_gestion",
@@ -928,6 +1225,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser_decide.add_argument("--reason", default=None, help="Optional explanatory rationale for decision")
     parser_decide.add_argument("--db-path", default=".runtime/agente.db", help="Path to SQLite database file")
 
+    # history command
     parser_history = subparsers.add_parser("history", help="Read persisted capture history as JSON")
     history_operations = parser_history.add_subparsers(dest="history_operation", required=True)
     for operation in ("list", "compare"):
@@ -938,6 +1236,7 @@ def build_parser() -> argparse.ArgumentParser:
             history_parser.add_argument("current_capture", help="Current capture ID (not snapshot ID)")
         history_parser.add_argument("--db-path", required=True, help="Existing SQLite database; read-only")
 
+    # proposals command
     parser_proposals = subparsers.add_parser("proposals", help="Read persisted proposals as JSON")
     proposal_operations = parser_proposals.add_subparsers(dest="proposals_operation", required=True)
     for operation in ("list", "show"):
@@ -977,6 +1276,66 @@ def build_parser() -> argparse.ArgumentParser:
                 dry_parser.add_argument("--" + flag, required=True)
             dry_parser.add_argument("--expected-version", required=True, type=int)
 
+    # tasks command
+    parser_tasks = subparsers.add_parser("tasks", help="Inspect project task planning and monitoring status")
+    tasks_operations = parser_tasks.add_subparsers(dest="tasks_operation", required=True)
+    for operation in ("list", "summary", "show"):
+        op_parser = tasks_operations.add_parser(operation)
+        op_parser.add_argument("project", help="Project identifier")
+        if operation == "show":
+            op_parser.add_argument("task_id", help="Target task card ID")
+        op_parser.add_argument("--db-path", default=".runtime/agente.db", help="Path to SQLite database file")
+        op_parser.add_argument("--capture-id", default=None, help="Explicit capture ID (defaults to latest)")
+        op_parser.add_argument("--due-soon-days", type=int, default=7, help="Near-due window in days (default: 7)")
+        op_parser.add_argument("--json", action="store_true", help="Format output as JSON")
+        if operation == "list":
+            op_parser.add_argument("--state", choices=[s.value for s in TaskState], default=None, help="Filter by normalized task state")
+            op_parser.add_argument("--critical", action="store_true", help="Show only critical activities (overdue, due-soon, blocked, contradiction)")
+            op_parser.add_argument("--assignee", default=None, help="Filter by assignee ID")
+            op_parser.add_argument("--list-name", default=None, help="Filter by phase / list name")
+
+    # schedule command (H3)
+    parser_schedule = subparsers.add_parser("schedule", help="Inspect and execute scheduled weekly reporting cycles and outbox (H3)")
+    schedule_operations = parser_schedule.add_subparsers(dest="schedule_operation", required=True)
+    for operation in ("check", "run", "outbox"):
+        s_parser = schedule_operations.add_parser(operation)
+        s_parser.add_argument("project", help="Project identifier")
+        s_parser.add_argument("--db-path", default=".runtime/agente.db", help="Path to SQLite database file")
+        s_parser.add_argument("--json", action="store_true", help="Format output as JSON")
+        if operation in ("check", "run"):
+            s_parser.add_argument("--eval-time", default=None, help="Evaluation datetime ISO format (e.g. 2026-10-16T17:00:00-05:00)")
+            s_parser.add_argument("--weekday", type=int, default=4, help="Scheduled weekday (0=Mon...4=Fri...6=Sun, default: 4)")
+            s_parser.add_argument("--local-time", default="17:00", help="Scheduled local time HH:MM (default: 17:00)")
+        if operation == "run":
+            s_parser.add_argument("--force", action="store_true", help="Force immediate execution without waiting for scheduled cutoff boundary")
+            s_parser.add_argument("--channel", choices=["file", "sqlite", "console", "all"], default="all", help="Outbox delivery channel (default: all)")
+            s_parser.add_argument("--due-soon-days", type=int, default=7, help="Near-due window in days (default: 7)")
+
+    # security command (H4)
+    parser_security = subparsers.add_parser("security", help="Inspect RBAC permissions and security audit log (H4)")
+    security_operations = parser_security.add_subparsers(dest="security_operation", required=True)
+
+    sec_check = security_operations.add_parser("check", help="Verify role permission enforcement for an actor")
+    sec_check.add_argument("--actor-id", required=True, help="Actor identifier")
+    sec_check.add_argument("--role", required=True, choices=[r.value for r in SystemRole], help="Actor system role")
+    sec_check.add_argument("--permission", required=True, choices=[p.value for p in Permission], help="Permission being checked")
+    sec_check.add_argument("--auth-mechanism", choices=["hmac_token", "pki_signature", "test_authority", "offline_claim"], default="test_authority", help="Authentication mechanism")
+    sec_check.add_argument("--auth-token", default="test_auth_token_secret", help="Authentication credential token")
+    sec_check.add_argument("--project", default="GLOBAL", help="Project identifier")
+    sec_check.add_argument("--json", action="store_true", help="Format output as JSON")
+
+    sec_audit = security_operations.add_parser("audit", help="List immutable security audit log events for a project")
+    sec_audit.add_argument("project", help="Project identifier")
+    sec_audit.add_argument("--db-path", default=".runtime/agente.db", help="Path to SQLite database file")
+    sec_audit.add_argument("--json", action="store_true", help="Format output as JSON")
+
+    # quality command (H4)
+    parser_quality = subparsers.add_parser("quality", help="Run comprehensive code quality benchmarks and CI checks (H4)")
+    quality_operations = parser_quality.add_subparsers(dest="quality_operation", required=True)
+
+    qual_bm = quality_operations.add_parser("benchmark", help="Run false positive/negative quality benchmark")
+    qual_bm.add_argument("--json", action="store_true", help="Format output as JSON")
+
     return parser
 
 
@@ -994,6 +1353,14 @@ def main() -> int:
         return history_command(args)
     elif args.subcommand == "proposals":
         return proposals_command(args)
+    elif args.subcommand == "tasks":
+        return tasks_command(args)
+    elif args.subcommand == "schedule":
+        return schedule_command(args)
+    elif args.subcommand == "security":
+        return security_command(args)
+    elif args.subcommand == "quality":
+        return quality_command(args)
     return 0
 
 

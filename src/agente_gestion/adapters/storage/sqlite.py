@@ -30,6 +30,9 @@ from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
 from agente_gestion.domain.proposal_review import DecisionEvent, Projection, fold_decisions, _raw
 from agente_gestion.domain.proposal_dry_run import DryRunRequest, DryRunResult, _checked, _known_keys, simulate_proposal
+from agente_gestion.domain.action_execution import ExecutionRequest, ExecutionResult
+from agente_gestion.domain.notification_outbox import OutboxMessage, OutboxReceipt
+from agente_gestion.domain.security_rbac import SecurityAuditEntry
 
 
 class SQLiteStorageAdapter(StoragePort):
@@ -259,8 +262,70 @@ class SQLiteStorageAdapter(StoragePort):
                     conn.execute(f"""CREATE TRIGGER IF NOT EXISTS proposal_dry_runs_no_{operation}
                         BEFORE {operation} ON proposal_dry_runs
                         BEGIN SELECT RAISE(ABORT, 'Proposal dry-run audit is append-only'); END""")
+            # Independent writer-only execution ledger migration.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS proposal_executions (
+                    execution_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    verification_status TEXT NOT NULL,
+                    actor_id TEXT,
+                    field TEXT,
+                    recorded_at TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL
+                )""")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_proposal_executions_lookup
+                    ON proposal_executions(project_id, proposal_id, recorded_at)""")
+                for operation in ('UPDATE', 'DELETE'):
+                    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS proposal_executions_no_{operation}
+                        BEFORE {operation} ON proposal_executions
+                        BEGIN SELECT RAISE(ABORT, 'Proposal execution ledger is append-only'); END""")
+            # Independent notification outbox migration (H3).
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS notification_outbox (
+                    delivery_id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    window_id TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    file_path TEXT,
+                    dispatched_at TEXT NOT NULL,
+                    message_json TEXT NOT NULL,
+                    receipt_json TEXT NOT NULL,
+                    detail TEXT
+                )""")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_notification_outbox_window
+                    ON notification_outbox(project_id, window_id, channel)""")
+            # Independent security audit log migration (H4).
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS security_audit_log (
+                    event_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    permission_checked TEXT NOT NULL,
+                    resource_id TEXT,
+                    decision TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    token_fingerprint TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                )""")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_security_audit_project
+                    ON security_audit_log(project_id, recorded_at)""")
+                for operation in ('UPDATE', 'DELETE'):
+                    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS security_audit_log_no_{operation}
+                        BEFORE {operation} ON security_audit_log
+                        BEGIN SELECT RAISE(ABORT, 'Security audit log is append-only'); END""")
         finally:
             conn.close()
+
 
     @staticmethod
     def _canonical_utc(value: str) -> str:
@@ -659,6 +724,71 @@ class SQLiteStorageAdapter(StoragePort):
                         'result_sha256': hashlib.sha256(result_raw.encode()).hexdigest(),
                     })
                 return request, result, stamp, False
+        finally:
+            conn.close()
+
+    def append_proposal_execution(
+        self, request: ExecutionRequest, result: ExecutionResult
+    ) -> None:
+        """Atomically append an execution attempt and result to the append-only ledger."""
+        if self.read_only:
+            raise PermissionError("Proposal execution storage is read-only")
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """INSERT INTO proposal_executions
+                    (execution_id, request_id, project_id, proposal_id, status,
+                     verification_status, actor_id, field, recorded_at, request_json, result_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        result.execution_id,
+                        request.request_id,
+                        request.project_id,
+                        request.proposal_id,
+                        result.status,
+                        result.verification_status,
+                        result.actor_id,
+                        result.field,
+                        result.recorded_at.isoformat(),
+                        request.model_dump_json(),
+                        result.model_dump_json(),
+                    ),
+                )
+        finally:
+            conn.close()
+
+    def list_proposal_executions(
+        self, project_id: str, proposal_id: Optional[str] = None
+    ) -> list[ExecutionResult]:
+        conn = self._get_connection()
+        try:
+            if proposal_id:
+                cur = conn.execute(
+                    "SELECT result_json FROM proposal_executions WHERE project_id = ? AND proposal_id = ? ORDER BY recorded_at ASC",
+                    (project_id, proposal_id),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT result_json FROM proposal_executions WHERE project_id = ? ORDER BY recorded_at ASC",
+                    (project_id,),
+                )
+            return [ExecutionResult.model_validate_json(row["result_json"]) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def get_proposal_execution(self, execution_id: str) -> Optional[ExecutionResult]:
+        conn = self._get_connection()
+        try:
+            cur = conn.execute(
+                "SELECT result_json FROM proposal_executions WHERE execution_id = ?",
+                (execution_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return ExecutionResult.model_validate_json(row["result_json"])
         finally:
             conn.close()
 
@@ -1296,3 +1426,120 @@ class SQLiteStorageAdapter(StoragePort):
             conn.close()
 
         return rep
+
+    def append_outbox_receipt(
+        self, receipt: OutboxReceipt, message: OutboxMessage, force: bool = False
+    ) -> None:
+        """Record notification outbox delivery attempt and receipt into SQLite audit storage."""
+        if self.read_only:
+            raise PermissionError("Outbox storage is read-only")
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """INSERT INTO notification_outbox
+                    (delivery_id, message_id, project_id, window_id, channel,
+                     status, file_path, dispatched_at, message_json, receipt_json, detail)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        receipt.delivery_id,
+                        receipt.message_id,
+                        receipt.project_id,
+                        receipt.window_id,
+                        receipt.channel,
+                        receipt.status,
+                        receipt.file_path,
+                        receipt.dispatched_at.isoformat(),
+                        message.model_dump_json(),
+                        receipt.model_dump_json(),
+                        receipt.detail,
+                    ),
+                )
+        finally:
+            conn.close()
+
+    def list_outbox_receipts(self, project_id: str) -> list[OutboxReceipt]:
+        """List all delivery receipts recorded for a project ordered chronologically."""
+        conn = self._get_connection()
+        try:
+            cur = conn.execute(
+                "SELECT receipt_json FROM notification_outbox WHERE project_id = ? ORDER BY dispatched_at ASC",
+                (project_id,),
+            )
+            return [OutboxReceipt.model_validate_json(row["receipt_json"]) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def get_outbox_receipt_for_window(
+        self, project_id: str, window_id: str
+    ) -> Optional[OutboxReceipt]:
+        """Check if an outbox delivery was already successfully recorded for project and window."""
+        conn = self._get_connection()
+        try:
+            cur = conn.execute(
+                "SELECT receipt_json FROM notification_outbox WHERE project_id = ? AND window_id = ? AND status = 'DELIVERED' ORDER BY dispatched_at DESC LIMIT 1",
+                (project_id, window_id),
+            )
+            row = cur.fetchone()
+            return OutboxReceipt.model_validate_json(row["receipt_json"]) if row else None
+        finally:
+            conn.close()
+
+    def append_security_audit_event(self, entry: SecurityAuditEntry) -> None:
+        """Record an immutable security audit event."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    """INSERT INTO security_audit_log
+                    (event_id, project_id, actor_id, role, permission_checked,
+                     resource_id, decision, reason, token_fingerprint, recorded_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        entry.event_id,
+                        entry.project_id,
+                        entry.actor_id,
+                        entry.role,
+                        entry.permission_checked,
+                        entry.resource_id,
+                        entry.decision,
+                        entry.reason,
+                        entry.token_fingerprint,
+                        entry.recorded_at.isoformat(),
+                    ),
+                )
+        finally:
+            conn.close()
+
+    def list_security_audit_events(self, project_id: str) -> list[SecurityAuditEntry]:
+        """List all security audit events recorded for a project ordered chronologically."""
+        conn = self._get_connection()
+        try:
+            cur = conn.execute(
+                """SELECT event_id, project_id, actor_id, role, permission_checked,
+                          resource_id, decision, reason, token_fingerprint, recorded_at
+                   FROM security_audit_log
+                   WHERE project_id = ? OR project_id = 'GLOBAL'
+                   ORDER BY recorded_at ASC""",
+                (project_id,),
+            )
+            entries = []
+            for row in cur.fetchall():
+                entries.append(
+                    SecurityAuditEntry(
+                        event_id=row["event_id"],
+                        project_id=row["project_id"],
+                        actor_id=row["actor_id"],
+                        role=row["role"],
+                        permission_checked=row["permission_checked"],
+                        resource_id=row["resource_id"],
+                        decision=row["decision"],
+                        reason=row["reason"],
+                        token_fingerprint=row["token_fingerprint"],
+                        recorded_at=datetime.fromisoformat(row["recorded_at"]),
+                    )
+                )
+            return entries
+        finally:
+            conn.close()

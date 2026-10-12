@@ -99,3 +99,43 @@ def mask_secret(text: str, secret: Optional[str]) -> str:
     if not secret or len(secret) < 4:
         return text
     return text.replace(secret, "[REDACTED_CREDENTIAL]")
+
+
+class ProjectSecurityPolicy:
+    """Project-level data governance and cloud transfer security policy."""
+    def __init__(
+        self,
+        project_id: str,
+        allow_remote_ai: bool = False,
+        allowed_remote_providers: Optional[list[str]] = None,
+        require_sanitization: bool = True,
+        max_payload_bytes: int = 1_000_000,
+    ):
+        self.project_id = project_id
+        self.allow_remote_ai = allow_remote_ai
+        self.allowed_remote_providers = allowed_remote_providers or ["gemini", "groq", "mistral"]
+        self.require_sanitization = require_sanitization
+        self.max_payload_bytes = max_payload_bytes
+
+
+def assert_cloud_transfer_policy(
+    policy: ProjectSecurityPolicy,
+    provider_name: str,
+    payload: Any,
+) -> None:
+    """
+    Enforces cloud transfer policy boundaries before any remote AI egress:
+    1. Verifies that allow_remote_ai is explicitly enabled for the project.
+    2. Verifies that provider_name is within the allowed remote providers whitelist.
+    3. Scans and asserts payload is free of sensitive credentials or secret-bearing files.
+    """
+    assert_remote_allowed(policy.allow_remote_ai)
+
+    allowed = [p.strip().lower() for p in policy.allowed_remote_providers]
+    if provider_name.strip().lower() not in allowed:
+        raise RemoteProviderNotAllowedError(
+            f"Remote transfer rejected: provider '{provider_name}' is not in allowed whitelist {policy.allowed_remote_providers} for project '{policy.project_id}'."
+        )
+
+    if policy.require_sanitization:
+        assert_safe_remote_payload(payload)
