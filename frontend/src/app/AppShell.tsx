@@ -162,7 +162,7 @@ function SystemStatus() {
 
 
 function SessionControl() {
-  const { session, isLoading, isUnavailable, logout, isLoggingOut } = useSession();
+  const { session, isLoading, isUnavailable, logout, isLoggingOut, operatorEmail } = useSession();
   const { notify } = useToast();
 
   async function handleLogout() {
@@ -175,10 +175,12 @@ function SessionControl() {
   }
 
   if (session?.authenticated) {
+    const displayName = session.actor || operatorEmail || "Operador verificado";
+    const initial = displayName.slice(0, 1).toLocaleUpperCase("es-EC");
     return (
       <div className="session-control">
-        <span className="operator-avatar" aria-hidden="true">{session.actor?.slice(0, 1).toLocaleUpperCase("es-EC") ?? "O"}</span>
-        <span className="operator-name">{session.actor ?? "Operador verificado"}</span>
+        <span className="operator-avatar" aria-hidden="true">{initial}</span>
+        <span className="operator-name">{displayName}</span>
         <button className="button button-ghost button-small" type="button" onClick={handleLogout} disabled={isLoggingOut}>
           {isLoggingOut ? "Cerrando…" : "Cerrar sesión"}
         </button>

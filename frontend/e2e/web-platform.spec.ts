@@ -496,8 +496,17 @@ async function installApi(page: Page, options: {
   scheduleAvailability?: "configured" | "unknown";
   auditStatus?: number;
   configurationStatus?: number;
+  requireLogin?: boolean;
 } = {}) {
   let authenticated = options.authenticated ?? false;
+
+  if (!options.requireLogin) {
+    await page.addInitScript(() => {
+      try {
+        sessionStorage.setItem("gestionpro_guest_mode", "true");
+      } catch {}
+    });
+  }
   let confirmedJob = false;
   let confirmCount = 0;
   let jobPollCount = 0;
@@ -1633,3 +1642,40 @@ test("configuración protegida revela presencia y metadatos permitidos, nunca cr
   expect(serializedUi).not.toContain("secret-token");
   expect(observer.moduleReads.some((path) => path.endsWith("/configuration"))).toBe(true);
 });
+
+test("la página principal es el login cuando no hay sesión activa", async ({ page }) => {
+  await installApi(page, { requireLogin: true });
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Acceso de operador" })).toBeVisible();
+  await expect(page.getByLabel("Correo electrónico")).toBeVisible();
+  await expect(page.getByLabel("Contraseña")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Verificar y continuar" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Explorar en modo de consulta (solo lectura)" })).toBeVisible();
+});
+
+test("inicia sesión desde la página principal con correo y contraseña generando el token", async ({ page }) => {
+  await installApi(page, { requireLogin: true });
+  await page.goto("/");
+
+  await page.getByLabel("Correo electrónico").fill("operador@gestionproyectos.com");
+  await page.getByLabel("Contraseña").fill("Operador2026!");
+  await page.getByRole("button", { name: "Verificar y continuar" }).click();
+
+  await expect(page.getByText("operadora", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Resumen del proyecto" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Cerrar sesión" }).click();
+  await expect(page.getByRole("heading", { name: "Acceso de operador" })).toBeVisible();
+});
+
+test("el modo consulta desde la página principal permite explorar en solo lectura", async ({ page }) => {
+  await installApi(page, { requireLogin: true });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Explorar en modo de consulta (solo lectura)" }).click();
+  await expect(page.getByRole("heading", { name: "Resumen del proyecto" })).toBeVisible();
+  await expect(page.getByText("Consulta de solo lectura")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Iniciar sesión" })).toBeVisible();
+});
+

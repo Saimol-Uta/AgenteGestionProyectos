@@ -4,7 +4,8 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-route
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { AppShell } from "./AppShell";
 import { WorkspaceProvider } from "./WorkspaceContext";
-import { SessionProvider } from "../features/auth/SessionProvider";
+import { SessionProvider, useSession } from "../features/auth/SessionProvider";
+import { LoginPage } from "../features/auth/LoginPage";
 import { ThemeProvider } from "../features/theme/ThemeProvider";
 import { ToastProvider } from "../components/ToastProvider";
 import { LoadingState } from "../components/States";
@@ -31,8 +32,10 @@ const queryClient = new QueryClient({
 });
 
 function RoutedApp() {
+  const { session, isLoading, isGuest } = useSession();
   const location = useLocation();
   const previousPathname = useRef<string | null>(null);
+
   useEffect(() => {
     if (previousPathname.current !== null && previousPathname.current !== location.pathname) {
       const main = document.getElementById("main-content");
@@ -41,10 +44,30 @@ function RoutedApp() {
     previousPathname.current = location.pathname;
   }, [location.pathname]);
 
+  if (isLoading) {
+    return <LoadingState label="Verificando sesión…" />;
+  }
+
+  const isAuthenticated = Boolean(session?.authenticated);
+  const showLogin = !isAuthenticated && !isGuest;
+
+  if (showLogin) {
+    return (
+      <>
+        <ScrollToTop />
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="*" element={<LoginPage />} />
+        </Routes>
+      </>
+    );
+  }
+
   return (
     <>
       <ScrollToTop />
       <Routes>
+        <Route path="/login" element={<Navigate to="/" replace />} />
         <Route element={<AppShell />}>
           <Route index element={<Suspense fallback={<LoadingState label="Preparando dashboard…" />}><DashboardPage /></Suspense>} />
           <Route path="projects" element={<ProjectsPage />} />

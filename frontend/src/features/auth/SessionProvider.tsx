@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { queryKeys } from "../../api/queries";
@@ -8,16 +8,37 @@ interface SessionContextValue {
   session: OperatorSession | undefined;
   isLoading: boolean;
   isUnavailable: boolean;
-  login: (token: string) => Promise<void>;
+  isGuest: boolean;
+  setGuestMode: (value: boolean) => void;
+  operatorEmail: string | null;
+  login: (token: string, email?: string, fromGuest?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   isLoggingOut: boolean;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
+const GUEST_STORAGE_KEY = "gestionpro_guest_mode";
+const OPERATOR_EMAIL_STORAGE_KEY = "gestionpro_operator_email";
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isGuest, setIsGuest] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(GUEST_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [operatorEmail, setOperatorEmail] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem(OPERATOR_EMAIL_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+
   const sessionQuery = useQuery({
     queryKey: queryKeys.session,
     queryFn: api.getSession,
@@ -25,10 +46,35 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     retry: false,
   });
 
-  const login = useCallback(async (token: string) => {
+  const setGuestMode = useCallback((value: boolean) => {
+    setIsGuest(value);
+    try {
+      if (value) {
+        sessionStorage.setItem(GUEST_STORAGE_KEY, "true");
+      } else {
+        sessionStorage.removeItem(GUEST_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage restrictions
+    }
+  }, []);
+
+  const loggedFromGuestRef = useRef<boolean>(false);
+
+  const login = useCallback(async (token: string, email?: string, fromGuest?: boolean) => {
+    loggedFromGuestRef.current = fromGuest ?? isGuest;
     await api.login(token);
+    if (email) {
+      setOperatorEmail(email);
+      try {
+        sessionStorage.setItem(OPERATOR_EMAIL_STORAGE_KEY, email);
+      } catch {
+        // Ignore storage restrictions
+      }
+    }
+    setGuestMode(false);
     await queryClient.invalidateQueries({ queryKey: queryKeys.session });
-  }, [queryClient]);
+  }, [queryClient, isGuest, setGuestMode]);
 
   const logout = useCallback(async () => {
     const csrfToken = sessionQuery.data?.csrf_token;
@@ -38,20 +84,44 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setIsLoggingOut(true);
     try {
       await api.logout(csrfToken);
+      setOperatorEmail(null);
+      try {
+        sessionStorage.removeItem(OPERATOR_EMAIL_STORAGE_KEY);
+      } catch {
+        // Ignore storage restrictions
+      }
+      if (loggedFromGuestRef.current) {
+        setGuestMode(true);
+      } else {
+        setGuestMode(false);
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.session });
     } finally {
       setIsLoggingOut(false);
     }
-  }, [queryClient, sessionQuery.data]);
+  }, [queryClient, sessionQuery.data, setGuestMode]);
 
   const value = useMemo(() => ({
     session: sessionQuery.data,
     isLoading: sessionQuery.isLoading,
     isUnavailable: sessionQuery.isError,
+    isGuest,
+    setGuestMode,
+    operatorEmail,
     login,
     logout,
     isLoggingOut,
-  }), [sessionQuery.data, sessionQuery.isLoading, sessionQuery.isError, login, logout, isLoggingOut]);
+  }), [
+    sessionQuery.data,
+    sessionQuery.isLoading,
+    sessionQuery.isError,
+    isGuest,
+    setGuestMode,
+    operatorEmail,
+    login,
+    logout,
+    isLoggingOut,
+  ]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
