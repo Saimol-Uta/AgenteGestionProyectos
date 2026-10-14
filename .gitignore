@@ -7,3 +7,10 @@ runs/
 .env
 .env.*
 !.env.example
+
+# H5 web build and local browser evidence
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+.runtime/h5-*/

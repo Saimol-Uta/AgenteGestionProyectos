@@ -560,11 +560,14 @@ class SQLiteStorageAdapter(StoragePort):
         finally:
             conn.close()
 
-    def append_proposal_decision(self, event: DecisionEvent) -> Projection:
-        """Global event IDs: identical retries only; cross-scope reuse conflicts.
+    def append_proposal_decision(
+        self, event: DecisionEvent, *, security_audit_entry: Optional[SecurityAuditEntry] = None,
+    ) -> Projection:
+        """Atomically append a proposal event and its optional verified web audit event.
 
-        Server recorded_at is UTC audit metadata, not an actor/authentication claim.
-        No catalogue/status/latest-snapshot writes; projection is always folded.
+        Global event IDs: identical retries only; cross-scope reuse conflicts. Server recorded_at
+        is UTC audit metadata, not an actor/authentication claim. No catalogue/status/latest-snapshot
+        writes; projection is always folded.
         """
         if self.read_only:
             raise PermissionError("Proposal review ledger is read-only")
@@ -594,6 +597,11 @@ class SQLiteStorageAdapter(StoragePort):
                         (event.event_id, event.project_id, event.proposal_id, event.capture_id,
                          event.proposal_body_sha256, event.expected_version + 1, raw,
                          hashlib.sha256(raw.encode()).hexdigest(), datetime.now(timezone.utc).isoformat()))
+                if security_audit_entry is not None:
+                    if (security_audit_entry.project_id != event.project_id
+                            or security_audit_entry.resource_id != event.proposal_id):
+                        raise ValueError("Proposal security audit binding mismatch")
+                    self._append_or_validate_security_audit_event(conn, security_audit_entry)
             # Re-read committed rows in one consistent snapshot on this connection.
             with conn:
                 conn.execute("BEGIN")
@@ -653,8 +661,9 @@ class SQLiteStorageAdapter(StoragePort):
         finally:
             conn.close()
 
-    def append_proposal_dry_run(self, request: DryRunRequest
-                                ) -> tuple[DryRunRequest, DryRunResult, str, bool]:
+    def append_proposal_dry_run(
+        self, request: DryRunRequest, *, security_audit_entry: Optional[SecurityAuditEntry] = None,
+    ) -> tuple[DryRunRequest, DryRunResult, str, bool]:
         """Recheck guards before replay. Denied retries fail closed; inspect history.
 
         BEGIN IMMEDIATE serializes permission/version reads with ledger writers.
@@ -689,6 +698,12 @@ class SQLiteStorageAdapter(StoragePort):
                 result = simulate_proposal(request=request, proposal=proposal, capture=capture,
                     evidence_items=evidence, proposal_body_sha256=digest, events=events,
                     project_captures=captures)
+                if security_audit_entry is not None:
+                    if (security_audit_entry.project_id != request.project_id
+                            or security_audit_entry.resource_id != request.proposal_id):
+                        raise ValueError("Proposal security audit binding mismatch")
+                    audit_decision = "granted" if result.status == "SIMULATED" else "denied"
+                    security_audit_entry = security_audit_entry.model_copy(update={"decision": audit_decision})
                 result_raw = self._proposal_json(result.model_dump(mode='json',
                     exclude=set(DryRunResult.model_computed_fields)))
                 old = conn.execute("SELECT * FROM proposal_dry_runs WHERE request_id=?",
@@ -699,6 +714,8 @@ class SQLiteStorageAdapter(StoragePort):
                         raise ValueError("request_id_conflict")
                     if result.status != 'SIMULATED' or old['result_json'] != result_raw:
                         raise ValueError("dry_run_retry_denied; inspect historical audit")
+                    if security_audit_entry is not None:
+                        self._append_or_validate_security_audit_event(conn, security_audit_entry)
                     return (*receipt, True)
                 stamp = datetime.now(timezone.utc).isoformat()
                 conn.execute("""INSERT INTO proposal_dry_runs
@@ -723,6 +740,8 @@ class SQLiteStorageAdapter(StoragePort):
                         'result_json': result_raw,
                         'result_sha256': hashlib.sha256(result_raw.encode()).hexdigest(),
                     })
+                if security_audit_entry is not None:
+                    self._append_or_validate_security_audit_event(conn, security_audit_entry)
                 return request, result, stamp, False
         finally:
             conn.close()
@@ -1427,6 +1446,121 @@ class SQLiteStorageAdapter(StoragePort):
 
         return rep
 
+    def register_human_decision_with_audit(
+        self,
+        report_id: str,
+        decision: HumanDecisionState,
+        reason: Optional[str],
+        run_id: str,
+        *,
+        project_id: str,
+        expected_version: int,
+        expected_human_decision: str,
+        audit_entry: SecurityAuditEntry,
+    ) -> tuple[FinalReport, bool]:
+        """Atomically apply a version-bound web report decision and its verified audit event.
+
+        The legacy ``register_human_decision`` path remains unchanged for CLI callers.
+        """
+        if self.read_only:
+            raise PermissionError("Human decision storage is read-only")
+        decision_value = decision.value if isinstance(decision, HumanDecisionState) else str(decision)
+        try:
+            decision_value = HumanDecisionState(decision_value).value
+            audit_entry = SecurityAuditEntry.model_validate(audit_entry.model_dump())
+        except (TypeError, ValueError):
+            raise ValueError("Invalid human decision or audit entry") from None
+        if (audit_entry.project_id != project_id or audit_entry.resource_id != report_id
+                or audit_entry.permission_checked != "web:report_decision"
+                or audit_entry.role != "local_operator" or audit_entry.decision != "granted"):
+            raise ValueError("Human decision audit binding is invalid")
+
+        now = datetime.now(ZoneInfo("America/Guayaquil"))
+        now_iso = now.isoformat()
+        connection = self._get_connection()
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT report_id, run_id, project_id, version, human_decision, decision_reason, data_json "
+                    "FROM reports WHERE report_id=? AND project_id=?",
+                    (report_id, project_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("report_not_found")
+                try:
+                    report = FinalReport.model_validate_json(row["data_json"])
+                except (TypeError, ValueError):
+                    raise ValueError("report_binding_invalid") from None
+                stored_run_id = row["run_id"]
+                if (stored_run_id is None or stored_run_id != run_id
+                        or report.report_id != report_id or report.run_id != run_id
+                        or report.project_id != project_id
+                        or report.report_version != int(row["version"])):
+                    raise ValueError("report_binding_invalid")
+                run = connection.execute(
+                    "SELECT project_id FROM runs WHERE run_id=?", (run_id,),
+                ).fetchone()
+                if run is None or run["project_id"] != project_id:
+                    raise ValueError("report_binding_invalid")
+
+                existing_audit = connection.execute(
+                    "SELECT project_id, actor_id, role, permission_checked, resource_id, decision, reason, "
+                    "token_fingerprint FROM security_audit_log WHERE event_id=?",
+                    (audit_entry.event_id,),
+                ).fetchone()
+                if existing_audit is not None:
+                    expected_audit = (
+                        audit_entry.project_id, audit_entry.actor_id, audit_entry.role,
+                        audit_entry.permission_checked, audit_entry.resource_id, audit_entry.decision,
+                        audit_entry.reason, audit_entry.token_fingerprint,
+                    )
+                    if tuple(existing_audit) != expected_audit:
+                        raise ValueError("idempotency_conflict")
+                    matching = connection.execute(
+                        "SELECT 1 FROM human_decisions WHERE report_id=? AND run_id=? AND decision=? "
+                        "AND reason IS ? LIMIT 1",
+                        (report_id, run_id, decision_value, reason),
+                    ).fetchone()
+                    if (row["human_decision"] != decision_value or report.human_decision.value != decision_value
+                            or row["decision_reason"] != reason or matching is None):
+                        raise ValueError("decision_not_reconciled")
+                    return report, True
+
+                if (int(row["version"]) != expected_version
+                        or row["human_decision"] != expected_human_decision
+                        or report.human_decision.value != expected_human_decision):
+                    raise ValueError("report_version_obsolete")
+                existing_decision = connection.execute(
+                    "SELECT 1 FROM human_decisions WHERE report_id=? LIMIT 1", (report_id,),
+                ).fetchone()
+                if existing_decision is not None:
+                    raise ValueError("human_decision_exists")
+
+                decision_id = f"dec-{uuid.uuid4().hex[:8]}"
+                connection.execute(
+                    "INSERT INTO human_decisions (id, report_id, run_id, decision, reason, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (decision_id, report_id, run_id, decision_value, reason, now_iso),
+                )
+                updated_report = report.model_copy(update={
+                    "human_decision": HumanDecisionState(decision_value),
+                    "decision_reason": reason,
+                    "decision_timestamp": now,
+                })
+                cursor = connection.execute(
+                    "UPDATE reports SET human_decision=?, decision_reason=?, decision_timestamp=?, data_json=? "
+                    "WHERE report_id=? AND project_id=? AND run_id=? AND version=? AND human_decision=?",
+                    (decision_value, reason, now_iso, updated_report.model_dump_json(), report_id,
+                     project_id, run_id, expected_version, expected_human_decision),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("report_version_obsolete")
+                self._insert_security_audit_event(connection, audit_entry)
+                return updated_report, False
+        finally:
+            connection.close()
+
     def append_outbox_receipt(
         self, receipt: OutboxReceipt, message: OutboxMessage, force: bool = False
     ) -> None:
@@ -1486,29 +1620,55 @@ class SQLiteStorageAdapter(StoragePort):
         finally:
             conn.close()
 
+    @staticmethod
+    def _insert_security_audit_event(conn: sqlite3.Connection, entry: SecurityAuditEntry) -> None:
+        conn.execute(
+            """INSERT INTO security_audit_log
+            (event_id, project_id, actor_id, role, permission_checked,
+             resource_id, decision, reason, token_fingerprint, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                entry.event_id,
+                entry.project_id,
+                entry.actor_id,
+                entry.role,
+                entry.permission_checked,
+                entry.resource_id,
+                entry.decision,
+                entry.reason,
+                entry.token_fingerprint,
+                entry.recorded_at.isoformat(),
+            ),
+        )
+
+    @classmethod
+    def _append_or_validate_security_audit_event(
+        cls, conn: sqlite3.Connection, entry: SecurityAuditEntry,
+    ) -> bool:
+        """Append the audit event unless the same immutable event is already present."""
+        entry = SecurityAuditEntry.model_validate(entry.model_dump())
+        row = conn.execute(
+            "SELECT project_id, actor_id, role, permission_checked, resource_id, decision, reason, "
+            "token_fingerprint FROM security_audit_log WHERE event_id=?",
+            (entry.event_id,),
+        ).fetchone()
+        expected = (
+            entry.project_id, entry.actor_id, entry.role, entry.permission_checked,
+            entry.resource_id, entry.decision, entry.reason, entry.token_fingerprint,
+        )
+        if row is not None:
+            if tuple(row) != expected:
+                raise ValueError("security_audit_event_conflict")
+            return False
+        cls._insert_security_audit_event(conn, entry)
+        return True
+
     def append_security_audit_event(self, entry: SecurityAuditEntry) -> None:
         """Record an immutable security audit event."""
         conn = self._get_connection()
         try:
             with conn:
-                conn.execute(
-                    """INSERT INTO security_audit_log
-                    (event_id, project_id, actor_id, role, permission_checked,
-                     resource_id, decision, reason, token_fingerprint, recorded_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        entry.event_id,
-                        entry.project_id,
-                        entry.actor_id,
-                        entry.role,
-                        entry.permission_checked,
-                        entry.resource_id,
-                        entry.decision,
-                        entry.reason,
-                        entry.token_fingerprint,
-                        entry.recorded_at.isoformat(),
-                    ),
-                )
+                self._insert_security_audit_event(conn, entry)
         finally:
             conn.close()
 

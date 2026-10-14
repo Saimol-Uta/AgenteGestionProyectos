@@ -1,0 +1,293 @@
+import { useQuery } from "@tanstack/react-query";
+import { api } from "./client";
+import type {
+  AuditEventDetail,
+  OutboxDetail,
+  ProjectConfiguration,
+  ProposalDetail,
+  ProposalReviewFilter,
+  ReportDetail,
+  ReportHumanDecision,
+  TaskQuery,
+  WeeklyCycleJob,
+} from "./types";
+
+export const queryKeys = {
+  health: ["system", "health"] as const,
+  session: ["auth", "session"] as const,
+  projects: (page: number, pageSize: number) => ["projects", page, pageSize] as const,
+  project: (projectId: string) => ["project", projectId] as const,
+  summary: (projectId: string, captureId?: string) => ["summary", projectId, captureId ?? null] as const,
+  tasks: (projectId: string, filters: TaskQuery) => ["tasks", projectId, filters] as const,
+  task: (projectId: string, taskId: string, captureId?: string) => ["task", projectId, taskId, captureId ?? null] as const,
+  history: (projectId: string) => ["history", projectId] as const,
+  comparison: (projectId: string, before: string, after: string) => ["comparison", projectId, before, after] as const,
+  executive: (projectId: string) => ["executive-summary", projectId] as const,
+  quality: (projectId: string) => ["quality", projectId] as const,
+  policies: (projectId: string) => ["policies", projectId] as const,
+  runs: (projectId: string, page: number, pageSize: number) => ["runs", projectId, page, pageSize] as const,
+  run: (runId: string) => ["run", runId] as const,
+  runStages: (runId: string) => ["run-stages", runId] as const,
+  findings: (runId: string, page: number, pageSize: number) => ["findings", runId, page, pageSize] as const,
+  finding: (runId: string, findingId: string) => ["finding", runId, findingId] as const,
+  evidence: (runId: string, page: number, pageSize: number) => ["run-evidence", runId, page, pageSize] as const,
+  analysisJobs: (projectId: string, page: number, pageSize: number) => ["analysis-jobs", projectId, page, pageSize] as const,
+  analysisJob: (jobId: string) => ["analysis-job", jobId] as const,
+  proposals: (projectId: string, page: number, pageSize: number, reviewStatus: string) => ["proposals", projectId, page, pageSize, reviewStatus] as const,
+  proposal: (projectId: string, proposalId: string) => ["proposal", projectId, proposalId] as const,
+  reports: (projectId: string, page: number, pageSize: number, decision: string) => ["reports", projectId, page, pageSize, decision] as const,
+  report: (projectId: string, reportId: string) => ["report", projectId, reportId] as const,
+  audit: (projectId: string, page: number, pageSize: number, eventType: string, since: string, until: string) => ["audit", projectId, page, pageSize, eventType, since, until] as const,
+  auditEvent: (projectId: string, eventId: string) => ["audit-event", projectId, eventId] as const,
+  schedule: (projectId: string) => ["schedule", projectId] as const,
+  outbox: (projectId: string, page: number, pageSize: number) => ["schedule-outbox", projectId, page, pageSize] as const,
+  outboxDetail: (projectId: string, deliveryId: string) => ["outbox-detail", projectId, deliveryId] as const,
+  weeklyCycleJobs: (projectId: string, page: number, pageSize: number) => ["weekly-cycle-jobs", projectId, page, pageSize] as const,
+  weeklyCycleJob: (projectId: string, jobId: string) => ["weekly-cycle-job", projectId, jobId] as const,
+  projectConfiguration: (projectId: string) => ["project-configuration", projectId] as const,
+};
+
+export function useProjects(page = 1, pageSize = 100) {
+  return useQuery({
+    queryKey: queryKeys.projects(page, pageSize),
+    queryFn: () => api.getProjects(page, pageSize),
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
+
+export function useSystemHealth() {
+  return useQuery({
+    queryKey: queryKeys.health,
+    queryFn: api.getHealth,
+    staleTime: 30_000,
+    retry: 1,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useProject(projectId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.project(projectId ?? ""),
+    queryFn: () => api.getProject(projectId!),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useProjectSummary(projectId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.summary(projectId ?? ""),
+    queryFn: () => api.getSummary(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
+}
+
+export function useCaptureHistory(projectId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.history(projectId ?? ""),
+    queryFn: () => api.getHistory(projectId!, 1, 100),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
+}
+
+export function useExecutiveSummary(projectId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.executive(projectId ?? ""),
+    queryFn: () => api.getExecutiveSummary(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
+}
+
+export function useQuality(projectId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.quality(projectId ?? ""),
+    queryFn: () => api.getQuality(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
+}
+
+export function usePolicies(projectId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.policies(projectId ?? ""),
+    queryFn: () => api.getPolicies(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
+}
+
+export function useRuns(projectId: string | null, page = 1, pageSize = 25) {
+  return useQuery({
+    queryKey: queryKeys.runs(projectId ?? "", page, pageSize),
+    queryFn: () => api.getRuns(projectId!, page, pageSize),
+    enabled: Boolean(projectId),
+    staleTime: 15_000,
+  });
+}
+
+export function useRun(runId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.run(runId ?? ""),
+    queryFn: () => api.getRun(runId!),
+    enabled: Boolean(runId),
+    staleTime: 10_000,
+  });
+}
+
+export function useRunStages(runId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.runStages(runId ?? ""),
+    queryFn: () => api.getRunStages(runId!),
+    enabled: Boolean(runId),
+    staleTime: 10_000,
+  });
+}
+
+export function useRunFindings(runId: string | null, page = 1, pageSize = 25) {
+  return useQuery({
+    queryKey: queryKeys.findings(runId ?? "", page, pageSize),
+    queryFn: () => api.getRunFindings(runId!, page, pageSize),
+    enabled: Boolean(runId),
+    staleTime: 15_000,
+  });
+}
+
+export function useFinding(runId: string | null, findingId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.finding(runId ?? "", findingId ?? ""),
+    queryFn: () => api.getFinding(runId!, findingId!),
+    enabled: Boolean(runId && findingId),
+    staleTime: 15_000,
+  });
+}
+
+export function useRunEvidence(runId: string | null, page = 1, pageSize = 25) {
+  return useQuery({
+    queryKey: queryKeys.evidence(runId ?? "", page, pageSize),
+    queryFn: () => api.getRunEvidence(runId!, page, pageSize),
+    enabled: Boolean(runId),
+    staleTime: 15_000,
+  });
+}
+
+export function useAnalysisJobs(projectId: string | null, page = 1, pageSize = 25) {
+  return useQuery({
+    queryKey: queryKeys.analysisJobs(projectId ?? "", page, pageSize),
+    queryFn: () => api.getAnalysisJobs(projectId!, page, pageSize),
+    enabled: Boolean(projectId),
+    staleTime: 3_000,
+  });
+}
+
+export function useProposals(projectId: string | null, page = 1, pageSize = 25, reviewStatus: ProposalReviewFilter | "" = "") {
+  return useQuery({
+    queryKey: queryKeys.proposals(projectId ?? "", page, pageSize, reviewStatus),
+    queryFn: () => api.getProposals(projectId!, page, pageSize, reviewStatus || undefined),
+    enabled: Boolean(projectId),
+    staleTime: 10_000,
+  });
+}
+
+export function useProposal(projectId: string | null, proposalId: string | null) {
+  return useQuery<ProposalDetail>({
+    queryKey: queryKeys.proposal(projectId ?? "", proposalId ?? ""),
+    queryFn: () => api.getProposal(projectId!, proposalId!),
+    enabled: Boolean(projectId && proposalId),
+    staleTime: 5_000,
+  });
+}
+
+export function useReports(projectId: string | null, page = 1, pageSize = 25, decision: ReportHumanDecision | "" = "") {
+  return useQuery({
+    queryKey: queryKeys.reports(projectId ?? "", page, pageSize, decision),
+    queryFn: () => api.getReports(projectId!, page, pageSize, decision || undefined),
+    enabled: Boolean(projectId),
+    staleTime: 10_000,
+  });
+}
+
+export function useReport(projectId: string | null, reportId: string | null) {
+  return useQuery<ReportDetail>({
+    queryKey: queryKeys.report(projectId ?? "", reportId ?? ""),
+    queryFn: () => api.getReport(projectId!, reportId!),
+    enabled: Boolean(projectId && reportId),
+    staleTime: 5_000,
+  });
+}
+
+export function useAudit(projectId: string | null, page: number, pageSize: number, filters: { event_type?: string; since?: string; until?: string }, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.audit(projectId ?? "", page, pageSize, filters.event_type ?? "", filters.since ?? "", filters.until ?? ""),
+    queryFn: () => api.getAudit(projectId!, page, pageSize, filters),
+    enabled: Boolean(projectId && enabled),
+    staleTime: 5_000,
+  });
+}
+
+export function useAuditEvent(projectId: string | null, eventId: string | null, enabled: boolean) {
+  return useQuery<AuditEventDetail>({
+    queryKey: queryKeys.auditEvent(projectId ?? "", eventId ?? ""),
+    queryFn: () => api.getAuditEvent(projectId!, eventId!),
+    enabled: Boolean(projectId && eventId && enabled),
+    staleTime: 5_000,
+  });
+}
+
+export function useSchedule(projectId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.schedule(projectId ?? ""),
+    queryFn: () => api.getSchedule(projectId!),
+    enabled: Boolean(projectId && enabled),
+    staleTime: 10_000,
+  });
+}
+
+export function useOutbox(projectId: string | null, page = 1, pageSize = 25, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.outbox(projectId ?? "", page, pageSize),
+    queryFn: () => api.getOutbox(projectId!, page, pageSize),
+    enabled: Boolean(projectId && enabled),
+    staleTime: 5_000,
+  });
+}
+
+export function useOutboxDetail(projectId: string | null, deliveryId: string | null, enabled = true) {
+  return useQuery<OutboxDetail>({
+    queryKey: queryKeys.outboxDetail(projectId ?? "", deliveryId ?? ""),
+    queryFn: () => api.getOutboxDetail(projectId!, deliveryId!),
+    enabled: Boolean(projectId && deliveryId && enabled),
+    staleTime: 5_000,
+  });
+}
+
+export function useWeeklyCycleJobs(projectId: string | null, page = 1, pageSize = 25, enabled = false) {
+  return useQuery({
+    queryKey: queryKeys.weeklyCycleJobs(projectId ?? "", page, pageSize),
+    queryFn: () => api.getWeeklyCycleJobs(projectId!, page, pageSize),
+    enabled: Boolean(projectId && enabled),
+    staleTime: 2_000,
+  });
+}
+
+export function useWeeklyCycleJob(projectId: string | null, jobId: string | null, enabled: boolean) {
+  return useQuery<WeeklyCycleJob>({
+    queryKey: queryKeys.weeklyCycleJob(projectId ?? "", jobId ?? ""),
+    queryFn: () => api.getWeeklyCycleJob(projectId!, jobId!),
+    enabled: Boolean(projectId && jobId && enabled),
+    staleTime: 0,
+    refetchInterval: (query) => query.state.data && ["queued", "running"].includes(query.state.data.status) ? 750 : false,
+  });
+}
+
+export function useProjectConfiguration(projectId: string | null, enabled: boolean) {
+  return useQuery<ProjectConfiguration>({
+    queryKey: queryKeys.projectConfiguration(projectId ?? ""),
+    queryFn: () => api.getProjectConfiguration(projectId!),
+    enabled: Boolean(projectId && enabled),
+    staleTime: 30_000,
+  });
+}

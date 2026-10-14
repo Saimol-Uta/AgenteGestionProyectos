@@ -1,5 +1,15 @@
 # Asistente multiagente para seguimiento y calidad de proyectos de software
 
+## Interfaz web H5
+
+El proyecto incorpora una interfaz React/TypeScript y una API FastAPI dentro del paquete existente. Consultan capturas, métricas, ejecuciones y calidad reales sin ejecutar agentes al abrir una página. La implementación incremental y sus comprobaciones se registran en `odd/tasks/h5-web-platform.md`; la plataforma completa todavía está en integración.
+
+- [Instalación, arranque en CachyOS/Fish, seguridad y demostración](docs/interfaz-web.md).
+- [Contrato REST y operaciones protegidas](docs/h5-api-contract.md).
+- El acceso local de consulta no concede privilegios; las escrituras reales en Trello siguen deshabilitadas.
+- Las pruebas controladas no efectúan llamadas pagadas ni mutaciones externas; se distinguen de la consulta histórica auténtica.
+
+
 **Estado al 10 de octubre de 2026:** MVP modular en Python implementado, con
 adaptadores de solo lectura para Trello, GitHub y GitHub Actions, métricas
 deterministas, ContextBuilder con control de evidencia, agentes especializados,
