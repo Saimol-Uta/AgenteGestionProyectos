@@ -1,0 +1,24 @@
+.proposal-manager-card { display: grid; gap: 1rem; padding: 1.25rem; margin: 1rem 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-soft); min-width: 0; overflow-wrap: anywhere; }
+.proposal-manager-seal { display: flex; align-items: center; gap: .6rem; color: var(--text-primary); }
+.proposal-manager-context { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.proposal-manager-context span { color: var(--text-secondary); font-size: .8rem; }
+.proposal-manager-card p { margin: 0; line-height: 1.6; }
+.proposal-demo-banner { border-inline-start: 3px solid var(--accent); padding: .75rem 1rem; background: var(--surface-raised); }
+.proposal-manager-actions { display: flex; flex-wrap: wrap; gap: .65rem; }
+.proposal-manager-actions .button { white-space: normal; }
+.proposal-draft-editor { display: grid; gap: .8rem; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-width: 0; }
+.proposal-draft-editor label, .proposal-rejection label { display: grid; gap: .4rem; font-size: .85rem; }
+.proposal-draft-editor input, .proposal-draft-editor select, .proposal-rejection textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: .6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-primary); }
+.proposal-rejection { display: grid; gap: .7rem; }
+.proposal-rejection textarea { min-height: 80px; resize: vertical; }
+.proposal-demo-result { padding: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.proposal-demo-result time { display: block; font-size: .8rem; color: var(--text-muted); margin-top: .5rem; }
+.proposal-technical-details { margin-top: 1.25rem; }
+.proposal-technical-details > summary { cursor: pointer; padding: 1rem 0; font-weight: 600; color: var(--text-primary); }
+@media (max-width: 640px) { .proposal-manager-context { grid-template-columns: 1fr; } .proposal-manager-card { padding: 1rem; } .proposal-manager-actions { flex-direction: column; } .proposal-manager-actions .button { width: 100%; } }
+
+.proposal-manager-comparison { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.proposal-manager-comparison > div { display: grid; grid-template-columns: .9fr 1fr 1fr; gap: .7rem; padding: .75rem; }
+.proposal-manager-comparison > div:first-child { background: var(--surface-selected); font-size: .8rem; }
+.proposal-manager-comparison > div + div { border-top: 1px solid var(--border); }
+.proposal-manager-comparison [role="cell"] { min-width: 0; overflow-wrap: anywhere; font-size: .85rem; }

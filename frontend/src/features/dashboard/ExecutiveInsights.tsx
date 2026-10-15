@@ -44,7 +44,7 @@ function RunHistoryChart({ runs }: { runs: ExecutiveSummary["runs"] }) {
 
   return (
     <div className="chart-frame" role="img" aria-label="Historial de análisis por estado">
-      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} initialDimension={{ width: 600, height: 220 }}>
+      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={170} initialDimension={{ width: 600, height: 185 }}>
         <AreaChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: -14 }}>
           <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 5" vertical={false} />
           <XAxis type="number" dataKey="timestamp" scale="time" domain={["dataMin", "dataMax"]} tickFormatter={(value: number) => new Intl.DateTimeFormat("es-EC", { timeZone: "America/Guayaquil", month: "short", day: "numeric" }).format(new Date(value))} tickLine={false} axisLine={false} tick={{ fill: "var(--text-muted)", fontSize: 10 }} />

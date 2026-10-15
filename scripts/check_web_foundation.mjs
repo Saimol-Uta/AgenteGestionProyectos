@@ -30,6 +30,8 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "Acceso de operador" })).toBeVisible();
+  await page.getByRole("button", { name: "Explorar en modo de consulta (solo lectura)" }).click();
   await expect(page.getByRole("heading", { name: "Resumen del proyecto" })).toBeVisible();
   await page.screenshot({ path: fileURLToPath(new URL("dashboard-fixture-light.png", output)), fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "Cambiar a modo oscuro" }).click();

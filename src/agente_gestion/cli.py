@@ -7,15 +7,8 @@ import time
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from pydantic import TypeAdapter
-from agente_gestion.domain.proposal_dry_run import DryRunRequest, simulate_proposal
-from agente_gestion.domain.proposal_review import (
-    Decision, DecisionEvent, Digest, OfflineActorClaim, Version, fold_decisions,
-)
-
 FULL_SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 
-from agente_gestion.application.security import assert_remote_allowed
 from agente_gestion.application.config import Settings, SystemConfig
 from agente_gestion.application.orchestrator import ProjectOrchestrator, OrchestratorConfig
 from agente_gestion.adapters.sources.factory import (
@@ -23,7 +16,7 @@ from agente_gestion.adapters.sources.factory import (
     create_code_source,
     create_ci_source,
     create_policy_source,
-    create_composite_source,
+    create_analysis_composite_source,
 )
 from agente_gestion.adapters.sources.http_transport import HttpGetTransportPort
 from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
@@ -32,10 +25,8 @@ from agente_gestion.adapters.sources.local_monitoring_rules import (
 )
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
-from agente_gestion.adapters.llm.ollama import OllamaProvider
 from agente_gestion.adapters.llm.gemini import GeminiProvider
 from agente_gestion.adapters.llm.groq import GroqProvider
-from agente_gestion.adapters.llm.mistral import MistralProvider
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
@@ -79,104 +70,53 @@ def _build_orchestrator(
     Any,
 ]:
     """Factory helper creating orchestrator and storage/provider adapters for a run."""
-    if not config.is_fake and (config.monitoring_provider == "gemini" or config.report_provider == "gemini"):
-        assert_remote_allowed(config.allow_remote_ai)
-    monitoring_output = config.monitoring_max_generation_tokens or (
-        2048 if config.monitoring_provider == "gemini" and not config.is_fake else 512
-    )
+    remote_models_allowed = config.allow_remote_ai and not config.is_fake
+    gemini_key = config.gemini_api_key.get_secret_value() if config.gemini_api_key else ""
+    groq_key = config.groq_api_key.get_secret_value() if config.groq_api_key else ""
 
     if config.is_fake:
-        print("INFO: Mode '--fake' activated. Using clearly simulated deterministic provider.")
-        elaborador = FakeProvider(model="fake-qwen-2b")
-        revisor = FakeProvider(model="fake-qwen-4b")
-        verificador = FakeProvider(model="fake-gemini-flash")
-        aprobador = FakeProvider(model="fake-qwen-2b")
-    else:
-        if config.monitoring_provider == "gemini":
-            elaborador = GeminiProvider(
-                api_key=config.gemini_api_key.get_secret_value() if config.gemini_api_key else "",
-                model=config.gemini_monitoring_model,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=8192,
-            )
-        else:
-            elaborador = OllamaProvider(
-                base_url=config.ollama_base_url,
-                model=config.ollama_monitoring_model,
-            )
-        if config.quality_provider == "groq":
-            raw_groq_key = (
-                config.groq_api_key.get_secret_value()
-                if hasattr(config.groq_api_key, "get_secret_value")
-                else (str(config.groq_api_key) if config.groq_api_key is not None else "")
-            )
-            revisor = GroqProvider(
-                api_key=raw_groq_key,
-                model=config.groq_model,
-                base_url=config.groq_base_url,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=config.quality_context_window or 131072,
-                max_output_tokens=config.quality_max_output_tokens or 8192,
-            )
-        elif config.quality_provider == "mistral":
-            raw_mistral_key = (
-                config.mistral_api_key.get_secret_value()
-                if hasattr(config.mistral_api_key, "get_secret_value")
-                else (str(config.mistral_api_key) if config.mistral_api_key is not None else "")
-            )
-            revisor = MistralProvider(
-                api_key=raw_mistral_key,
-                model=config.mistral_model,
-                base_url=config.mistral_base_url,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=config.quality_context_window or 131072,
-                max_output_tokens=config.quality_max_output_tokens or 8192,
-            )
-        else:
-            revisor = OllamaProvider(
-                base_url=config.ollama_base_url,
-                model=config.ollama_quality_model,
-                context_tokens=config.quality_context_window or 4096,
-                max_output_tokens=config.quality_max_output_tokens or 768,
-            )
-        if config.report_provider == "gemini":
-            raw_report_key = (
-                config.gemini_api_key.get_secret_value()
-                if hasattr(config.gemini_api_key, "get_secret_value")
-                else str(config.gemini_api_key or "")
-            )
-            aprobador = GeminiProvider(
-                api_key=raw_report_key,
-                model=config.gemini_report_model,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=8192,
-                max_output_tokens=768,
-            )
-        else:
-            aprobador = OllamaProvider(
-                base_url=config.ollama_base_url,
-                model=config.ollama_report_model,
-            )
-
-        if config.allow_remote_ai and config.gemini_api_key:
-            raw_key = (
-                config.gemini_api_key.get_secret_value()
-                if hasattr(config.gemini_api_key, "get_secret_value")
-                else str(config.gemini_api_key)
-            )
-            verificador = GeminiProvider(
-                api_key=raw_key,
-                model=config.gemini_model,
-                allow_remote_ai=True,
-            )
-        elif config.allow_remote_ai and not config.gemini_api_key:
-            verificador = GeminiProvider(
-                api_key="",
-                model=config.gemini_model,
-                allow_remote_ai=True,
-            )
-        else:
-            verificador = None
+        print("INFO: Mode '--fake' activated. Using clearly simulated deterministic providers.")
+    elaborador = (
+        GeminiProvider(
+            api_key=gemini_key,
+            model=config.gemini_monitoring_model,
+            allow_remote_ai=True,
+            context_tokens=8192,
+        ) if remote_models_allowed and gemini_key
+        else FakeProvider(model="sandbox-monitoring")
+    )
+    revisor = (
+        GroqProvider(
+            api_key=groq_key,
+            model=config.groq_model,
+            base_url=config.groq_base_url,
+            allow_remote_ai=True,
+            context_tokens=config.quality_context_window or 131072,
+            max_output_tokens=config.quality_max_output_tokens or 8192,
+        ) if remote_models_allowed and groq_key
+        else FakeProvider(model="sandbox-quality")
+    )
+    aprobador = (
+        GeminiProvider(
+            api_key=gemini_key,
+            model=config.gemini_report_model,
+            allow_remote_ai=True,
+            context_tokens=8192,
+            max_output_tokens=768,
+        ) if remote_models_allowed and gemini_key
+        else FakeProvider(model="sandbox-report")
+    )
+    verificador = (
+        GeminiProvider(
+            api_key=gemini_key,
+            model=config.gemini_model,
+            allow_remote_ai=True,
+        ) if remote_models_allowed and gemini_key
+        else FakeProvider(model="sandbox-verifier")
+    )
+    monitoring_output = config.monitoring_max_generation_tokens or (
+        2048 if isinstance(elaborador, GeminiProvider) else 512
+    )
 
     capabilities = elaborador.get_capabilities()
     if (monitoring_output > capabilities.max_output_tokens
@@ -186,7 +126,7 @@ def _build_orchestrator(
     sqlite_storage = SQLiteStorageAdapter(db_path=config.db_path)
     artifact_storage = ArtifactStorageAdapter(base_dir=config.runs_dir)
     if effective_mode == "real":
-        source_adapter = create_composite_source(
+        source_adapter = create_analysis_composite_source(
             config, commit_sha=config.github_commit_sha, transport=transport,
         )
     else:
@@ -212,6 +152,18 @@ def _build_orchestrator(
         target_commit_sha=config.github_commit_sha,
     )
 
+    from agente_gestion.adapters.outbox.smtp import SMTPConfig
+    from agente_gestion.adapters.outbox.hybrid_outbox import HybridNotificationOutboxAdapter
+    from agente_gestion.application.manager_notifications import ManagerNotificationService
+
+    smtp_config = SMTPConfig.from_env()
+    manager_notifications = (
+        ManagerNotificationService(
+            sqlite_storage,
+            HybridNotificationOutboxAdapter(sqlite_storage, smtp_config=smtp_config),
+            smtp_config=smtp_config,
+        ) if smtp_config.manager_email else None
+    )
     orchestrator = ProjectOrchestrator(
         sqlite_storage=sqlite_storage,
         artifact_storage=artifact_storage,
@@ -221,6 +173,8 @@ def _build_orchestrator(
         aprobador_provider=aprobador,
         source_adapter=source_adapter,
         config=orchestrator_config,
+        manager_notifications=manager_notifications,
+        manager_email=smtp_config.manager_email,
     )
 
     return orchestrator, sqlite_storage, artifact_storage, verificador, elaborador, revisor, aprobador
@@ -247,8 +201,6 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         overrides["project_id"] = args.project
     if args.allow_remote_ai:
         overrides["allow_remote_ai"] = True
-    if args.ollama_base_url:
-        overrides["ollama_base_url"] = args.ollama_base_url
     if args.db_path:
         overrides["db_path"] = args.db_path
     if args.output_dir:
@@ -350,7 +302,8 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         if (
             verificador is not None
             and (
-                config.is_fake
+                getattr(verificador, "is_simulated", False)
+                or config.is_fake
                 or (config.allow_remote_ai and bool(config.gemini_api_key))
             )
         )
@@ -363,10 +316,10 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
     print(f"Run ID:         {run.run_id}")
     print(f"Status:         {run.status.value}")
     print(f"Agents:         Elaborador, Revisor, Verificador, Aprobador")
-    print(f"Models:         Elaborador={_format_model_tag(elaborador, 'ollama')}, "
-          f"Revisor={_format_model_tag(revisor, 'ollama')}, "
+    print(f"Models:         Elaborador={_format_model_tag(elaborador, 'gemini')}, "
+          f"Revisor={_format_model_tag(revisor, 'groq')}, "
           f"Verificador={verificador_summary}, "
-          f"Aprobador={_format_model_tag(aprobador, 'ollama')}")
+          f"Aprobador={_format_model_tag(aprobador, 'gemini')}")
     print(f"Findings:       {len(findings_stored)} candidate finding(s)")
     print(f"Escalations:    {escalations_count} finding(s) escalated to verifier")
     print(f"Verifications:  {len(verifs_stored)} finding(s) independently verified")
@@ -502,8 +455,22 @@ def source_check_command(args: argparse.Namespace) -> int:
     # 3. GitHub Actions check
     if provider_arg in ("github-actions", "all"):
         t0 = time.perf_counter()
-        target_ci_sha = commit_override or resolved_github_sha
-        if target_ci_sha and not _is_safe_sha(target_ci_sha, known_secrets):
+        target_ci_sha = (
+            args.commit if provider_arg == "github-actions"
+            else commit_override or resolved_github_sha
+        )
+        if provider_arg == "github-actions" and not args.commit:
+            overall_success = False
+            results.append({
+                "provider": "github-actions",
+                "status": "failed",
+                "count": "unknown",
+                "target_or_actual_sha": "-",
+                "collection_complete": False,
+                "duration_seconds": "0.000",
+                "canonical_error": "configuration",
+            })
+        elif target_ci_sha and not _is_safe_sha(target_ci_sha, known_secrets):
             overall_success = False
             results.append({
                 "provider": "github-actions",
@@ -697,153 +664,7 @@ def history_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _review_json(projection, events) -> str:
-    """Explicit metadata only, never supporting DTOs or proposal free prose."""
-    keys = ("project_id", "proposal_id", "capture_id", "proposal_body_sha256",
-            "version", "review_status", "authorization_status", "permission_scope",
-            "execution_status")
-    result = {key: getattr(projection, key) for key in keys}
-    result.update(schema_version="proposal_review_v1", real_execution_allowed=False,
-                  identity_verified=False, actor_trust="asserted_offline",
-                  authorization_limit="dry_run_only",
-                  assertion_notice="offline_human_assertion_not_authorship_proof_or_legal_grant")
-    event_keys = ("event_id", "project_id", "proposal_id", "capture_id",
-                  "proposal_body_sha256", "expected_version", "decision")
-    result["events"] = [dict(
-        {key: getattr(event, key) for key in event_keys},
-        actor={"actor_id": event.actor.actor_id, "provenance": "asserted_offline"})
-        for event in events]
-    return json.dumps(result)
-
-
-def proposal_review_command(args: argparse.Namespace) -> int:
-    """Offline human assertion, not identity/authorship proof or a legal grant."""
-    try:
-        for value in (args.project, args.proposal_id):
-            OfflineActorClaim(actor_id=value)  # Strict, explicit nonblank identifiers.
-        deciding = args.proposals_operation == "decide"
-        if deciding:
-            actor = OfflineActorClaim(actor_id=args.actor)
-            OfflineActorClaim(actor_id=args.event_id)
-            digest = TypeAdapter(Digest).validate_python(args.proposal_body_sha256)
-            version = TypeAdapter(Version).validate_python(args.expected_version)
-            decision = TypeAdapter(Decision).validate_python(args.decision)
-        storage = SQLiteStorageAdapter(db_path=args.db_path, read_only=True)
-        state = storage.get_proposal_review_state(args.project, args.proposal_id)
-        if state is None:
-            raise ValueError
-        stored_digest, events, projection = state
-        if deciding:
-            if digest != stored_digest:
-                raise ValueError
-            event = DecisionEvent(event_id=args.event_id, project_id=args.project,
-                proposal_id=args.proposal_id, capture_id=projection.capture_id,
-                proposal_body_sha256=digest, expected_version=version,
-                actor=actor, decision=decision)
-            prior = next((item for item in events if item.event_id == event.event_id), None)
-            if prior is not None:
-                if prior != event:
-                    raise ValueError
-                # Retry after later events returns current state without writer setup.
-            else:
-                if version != projection.version:
-                    raise ValueError
-                record = storage.get_action_proposal(args.proposal_id)
-                capture = storage.get_snapshot_capture(projection.capture_id)
-                if record is None or capture is None or record[0].project_id != args.project:
-                    raise ValueError
-                # Eligibility comes from actual verified inputs, not projection status.
-                fold_decisions(record[0], capture, record[1], stored_digest, [*events, event])
-                # CAS/global ID conflicts remain transactionally guarded by the adapter.
-                writer = SQLiteStorageAdapter(db_path=args.db_path)
-                projection = writer.append_proposal_decision(event)
-                state = storage.get_proposal_review_state(args.project, args.proposal_id)
-                if state is None:
-                    raise ValueError
-                _, events, projection = state
-        output = _review_json(projection, events)
-    except Exception:
-        sys.stderr.write("ERROR: Proposal review request failed.\n")
-        return 2
-    print(output)
-    return 0
-
-
-def _dry_run_json(request, result, recorded_at, replayed=False, historical=False):
-    """Narrow simulation metadata, never evidence or free proposal prose."""
-    request_keys = ("request_id", "project_id", "proposal_id", "capture_id",
-                    "proposal_body_sha256", "permission_event_id", "expected_version")
-    result_keys = ("status", "reasons", "field", "before", "after")
-    data = result.model_dump(mode="json", include=set(result_keys))
-    data.update({key: getattr(request, key) for key in request_keys})
-    data.update(schema_version="proposal_dry_run_v1", recorded_at=recorded_at,
-                replayed=replayed, historical=historical,
-                is_new_simulation=not historical and result.status == "SIMULATED",
-                execution_status="not_executed", live_state_changed=False,
-                real_execution_allowed=False, identity_verified=False,
-                actor_trust="grant_asserted_offline_not_authentication",
-                request_initiator="unknown")
-    return json.dumps(data)
-
-
-def proposal_dry_run_command(args: argparse.Namespace) -> int:
-    """Offline stored-action simulation or HISTORICAL audit, never live execution."""
-    try:
-        historical = args.proposals_operation == "audit"
-        if historical:
-            for value in (args.project, args.proposal_id, args.request_id):
-                OfflineActorClaim(actor_id=value)
-        else:
-            request = DryRunRequest(request_id=args.request_id, project_id=args.project,
-                proposal_id=args.proposal_id, capture_id=args.capture_id,
-                permission_event_id=args.permission_event_id,
-                expected_version=args.expected_version,
-                proposal_body_sha256=args.proposal_body_sha256)
-        storage = SQLiteStorageAdapter(db_path=args.db_path, read_only=True)
-        # Capability check even for a new ID: never migrate a legacy database.
-        receipt = storage.get_proposal_dry_run(args.project, args.proposal_id, args.request_id)
-        if historical:
-            if receipt is None:
-                raise ValueError
-            output = _dry_run_json(*receipt, historical=True)
-        else:
-            state = storage.get_proposal_review_state(args.project, args.proposal_id)
-            record = storage.get_action_proposal(args.proposal_id)
-            capture = storage.get_snapshot_capture(request.capture_id)
-            if state is None or record is None or capture is None:
-                raise ValueError
-            digest, events, _ = state
-            proposal, evidence = record
-            if (proposal.project_id, proposal.observed_capture_id, digest) != (
-                    request.project_id, request.capture_id, request.proposal_body_sha256):
-                raise ValueError
-            # Scoped reads cannot prove foreign capture integrity. D2 scans all
-            # captures and rechecks final guards under its write transaction.
-            captures = storage.list_snapshot_captures(request.project_id)
-            preflight = simulate_proposal(request=request, proposal=proposal, capture=capture,
-                evidence_items=evidence, proposal_body_sha256=digest, events=events,
-                project_captures=captures)
-            corrupt = {"invalid_inputs", "binding_mismatch", "missing_captures",
-                       "project_mismatch", "invalid_capture", "capture_id_conflict",
-                       "unknown_capture", "invalid_decisions"}
-            if corrupt.intersection(preflight.reasons):
-                raise ValueError
-            # Guard denials must be audited; retries must NEVER bypass D2.
-            writer = SQLiteStorageAdapter(db_path=args.db_path)
-            request, result, stamp, replayed = writer.append_proposal_dry_run(request)
-            output = _dry_run_json(request, result, stamp, replayed, replayed)
-    except Exception:
-        sys.stderr.write("ERROR: Proposal dry-run request failed.\n")
-        return 2
-    print(output)
-    return 0
-
-
 def proposals_command(args: argparse.Namespace) -> int:
-    if args.proposals_operation in ("dry-run", "audit"):
-        return proposal_dry_run_command(args)
-    if args.proposals_operation in ("state", "decide"):
-        return proposal_review_command(args)
     """Browse verified proposals only; frozen supporting evidence is not exported."""
     metadata_keys = (
         "proposal_id", "schema_version", "project_id", "task_id", "observed_capture_id",
@@ -972,7 +793,8 @@ def schedule_command(args: argparse.Namespace) -> int:
         db_path = getattr(args, "db_path", ".runtime/agente.db") or ".runtime/agente.db"
         storage = SQLiteStorageAdapter(db_path)
         outbox = HybridNotificationOutboxAdapter(storage)
-        service = WeeklySchedulerService(storage, outbox)
+        service = (WeeklySchedulerService.from_env(storage, outbox)
+                   if args.schedule_operation == "run" else WeeklySchedulerService(storage, outbox))
 
         project_id = args.project
         weekday = getattr(args, "weekday", 4)
@@ -1181,14 +1003,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--branch", default=None, help="Target branch name")
     parser_run.add_argument("--fake", action="store_true", help="Clearly simulated deterministic execution without real LLMs")
     parser_run.add_argument("--allow-remote-ai", action="store_true", help="Explicitly permit remote AI providers (e.g. Gemini)")
-    parser_run.add_argument("--ollama-base-url", default=None, help="Ollama server URL (defaults to http://127.0.0.1:11435)")
     parser_run.add_argument("--db-path", default=None, help="Path to SQLite database file")
     parser_run.add_argument("--output-dir", default=None, help="Directory to save runs artifacts")
-    parser_run.add_argument("--monitoring-provider", choices=["ollama", "gemini"], default=None, help="LLM provider for ProjectMonitoringAgent ('ollama', 'gemini')")
-    parser_run.add_argument("--quality-provider", choices=["ollama", "groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral')")
+    parser_run.add_argument("--monitoring-provider", choices=["gemini"], default=None, help="LLM provider for ProjectMonitoringAgent")
+    parser_run.add_argument("--quality-provider", choices=["groq"], default=None, help="LLM provider for CodeQualityAgent")
     parser_run.add_argument("--groq-model", default=None, help="Model identifier for Groq quality reviewer")
     parser_run.add_argument("--gemini-model", default=None, help="Model identifier for Gemini verifier")
-    parser_run.add_argument("--report-provider", choices=["ollama", "gemini"], default=None, help="LLM provider for ReportAgent ('ollama', 'gemini')")
+    parser_run.add_argument("--report-provider", choices=["gemini"], default=None, help="LLM provider for ReportAgent")
     parser_run.add_argument("--env-file", default=None, help="Path to custom .env file (defaults to .env)")
     parser_run.add_argument("--due-soon-days", type=int, default=None, help="Inclusive near-due window in days (nonnegative; default 7)")
     parser_run.add_argument("--monitoring-rules", default=None, metavar="PATH",
@@ -1245,36 +1066,6 @@ def build_parser() -> argparse.ArgumentParser:
         if operation == "show":
             proposal_parser.add_argument("proposal_id", help="Proposal ID")
         proposal_parser.add_argument("--db-path", required=True, help="Existing SQLite database; read-only")
-
-    for operation in ("state", "decide"):
-        review_parser = proposal_operations.add_parser(operation, description=(
-            "Offline human assertion: identity unverified; dry-run only, "
-            "not authorship proof or a legal grant. Live execution always blocked."))
-        review_parser.add_argument("project", help="Explicit project identifier")
-        review_parser.add_argument("proposal_id", help="Explicit proposal identifier")
-        review_parser.add_argument("--db-path", required=True, help="Existing SQLite database")
-        if operation == "decide":
-            review_parser.add_argument("--decision", required=True, choices=[
-                "approve_offline", "reject", "authorize_dry_run", "deny", "revoke"])
-            review_parser.add_argument("--actor", required=True, help="Unverified asserted identifier")
-            review_parser.add_argument("--event-id", required=True)
-            review_parser.add_argument("--expected-version", required=True, type=int)
-            review_parser.add_argument("--proposal-body-sha256", required=True)
-
-    for operation in ("dry-run", "audit"):
-        dry_parser = proposal_operations.add_parser(operation, help=(
-            "Offline SIMULATION, not Trello execution" if operation == "dry-run"
-            else "Read-only HISTORICAL audit; no current permission or freshness claim"))
-        dry_parser.add_argument("project")
-        dry_parser.add_argument("proposal_id")
-        dry_parser.add_argument("--db-path", required=True, help="Existing SQLite database")
-        if operation == "audit":
-            dry_parser.add_argument("request_id")
-        else:
-            for flag in ("request-id", "capture-id", "permission-event-id",
-                         "proposal-body-sha256"):
-                dry_parser.add_argument("--" + flag, required=True)
-            dry_parser.add_argument("--expected-version", required=True, type=int)
 
     # tasks command
     parser_tasks = subparsers.add_parser("tasks", help="Inspect project task planning and monitoring status")

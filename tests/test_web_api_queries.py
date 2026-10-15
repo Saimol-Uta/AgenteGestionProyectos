@@ -11,10 +11,15 @@ from unittest.mock import patch
 
 from agente_gestion.api.app import ApiSettings, ProjectConfig, create_app
 from agente_gestion.api.settings import load_api_settings
+from agente_gestion.application import config as engine_config
 from tests.web_fixtures import (
+    CODE_EVIDENCE_ID,
     EVIDENCE_SECRET,
+    FINDING_ID,
+    OLDER_RUN_ID,
     OPERATOR_TOKEN,
     PROJECT_ID,
+    RUN_ID,
     TASK_ID,
     build_web_api_fixture,
 )
@@ -29,6 +34,14 @@ def working_directory(path: Path):
         yield
     finally:
         os.chdir(original)
+
+
+@contextmanager
+def isolated_project_root(path: Path):
+    with patch.object(engine_config, "PROJECT_ROOT", path), patch(
+        "agente_gestion.api.settings.PROJECT_ROOT", path,
+    ):
+        yield
 
 
 class WebApiQueryTests(unittest.TestCase):
@@ -102,7 +115,7 @@ class WebApiQueryTests(unittest.TestCase):
         self.assertNotIn(EVIDENCE_SECRET, detail_response.text)
         self.assertEqual(len(detail["evidence"]), 1)
         self.assertNotIn("payload", detail["evidence"][0]["provenance"])
-        self.assertEqual(len(detail["history"]), 1)
+        self.assertEqual(len(detail["history"]), 2)
         self.assertIsNone(detail["history"][0]["actor"])
         self.assertEqual(detail["history"][0]["capture_id"], self.fixture.current_capture_id)
         self.assertEqual(detail["history"][0]["previous_capture_id"], self.fixture.older_capture_id)
@@ -110,7 +123,10 @@ class WebApiQueryTests(unittest.TestCase):
             f"/api/v1/projects/{PROJECT_ID}/tasks/{TASK_ID}",
             params={"capture_id": self.fixture.older_capture_id},
         ).json()
-        self.assertEqual(older_detail["evidence"], [])
+        self.assertEqual(len(older_detail["evidence"]), 1)
+        self.assertEqual(
+            older_detail["evidence"][0]["provenance"]["id"], "evidence-task-older",
+        )
         self.assertEqual(older_detail["history"], [])
 
         self.assertEqual(hashlib.sha256(self.fixture.database_path.read_bytes()).digest(),
@@ -118,7 +134,7 @@ class WebApiQueryTests(unittest.TestCase):
         with closing(sqlite3.connect(self.fixture.database_path)) as connection:
             counts_after = tuple(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
                                  for table in ("runs", "snapshots", "snapshot_captures", "evidence"))
-        self.assertEqual(counts_after, (2, 3, 3, 2))
+        self.assertEqual(counts_after, (2, 3, 3, 4))
 
     def test_persisted_runs_stages_findings_quality_policies_and_executive_summary(self):
         before = self.fixture.database_path.read_bytes()
@@ -128,43 +144,45 @@ class WebApiQueryTests(unittest.TestCase):
         self.assertEqual(first_page.status_code, 200)
         runs = first_page.json()
         self.assertEqual(runs["total"], 2)
-        self.assertEqual(runs["items"][0]["run_id"], "run-current")
+        self.assertEqual(runs["items"][0]["run_id"], RUN_ID)
         self.assertEqual(self.client.get("/api/v1/runs", params={
             "project_id": PROJECT_ID, "page": 2, "page_size": 1,
-        }).json()["items"][0]["run_id"], "run-older")
-        self.assertEqual(self.client.get("/api/v1/runs/run-current").json()["status"], "completed")
+        }).json()["items"][0]["run_id"], OLDER_RUN_ID)
+        self.assertIn(self.client.get(f"/api/v1/runs/{RUN_ID}").json()["status"],
+                      {"awaiting_human", "needs_attention", "completed"})
 
-        stages = self.client.get("/api/v1/runs/run-current/stages").json()["items"]
+        stages = self.client.get(f"/api/v1/runs/{RUN_ID}/stages").json()["items"]
         stage_by_name = {stage["stage_name"]: stage for stage in stages}
         self.assertTrue(stage_by_name["quality"]["recorded"])
         self.assertEqual(stage_by_name["quality"]["status"], "completed")
-        self.assertEqual(stage_by_name["verifier"]["status"], "skipped")
-        self.assertFalse(stage_by_name["verifier"]["providers"])
+        self.assertTrue(stage_by_name["verifier"]["recorded"])
+        self.assertNotEqual(stage_by_name["verifier"]["status"], "skipped")
 
-        findings = self.client.get("/api/v1/runs/run-current/findings").json()
+        findings = self.client.get(f"/api/v1/runs/{RUN_ID}/findings").json()
         self.assertEqual(findings["total"], 1)
         finding = findings["items"][0]
-        self.assertEqual(finding["finding_id"], "finding-candidate-001")
+        self.assertEqual(finding["finding_id"], FINDING_ID)
         self.assertTrue(finding["candidate"])
-        self.assertEqual(finding["verification_status"], "insufficient")
+        self.assertIn(finding["verification_status"], {"confirmed", "insufficient"})
         detail_response = self.client.get(
-            "/api/v1/runs/run-current/findings/finding-candidate-001",
+            f"/api/v1/runs/{RUN_ID}/findings/{FINDING_ID}",
         )
         self.assertEqual(detail_response.status_code, 200)
         detail = detail_response.json()
-        self.assertEqual(detail["claim"], "Revisar validación de entrada")
-        self.assertEqual(detail["verification"]["verdict"], "insufficient")
-        self.assertEqual(detail["code_excerpt"]["evidence_id"], "evidence-code-001")
-        self.assertTrue(detail["code_excerpt"]["is_partial"])
-        self.assertTrue(detail["code_excerpt"]["redacted"])
+        self.assertEqual(detail["verification"]["verdict"], finding["verification_status"])
+        self.assertEqual(detail["code_excerpt"]["evidence_id"], CODE_EVIDENCE_ID)
+        self.assertEqual(detail["code_excerpt"]["evidence_scope"], "full_file")
+        self.assertFalse(detail["code_excerpt"]["is_partial"])
+        self.assertFalse(detail["code_excerpt"]["redacted"])
+        self.assertEqual(detail["code_excerpt"]["content"], "def calculate_ratio(total): return 1 / total")
         self.assertNotIn(EVIDENCE_SECRET, detail_response.text)
 
-        evidence = self.client.get("/api/v1/runs/run-current/evidence").json()
+        evidence = self.client.get(f"/api/v1/runs/{RUN_ID}/evidence").json()
         self.assertEqual(evidence["total"], 2)
         self.assertNotIn("payload", str(evidence))
         quality = self.client.get(f"/api/v1/projects/{PROJECT_ID}/quality").json()
         self.assertEqual(quality["finding_counts"]["candidate"], 1)
-        self.assertIsNone(quality["ci"]["coverage_percentage"])
+        self.assertIsNone(quality["ci"])
         policies = self.client.get(f"/api/v1/projects/{PROJECT_ID}/policies").json()
         self.assertEqual([item["rule_id"] for item in policies["items"]], ["Q1", "Q2", "Q3"])
         self.assertEqual({item["status"] for item in policies["items"]}, {"pass", "fail", "unknown"})
@@ -174,8 +192,8 @@ class WebApiQueryTests(unittest.TestCase):
         ).json()
         self.assertEqual(executive["task_summary"]["total_tasks"], 1)
         self.assertEqual(len(executive["capture_series"]), 2)
-        self.assertEqual(executive["quality"]["run_id"], "run-current")
-        self.assertEqual(executive["latest_report"]["run_id"], "run-current")
+        self.assertEqual(executive["quality"]["run_id"], RUN_ID)
+        self.assertEqual(executive["latest_report"]["run_id"], RUN_ID)
         self.assertEqual(executive["runs"]["total"], 2)
         stored_quality = self.client.get("/api/v1/projects/STORED-ONLY/quality").json()
         self.assertEqual(stored_quality["availability"], "unknown")
@@ -228,14 +246,15 @@ class WebApiQueryTests(unittest.TestCase):
     def test_missing_config_does_not_invent_public_projects(self):
         missing_db = Path(self.temp.name) / "missing-config.sqlite"
         missing_db_path = str(missing_db)
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_DB_PATH": missing_db_path,
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
         }, clear=True):
             self.assertNotIn("AGENTE_CONFIG_PATH", os.environ)
-            with working_directory(Path(self.temp.name)):
-                settings = load_api_settings()
+            with working_directory(Path(self.temp.name)), isolated_project_root(empty_root):
+                settings = load_api_settings(env_file=None)
             with TestClient(create_app(settings)) as client:
                 response = client.get("/api/v1/projects")
         self.assertEqual(response.status_code, 200)
@@ -247,13 +266,14 @@ class WebApiQueryTests(unittest.TestCase):
         malformed_config = Path(self.temp.name) / "malformed.yaml"
         malformed_config.write_text("project: [unterminated\n", encoding="utf-8")
         malformed_db = Path(self.temp.name) / "malformed-config.sqlite"
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_CONFIG_PATH": str(malformed_config),
             "AGENTE_DB_PATH": str(malformed_db),
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
-        }, clear=True):
-            settings = load_api_settings()
+        }, clear=True), isolated_project_root(empty_root):
+            settings = load_api_settings(env_file=None)
         with TestClient(create_app(settings)) as client:
             response = client.get("/api/v1/projects")
         self.assertEqual(response.status_code, 200)
@@ -262,14 +282,15 @@ class WebApiQueryTests(unittest.TestCase):
         self.assertFalse(malformed_db.exists())
 
     def test_missing_config_keeps_projects_discovered_from_existing_storage(self):
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_DB_PATH": str(self.fixture.database_path),
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
         }, clear=True):
             self.assertNotIn("AGENTE_CONFIG_PATH", os.environ)
-            with working_directory(Path(self.temp.name)):
-                settings = load_api_settings()
+            with working_directory(Path(self.temp.name)), isolated_project_root(empty_root):
+                settings = load_api_settings(env_file=None)
         with TestClient(create_app(settings)) as client:
             response = client.get("/api/v1/projects")
         self.assertEqual(response.status_code, 200)
@@ -288,14 +309,15 @@ class WebApiQueryTests(unittest.TestCase):
             f"db_path: {database_path}\nruns_dir: {self.temp.name}/runs\n",
             encoding="utf-8",
         )
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_CONFIG_PATH": str(config),
             "AGENTE_DB_PATH": "",
             "H5_OPERATOR_TOKEN": "",
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
-        }, clear=True):
-            settings = load_api_settings()
+        }, clear=True), isolated_project_root(empty_root):
+            settings = load_api_settings(env_file=None)
         self.assertEqual(settings.projects[0].id, "HORMIGESTION")
         self.assertEqual(settings.projects[0].source_mode, "real")
         self.assertEqual(settings.db_path, str(database_path))

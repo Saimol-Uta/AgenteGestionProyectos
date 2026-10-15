@@ -1,0 +1,83 @@
+# Phase 3: verified manager authentication
+Objective: implement strict manager credentials, clean login, verification and documentation consolidation.
+Branch: codex/frontend-manager-phase1. No commits or publishing without explicit user request. Runners: unittest, TypeScript, Vite, Playwright.
+
+## Specs
+S1. "Define credenciales explícitas para el Gestor del Proyecto mediante variables de entorno"; `MANAGER_LOGIN_EMAIL` default `"gestor@hormigestion.ec"`, `MANAGER_LOGIN_PASSWORD` default `"HormiGestion2026!"`. "Compara siempre las credenciales de forma segura en tiempo constante (`hmac.compare_digest` o hash PBKDF2/SHA-256)."
+S2. "Actualiza el endpoint `POST /api/v1/auth/login` para que reciba `{ email: str, password: str }` como método principal de autenticación humana." "Rechaza inmediatamente la petición con `HTTP 401 Unauthorized` (estándar RFC 7807 `ApiProblem` con mensaje claro: `\"Correo electrónico o contraseña incorrectos.\"`) y registra el intento fallido en `security_audit_log`." "PROHIBIDO aceptar correos arbitrarios o derivar tokens válidos a partir de credenciales no registradas." "Si algún script CLI interno o test de backend de bajo nivel envía explícitamente el campo `token` (y no envía `email`/`password`), puedes validar ese `token` únicamente contra `H5_OPERATOR_TOKEN` con `compare_digest`; pero si la petición incluye `email` o `password`, la validación de correo y contraseña debe ser obligatoria y estricta."
+S3. "Al iniciar sesión correctamente con correo y contraseña, almacena el `email` y el nombre/rol (`PROJECT_MANAGER`) en la sesión activa (`HttpOnly` cookie + token `CSRF`)." "Devuelve el `email` del gestor autenticado en `GET /api/v1/auth/session` para que el frontend lo muestre en la barra superior (`AppShell.tsx`) y lo utilice como destinatario predeterminado en el módulo de notificaciones por correo."
+S4. "Elimina por completo cualquier input, pestaña, botón o texto que pida al usuario ingresar un *\"Token\"*, *\"Token de operador\"* o *\"Derivar token\"*." "Correo electrónico (`type=\"email\"`, `required`)"; "Contraseña (`type=\"password\"`, `required`, con botón opcional de mostrar/ocultar contraseña)"; "Iniciar Sesión como Gestor"; "Ingresar en Modo Consulta (Solo lectura)". "El cliente HTTP (`client.ts` / `SessionProvider.tsx`) debe enviar `{ email, password }` directamente a `POST /api/v1/auth/login`." 401 alert: "Correo electrónico o contraseña incorrectos. Verifique sus credenciales de Gestor del Proyecto." "no permitas el ingreso".
+S5. "Añade pruebas que verifiquen" valid credentials HTTP 200 + HttpOnly + CSRF, unknown email `cualquiera@test.com` and incorrect password HTTP 401. "Actualiza los helpers de login en `frontend/e2e/fixtures.ts` y todos los archivos `.spec.ts`" with clean email/password and no token DOM selectors. "Añade un test E2E específico en `web-platform.spec.ts`" for false credentials, visible error and no manager actions.
+S6. "Elimina el directorio residual de fallos antiguos en `test-results/`." "Revisa si `frontend/src/features/pending/PendingModulePage.tsx` sigue siendo referenciado; si ya no se usa, elimínalo de forma segura."
+S7. Update `docs/01-frontend-guia-y-estado.md`: "login limpio por correo/contraseña", "AgentWorkflowBar (`Ejecutor → Revisor → Aprobador`)", "DecisionCenter", example code comparison/branch creation `/quality`, one-click approval `/proposals`, executive email panel, actual E2E count. Update `docs/02-backend-arquitectura-y-api.md`: `finding_actions.py`, `proposal_execution.py`, `email_notifications.py`, credentials, `GitHubCodeActionAdapter`, `smtp.py`. Update `docs/03-motor-de-agentes-y-requisitos.md`: Mermaid unified flow, `proposal_auto_review.py`, Git branches, `REQ-01` to `REQ-11`. Update `docs/04-analisis-comparativo-arquitectura.md`, `README.md`, `INFORME_PRUEBAS.md` to actual implementation and evidence. README includes manager defaults and `SMTP_*`, `GITHUB_TOKEN`, `TRELLO_*` demo configuration. Preserve existing Spanish project documentation convention.
+S8. "Ejecuta y confirma en verde antes de finalizar": `python -m unittest discover -s tests -p 'test_*.py'`; frontend `npm run typecheck`, `npm run build`, `npx playwright test`. Report actual failures/unavailable checks; never claim unobserved success. "Entrégame en tu respuesta final el Correo y Contraseña exactos que quedaron configurados por defecto".
+S9. "No leas ni modifiques el archivo `.env.example`"; "define los valores por defecto en `src/agente_gestion/api/settings.py` y documenta el bloque de variables de entorno directamente en `README.md`." Do not access any `.env*` files or expose real credentials.
+
+S10. User addition (verbatim): "Cambia el valor por defecto de los feature flags `H5_ANALYSIS_ENABLED`, `H5_GOVERNANCE_ENABLED`, `H5_REPORT_DECISIONS_ENABLED` y `H5_WEEKLY_CYCLE_ENABLED` a `True` por defecto, ya que el control de acceso a las mutaciones ahora lo gobierna la sesión autenticada del Gestor (RBAC) y no banderas manuales de consola." "Asegúrate de que `settings.py` cargue automáticamente las variables desde el archivo `.env` en la raíz del proyecto si existe, y que `PYTHONPATH=src` esté cubierto al instalar el paquete en modo editable (`pip install -e .`) o mediante `pyproject.toml`." "Nuestro objetivo es que baste con ejecutar simplemente: `.venv/bin/python -m uvicorn agente_gestion.api.app:app --host 127.0.0.1 --port 8000` sin tener que pasar ninguna variable de entorno en el comando." Runtime dotenv loading is now explicitly authorized; no direct inspection/modification of actual .env* content; use synthetic isolated settings fixtures. Process environment takes precedence; external writes/remote consent remain separate.
+
+## Tasks
+T1 | S1-S3,S5,S9 | delegated backend worker; inline verifier correction | done | commit: not authorized | RED security suite exit 1; GREEN 12 security tests, settings/email focused tests; parent full Python suite exit 0 (853 run, 2 skipped)
+T2 | S3-S5 | delegated frontend worker; inline fixture correction | done | commit: not authorized | RED invalid-credentials test exit 1; GREEN exit 0; parent full frontend job-1 exit 0: typecheck/build and 87 Playwright passed (36.7s)
+T3 | S6-S10 | delegated docs worker, inline stale-text corrections | done | commit: not authorized | six docs delivered and parent spot-read README/report, evidence grep all 4 docs; git diff --check clean; cleanup verified
+T5 | S10 | inline (one integrated startup change; existing editable-install evidence observed) | done | commit: not authorized | RED six startup tests exit1, GREEN 6/6 exit0; job-6 editable install/full Python exit0 (859 run,2 skips); job-7 exact startup smoke exit0; independent S10 verdict pending
+T4 | S1-S10 | independent verification and parent full checks | done | commit: not authorized | final Python859 run:857 passed/2 optional skips; frontend87 passed,typecheck/build;editable install and exact Uvicorn smoke exit0; independent S1-S10 plus targeted correction rechecks PASS; native assessment unavailable, no lineage created
+
+## Log
+L1. User final scope clarification (verbatim):
+No leas ni modifiques el archivo `.env.example` para no activar el bloqueo de tu política de seguridad sobre archivos `.env*`. En su lugar, define los valores por defecto en `src/agente_gestion/api/settings.py` y documenta el bloque de variables de entorno directamente en `README.md`.
+
+Aquí tienes el contenido de referencia (sin secretos) de las variables del entorno para que continúes de inmediato con toda la implementación:
+
+# --- Autenticación del Gestor del Proyecto (Web UI) ---
+MANAGER_LOGIN_EMAIL="gestor@hormigestion.ec"
+MANAGER_LOGIN_PASSWORD="HormiGestion2026!"
+H5_OPERATOR_TOKEN="h5-fixture-operator-only-never-use-in-production"
+
+# --- Feature Flags de la Plataforma Web (H5) ---
+H5_ANALYSIS_ENABLED=true
+H5_GOVERNANCE_ENABLED=true
+H5_REPORT_DECISIONS_ENABLED=true
+H5_WEEKLY_CYCLE_ENABLED=true
+
+# --- Proveedores Cloud LLM ---
+GEMINI_API_KEY=""
+GROQ_API_KEY=""
+
+# --- Integraciones Externas (Trello y GitHub) ---
+TRELLO_API_KEY=""
+TRELLO_TOKEN=""
+TRELLO_BOARD_ID=""
+GITHUB_TOKEN=""
+GITHUB_REPO="Josu-F1/hormigestion-backend"
+
+# --- Notificaciones por Correo al Gestor (SMTP) ---
+MANAGER_EMAIL="gestor@hormigestion.ec"
+SMTP_HOST="smtp.gmail.com"
+SMTP_PORT=587
+SMTP_USER=""
+SMTP_PASSWORD=""
+SMTP_USE_TLS=true
+
+Procede ahora con todos los pasos solicitados (autenticación estricta por correo/contraseña en backend y frontend, eliminación del campo de token en la UI, conservación del modo consulta, actualización de tests backend/Playwright, limpieza y actualización de docs/README.md).
+
+L2. Read-only explorer inspected required source, session/control-plane, security/E2E and docs surfaces; `.env.example` blocked and excluded by L1. Root cause: frontend tokens.ts ignores email/password; API only validates operator token. Guest mode explicitly retained. Initial git status clean; baseline branch codex/frontend-manager-phase1. Security risk item 2 requires independent verification. No commits without explicit request. Estimated multi-area review workload exceeds 400 lines; no publishing/PR requested, preserve coherent backend/frontend/documentation units in worktree.
+L3. Launched disjoint backend mv9hmc7w-2-g8qa, frontend mv9hmc97-3-4ln1, documentation mv9hn14q-4-vthh workers. Removed root test-results tracked remnants and unreferenced PendingModulePage after reference scan. Global python dependency probe failed (ModuleNotFoundError: fastapi); isolated .venv/bin/python successfully imports fastapi/httpx and will be used for tests. Unexpected external .env.example modification appeared; do not inspect or revert it, workers notified. No .env* accesses after user exclusion.
+L4. Frontend worker delivered email/password login, server identity, notification recipient and strict credential fixtures. Parent spot-read session/client/dialog/recipient, removed now-unreferenced comment-only tokens.ts. Worker focused RED/GREEN and 42 web-platform tests passed. Parent started job-1: frontend typecheck/build/full Playwright. Native assess unavailable due to untracked declaration requirement; security still requires independent verifier. Documentation and backend workers remain active.
+L5. Parent job-1 completed exit 0: npm run typecheck, npm run build, npx playwright test; 87 tests passed (36.7s). T2 complete. Documentation worker informed to update observed count; backend suite and independent verifier still pending.
+L6. Backend delivered strict credential precedence, server manager identity, failed-login audit and notification default. Worker RED security suite exit 1, GREEN 12 security tests plus focused settings/email/phase2 suites. Parent job-2 full Python suite exited 0: Ran 853 tests in 15.783s, OK (skipped=2). Independent verifier mv9i3wid-5-o47k active over all specs, explicit .env* exclusion and isolated public HTTP probes.
+L7. Documentation worker delivered README, INFORME_PRUEBAS and docs/01..04. Parent spot-read README and report; searched all 4 docs for new auth/workflow/route/integration/REQ11 and observed counts; explicit git diff --check clean. Root stale test-results and unused PendingModulePage absent. Both skipped tests are opt-in real-provider tests with RUN_REAL_LLM_TESTS not enabled; no external calls enabled. T3 done, T4 remains active awaiting independent verdict. L8. Independent verifier returned PASS S1/S3/S4/S6/S8/S9, blockers S2 (401 not RFC7807) and S5 (fixture email mismatch), advisory S7 stale README evidence text. Reopen affected tasks, one inline bounded correction batch, then targeted independent re-verification only these findings. Add RFC7807 rejection fields/media type preserving legacy error extension, align fixture default email, replace stale README sentence; test-first for both behavior/test-fidelity corrections.
+L9. Correction batch: security test content-type/details assertion RED exit1 (2 failures); auth handler now emits RFC7807 for credential rejection only, preserving legacy error extension; GREEN 12 security tests exit0. E2E default-credential assertion RED job-3 exit1 before fixture typo fix; corrected fixture email, post-correction GREEN and full frontend/Python jobs launched (job-4/frontend, job-5/Python). Scoped diff --check clean; README readback confirms stale pending statement removed and RFC7807 documented. Targeted independent recheck mv9il1ty-6-zhy6 active only for reported blockers/advisory.
+L11. User addition (verbatim):
+Además, en `src/agente_gestion/api/settings.py`:
+1. Cambia el valor por defecto de los feature flags `H5_ANALYSIS_ENABLED`, `H5_GOVERNANCE_ENABLED`, `H5_REPORT_DECISIONS_ENABLED` y `H5_WEEKLY_CYCLE_ENABLED` a `True` por defecto, ya que el control de acceso a las mutaciones ahora lo gobierna la sesión autenticada del Gestor (RBAC) y no banderas manuales de consola.
+2. Asegúrate de que `settings.py` cargue automáticamente las variables desde el archivo `.env` en la raíz del proyecto si existe, y que `PYTHONPATH=src` esté cubierto al instalar el paquete en modo editable (`pip install -e .`) o mediante `pyproject.toml`.
+Nuestro objetivo es que baste con ejecutar simplemente:
+`.venv/bin/python -m uvicorn agente_gestion.api.app:app --host 127.0.0.1 --port 8000`
+sin tener que pasar ninguna variable de entorno en el comando.
+
+L12. S10 implemented: defaults true in ApiSettings and environment fallbacks; explicit false retained; python-dotenv parses root .env into local mapping (no interpolation or os.environ mutation), process env wins, env_file=None isolates tests. Six new tests RED then GREEN. Existing loader tests opt out of real dotenv; old false-default expectation updated to requested true. python-dotenv explicit dependency; pip editable install --no-deps --no-build-isolation -e '.[web]' and full unittest job-6 exited0 without PYTHONPATH. README/docs/02 and linked startup/API guides updated. Exact requested Uvicorn startup health smoke launched with PYTHONPATH removed; no direct actual .env content inspection/modification.
+L13. Prior findings S2/S5/S7 independently resolved by mv9il1ty-6-zhy6; frontend job-4 exit0 with focused GREEN/typecheck/build/87 E2E (38.0s). Job-6 local editable install success plus Python no inline variables exit0:859 run,857 passed,2 opt-in skips in16.003s. Job-7 exact requested Uvicorn subprocess (PYTHONPATH removed) exit0: health200 and anonymous auth/session; owned server stopped. Updated six primary docs to final counts; linked startup/API guides now reflect true flags/dotenv/editable command. S10 independent verifier mv9iviox-7-fe9u active. Parent final documentation structural readback verifies README startup command, four true-default rows, final test counts and successful startup smoke; diff --check clean, all requested obsolete artifacts absent. T3 complete.
+L14. Independent S10 runtime PASS:6 startup tests+1 scope/governance regression+synthetic cwd/precedence/no-environ-mutation probe. New documentation blocker: deeper h5-api-contract analysis/report/weekly switch defaults and phase2-fullstack dotenv/governance/analysis statements stale; advisory report verdict placeholder. One docs-only correction batch applied to those exact statements, phase2 manager login instructions and exact startup command; INFORME records final functional verification and warning. Scoped diff --check clean and targeted search confirms true defaults with explicit-false override; external writes correctly remain false. No functional suites rerun for passive docs. Targeted independent documentation recheck mv9j2h2g-8-4lmd completed: original blocker and advisory resolved, none unresolved. T3/T4 complete; all tasks done with no commits/publishing authorized. Final evidence: full Python859 run/857passed/2 optional real-provider skips;87E2E,typecheck/build;6 startup+1 project-scope independent tests;editable install and exact Uvicorn health200 smoke. Starlette httpx/TestClient deprecation warning disclosed; no live SMTP/GitHub/Trello proof claimed. Native assessment unavailable due undeclared untracked scope, no native review approval/lineage claimed. External .env.example change preserved; no direct actual .env* content inspection/modification.
+
+L10. Post-correction Python job-5 exit0: Ran 853 tests in 25.516s, OK(skipped=2), same two optional real-provider skips. Frontend job-4 and targeted independent recheck still pending. README stale text corrected and backend docs specify exact Problem Details contract.
+No native review lineage created: native assessment unavailable (undeclared untracked scope), no reviewDue continuation offered; .env* remain excluded and external .env.example edit preserved.

@@ -33,7 +33,7 @@ class GenerationResult(BaseModel):
     )
     status: GenerationStatus = Field(description="Lifecycle status of generation")
     finish_reason: Optional[str] = Field(default=None, description="stop, length, content_filter, etc.")
-    provider: str = Field(description="Provider adapter name e.g. ollama, openai, gemini")
+    provider: str = Field(description="Provider adapter name e.g. gemini, groq, fake_simulated")
     model: str = Field(description="Model identifier actually used")
     duration_seconds: float = Field(description="Request execution latency in seconds")
     prompt_tokens: Optional[int] = Field(
@@ -59,7 +59,7 @@ class LLMCallAttempt(BaseModel):
     request_ref: Optional[str] = Field(default=None, description="Correlation identifier")
     stage: str = Field(description="Stage or role being executed e.g. monitoring, quality, verifier, report")
     attempt_number: int = Field(default=1, description="Sequential attempt count for this stage invocation")
-    provider: str = Field(description="Provider adapter name e.g. ollama, gemini, fake_simulated")
+    provider: str = Field(description="Provider adapter name e.g. gemini, groq, fake_simulated")
     model: str = Field(description="Model used")
     status: GenerationStatus = Field(description="Generation result status")
     finish_reason: Optional[str] = Field(default=None, description="Finish reason e.g. stop, length, SAFETY")

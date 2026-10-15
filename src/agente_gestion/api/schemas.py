@@ -1,9 +1,10 @@
 """Typed, deliberately allowlisted REST and OpenAPI models for H5."""
 
 from datetime import datetime
+import re
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 
 from agente_gestion.application.tasks_query import TaskDetailView, TaskPlanSummary
 from agente_gestion.domain.evidence import DiffSide, EvidenceSource
@@ -91,10 +92,15 @@ class AuthSessionView(ApiModel):
     csrf_token: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     login_available: bool
+    email: str | None = None
+    notification_email: str | None = None
+    role: str | None = None
 
 
 class LoginRequest(ApiModel):
-    token: StrictStr = Field(min_length=1, max_length=512)
+    token: StrictStr | None = Field(default=None, max_length=512)
+    email: StrictStr | None = Field(default=None, max_length=254)
+    password: StrictStr | None = Field(default=None, max_length=512)
 
 
 class SystemHealth(ApiModel):
@@ -156,6 +162,12 @@ class FindingSummary(ApiModel):
     line: int | None = None
     commit_sha: str | None = None
     confidence: float | None = None
+    suggested_code: str = ""
+    improvement_summary: str = ""
+    decision_status: Literal["pending", "approved", "rejected", "changes_requested", "failed"] = "pending"
+    branch_name: str | None = None
+    branch_url: str | None = None
+    commit_sha_applied: str | None = None
     candidate: Literal[True] = True
     verification_status: Literal[
         "pending", "confirmed", "rejected", "insufficient", "unknown",
@@ -194,6 +206,37 @@ class CodeExcerpt(ApiModel):
     evidence_scope: Literal["full_file", "snippet", "diff", "truncated"]
     is_partial: bool
     redacted: bool
+
+
+class FindingDecisionRequest(ApiModel):
+    decision: Literal["approve", "reject", "request_changes"]
+    suggested_code_override: StrictStr | None = Field(default=None, max_length=65536)
+    target_branch: StrictStr | None = Field(default=None, min_length=1, max_length=240)
+    reason: StrictStr | None = Field(default=None, max_length=2000)
+
+    @field_validator("target_branch")
+    @classmethod
+    def valid_git_branch(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (value == "@" or value.startswith(("/", "-")) or value.endswith(("/", "."))
+                or ".." in value or "@{" in value or "//" in value
+                or any(ord(ch) <= 32 or ord(ch) == 127 or ch in "~^:?*[\\\\" for ch in value)
+                or any(not part or part.startswith(".") or part.endswith(".lock") for part in value.split("/"))):
+            raise ValueError("El nombre de rama no es válido.")
+        return value
+
+
+class FindingDecisionResponse(ApiModel):
+    reused: bool = False
+    audit_event_id: str
+    decision_status: Literal["approved", "rejected", "changes_requested"]
+    branch_name: str | None = None
+    branch_url: str | None = None
+    commit_sha_applied: str | None = None
+    suggested_code: str
+    improvement_summary: str
+    execution_mode: Literal["live", "sandbox"]
 
 
 class FindingDetail(FindingSummary):
@@ -296,11 +339,19 @@ class PrepareAnalysisRequest(ApiModel):
     request_analysis: Literal[True]
 
 
+class ProjectBoundPrepareAnalysisRequest(PrepareAnalysisRequest):
+    project_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
 class ConfirmAnalysisRequest(ApiModel):
     preparation_id: str = Field(min_length=16, max_length=128)
     configuration_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     confirm_analysis: Literal[True]
     remote_consent: StrictBool
+
+
+class ProjectBoundConfirmAnalysisRequest(ConfirmAnalysisRequest):
+    project_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class PreflightCheck(ApiModel):
@@ -335,6 +386,9 @@ class AnalysisPreparation(ApiModel):
     expires_at: datetime
     configuration_fingerprint: str
     eligible: bool
+    ready: bool
+    execution_mode: Literal["live", "sandbox", "mixed"]
+    fallback_reasons: list[str]
     capabilities: list[str]
     preflight: AnalysisPreflight
     remote: RemotePreflight
@@ -349,6 +403,8 @@ class AnalysisJobView(ApiModel):
     run_id: str | None = None
     error_code: str | None = None
     remote_consent: bool
+    execution_mode: Literal["live", "sandbox", "mixed"]
+    fallback_reasons: list[str]
     stage_progress_available: bool = False
 
 

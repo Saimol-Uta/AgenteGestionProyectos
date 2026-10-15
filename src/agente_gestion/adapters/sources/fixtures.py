@@ -120,6 +120,14 @@ class FixtureSourcesAdapter(TaskSourcePort, CodeSourcePort, CISourcePort, Policy
                     diff_side=raw.get("diff_side", "NEW"),
                     lines=raw["lines"],
                     content=raw["content"],
+                    evidence_scope=raw.get("evidence_scope", "snippet"),
+                    is_complete=raw.get("is_complete", False),
+                    start_line=raw.get("start_line"),
+                    end_line=raw.get("end_line"),
+                    total_lines=raw.get("total_lines"),
+                    truncated=raw.get("truncated", False),
+                    source_sha256=raw.get("source_sha256"),
+                    source_blob_sha=raw.get("source_blob_sha"),
                 )
             )
         return snippets

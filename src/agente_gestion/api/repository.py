@@ -2,17 +2,20 @@
 
 from contextlib import contextmanager
 from datetime import datetime
+import hashlib
 import json
 import math
 from pathlib import Path
 import re
 import sqlite3
 from typing import Iterator
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.application.tasks_query import TaskDetailView, TaskFilter, TaskPlanSummary, query_tasks_view
 from agente_gestion.domain.code import CodeDiffSnippet
+from agente_gestion.domain.code_action import CodeSourceSnapshot
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.policies import RuleEvaluationStatus
@@ -64,6 +67,28 @@ from agente_gestion.api.settings import ApiSettings, ProjectConfig
 
 class DataIntegrityError(RuntimeError):
     """A stored source record is invalid for a safe browser-facing projection."""
+
+
+def _safe_finding_branch_url(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 1000 or any(ord(ch) < 32 for ch in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.query or parsed.fragment or parsed.username or parsed.password:
+        return None
+    if parsed.scheme == "sandbox" and parsed.netloc == "branches":
+        parts = parsed.path.lstrip("/").split("/")
+        if parts and all(part not in {"", ".", ".."} and "\\" not in part for part in parts):
+            return value
+        return None
+    if parsed.scheme == "https" and parsed.netloc == "github.com":
+        parts = parsed.path.strip("/").split("/")
+        if (len(parts) >= 4 and safe_repository("/".join(parts[:2]))
+                and parts[2] == "tree" and all(part and part not in {".", ".."} for part in parts[3:])):
+            return value
+    return None
 
 
 class SQLiteQueryRepository:
@@ -509,9 +534,12 @@ class SQLiteQueryRepository:
         return normalize_datetime_to_tz(value, ZoneInfo(self.settings.timezone))
 
     def _configured_secrets(self) -> tuple[str, ...]:
-        if self.settings.operator_token:
-            return (self.settings.operator_token.get_secret_value(),)
-        return ()
+        values = []
+        for name in ("operator_token", "github_token", "trello_api_key", "trello_token", "smtp_user", "smtp_password"):
+            secret = getattr(self.settings, name, None)
+            if secret is not None and hasattr(secret, "get_secret_value"):
+                values.append(secret.get_secret_value())
+        return tuple(values)
 
     _RUN_STAGES = ("source_collection", "monitoring", "quality", "verifier", "report")
     _RUN_STATUSES = {status.value for status in RunStatus}
@@ -648,7 +676,7 @@ class SQLiteQueryRepository:
                 (run_id,),
             ).fetchall()
         grouped: dict[tuple[str, str, str, str], list[float | None]] = {}
-        safe_providers = {"ollama", "gemini", "groq", "mistral", "fake_simulated"}
+        safe_providers = {"gemini", "groq", "fake_simulated"}
         safe_statuses = {"complete", "incomplete", "refused", "error"}
         for row in rows:
             stage = str(row["stage"] or "")
@@ -897,6 +925,20 @@ class SQLiteQueryRepository:
         confidence = None
         if isinstance(confidence_value, (int, float)) and not isinstance(confidence_value, bool):
             confidence = float(confidence_value) if 0 <= float(confidence_value) <= 1 else None
+        suggested_code_raw = row.get("suggested_code")
+        if not isinstance(suggested_code_raw, str):
+            suggested_code_raw = ""
+        improvement_raw = row.get("improvement_summary")
+        if not isinstance(improvement_raw, str):
+            improvement_raw = ""
+        row_status = row.get("decision_status")
+        decision_status = (
+            str(row_status) if row_status in {"pending", "approved", "rejected", "changes_requested", "failed"}
+            else "pending"
+        )
+        branch_name = row.get("branch_name")
+        branch_url = row.get("branch_url")
+        commit_sha_applied = row.get("commit_sha_applied")
         return FindingSummary(
             finding_id=finding_id,
             run_id=run_id,
@@ -907,8 +949,96 @@ class SQLiteQueryRepository:
             line=line,
             commit_sha=safe_commit_sha(commit_value),
             confidence=confidence,
+            suggested_code=sanitize_text(suggested_code_raw, secrets_to_redact=self._configured_secrets(), limit=65536) or "",
+            improvement_summary=sanitize_text(improvement_raw, secrets_to_redact=self._configured_secrets(), limit=1200) or "",
+            decision_status=decision_status,
+            branch_name=sanitize_text(str(branch_name), limit=240) if branch_name else None,
+            branch_url=_safe_finding_branch_url(branch_url),
+            commit_sha_applied=safe_commit_sha(commit_sha_applied),
             verification_status=verification_status,
         )
+
+    def run_project_id(self, run_id: str) -> str:
+        row = self._run_row(run_id)
+        project_id = safe_identifier(row.get("project_id"))
+        if project_id is None:
+            raise DataIntegrityError("Stored run project identifier is unsafe")
+        return project_id
+
+    def finding_action_context(
+        self, run_id: str, finding_id: str,
+    ) -> tuple[CandidateFinding, str, CodeSourceSnapshot | None, str | None]:
+        """Return a stored candidate and its exact captured patch context, never a guessed source."""
+        run_row = self._run_row(run_id)
+        if not safe_identifier(finding_id):
+            raise LookupError("finding_not_found")
+        row = next((item for item in self._finding_rows(run_id)
+                    if item.get("id", item.get("finding_id")) == finding_id), None)
+        if row is None:
+            raise LookupError("finding_not_found")
+        candidate = self._report_findings(self._report_for_run(run_row)).get(finding_id)
+        if candidate is None:
+            raise LookupError("finding_not_actionable")
+        if (safe_relative_path(candidate.file_path) != candidate.file_path
+                or safe_commit_sha(candidate.commit_sha) is None):
+            raise LookupError("finding_source_unavailable")
+
+        suggestion = row.get("suggested_code")
+        summary = row.get("improvement_summary")
+        status = row.get("decision_status")
+        candidate = candidate.model_copy(update={
+            "suggested_code": suggestion if isinstance(suggestion, str) else "",
+            "improvement_summary": summary if isinstance(summary, str) else "",
+            "decision_status": status if status in {"pending", "approved", "rejected", "changes_requested", "failed"} else "pending",
+            "branch_name": row.get("branch_name"),
+            "branch_url": row.get("branch_url"),
+            "commit_sha_applied": row.get("commit_sha_applied"),
+        })
+
+        source = None
+        repository = None
+        adapter = self._adapter()
+        snapshot_id = safe_identifier(run_row.get("snapshot_id"))
+        if adapter is not None and snapshot_id is not None:
+            snapshot = adapter.get_snapshot(snapshot_id)
+            if snapshot is not None and snapshot.project_id == run_row.get("project_id"):
+                matching: list[CodeDiffSnippet] = []
+                for raw in snapshot.code_diffs:
+                    try:
+                        snippet = raw if isinstance(raw, CodeDiffSnippet) else CodeDiffSnippet.model_validate(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if snippet.commit_sha == candidate.commit_sha and snippet.file_path == candidate.file_path:
+                        matching.append(snippet)
+                complete = [snippet for snippet in matching
+                            if snippet.evidence_scope == "full_file" and snippet.is_complete and not snippet.truncated]
+                if len(complete) > 1:
+                    raise LookupError("finding_source_ambiguous")
+                if len(complete) == 1:
+                    chosen = complete[0]
+                    source_repository = safe_repository(chosen.repository)
+                    source_hash = chosen.source_sha256
+                    if (source_repository and source_hash
+                            and hashlib.sha256(chosen.content.encode("utf-8")).hexdigest() == source_hash
+                            and chosen.total_lines == len(chosen.content.splitlines())):
+                        try:
+                            source = CodeSourceSnapshot(
+                                content=chosen.content,
+                                is_complete=True,
+                                repository=source_repository,
+                                commit_sha=chosen.commit_sha,
+                                file_path=chosen.file_path,
+                                source_sha256=source_hash,
+                                source_blob_sha=chosen.source_blob_sha,
+                                total_lines=chosen.total_lines,
+                            )
+                            repository = source_repository
+                        except ValueError:
+                            source = None
+                            repository = None
+
+        excerpt = candidate.evidence or ""
+        return candidate, excerpt, source, repository
 
     def finding_detail(self, run_id: str, finding_id: str) -> FindingDetail:
         run_row = self._run_row(run_id)

@@ -1,0 +1,42 @@
+.dialog-content.finding-dialog { display: flex; flex-direction: column; width: min(1080px, calc(100vw - 36px)); height: min(90dvh, 900px); max-height: 90dvh; padding: 0; overflow: hidden; }
+.finding-dialog .drawer-content-scroll { min-height: 0; }
+.quality-recommendation { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); min-width: 0; }
+.quality-agent-trace { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0; margin: 12px 0; list-style: none; }
+.quality-agent-trace li { display: flex; min-width: 0; flex-direction: column; gap: 5px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); overflow-wrap: anywhere; }
+.quality-agent-trace strong { color: var(--text-primary); font-size: 11px; }
+.quality-agent-trace span { color: var(--text-secondary); font-size: 10px; }
+.quality-example-note { padding: 12px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-soft); }
+.quality-example-note .pill { max-width: 100%; white-space: normal; }
+.quality-example-note p { margin: 8px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+.quality-code-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.quality-code-panel { min-width: 0; padding: 12px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface); }
+.quality-code-panel h4 { margin: 0 0 8px; font-size: 12px; }
+.quality-code-before { border-top: 3px solid var(--danger); background: color-mix(in srgb, var(--danger-soft) 30%, var(--surface)); }
+.quality-code-after { border-top: 3px solid var(--success); background: color-mix(in srgb, var(--success-soft) 30%, var(--surface)); }
+.quality-code-panel .code-excerpt { max-width: 100%; max-height: 340px; padding: 10px; font: 11px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.quality-example-code code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quality-code-panel .button { margin-top: 10px; }
+.quality-code-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; color: var(--text-secondary); font-size: 11px; }
+.quality-code-editor textarea { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 220px; padding: 10px; color: var(--text-primary); border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-soft); resize: vertical; font: 11px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
+.quality-code-editor textarea:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.quality-human-decision { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; padding: 14px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-soft); }
+.quality-human-decision h4 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--text-primary); font-size: 12px; }
+.quality-human-decision > p, .quality-decision-result p { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.65; }
+.quality-human-decision .filter-control { min-width: 0; font-size: 11px; }
+.quality-human-decision .filter-control input, .quality-human-decision .filter-control textarea { font-size: 12px; }
+.quality-decision-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.quality-decision-actions .button { min-height: 40px; height: auto; padding-top: 8px; padding-bottom: 8px; white-space: normal; }
+.quality-reject-form { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.quality-reject-form .filter-control { width: 100%; }
+.quality-decision-result { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.quality-decision-result:empty { display: none; }
+.quality-decision-result strong { color: var(--text-primary); font-size: 12px; }
+.quality-decision-result > span:not(.pill) { color: var(--text-secondary); font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+@media (max-width: 680px) {
+  .quality-agent-trace, .quality-code-comparison { grid-template-columns: minmax(0, 1fr); }
+  .quality-human-decision { padding: 11px; }
+  .quality-decision-actions { flex-direction: column; }
+  .quality-decision-actions .button { width: 100%; }
+  .finding-row-location { min-width: 0; max-width: 40%; }
+  .finding-row-location code { max-width: 100%; }
+}

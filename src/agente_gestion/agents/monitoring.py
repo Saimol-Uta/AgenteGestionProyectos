@@ -51,13 +51,13 @@ class ProjectMonitoringAgent:
     """
     Explicit elaborador agent.
     Drafts progress assessments, risk items, and suggested actions.
-    Uses qwen3.5:2b-q4_K_M by default.
+    Uses gemini-3.5-flash-lite by default.
     """
 
     def __init__(
         self,
         provider: LLMProviderPort,
-        model: str = "qwen3.5:2b-q4_K_M",
+        model: str = "gemini-3.5-flash-lite",
         coordinator: Optional[StageInvocationCoordinator] = None,
         context_builder: Optional[ContextBuilder] = None,
         max_generation_tokens: int = 512,

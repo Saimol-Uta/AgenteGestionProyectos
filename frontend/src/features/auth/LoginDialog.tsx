@@ -9,25 +9,33 @@ export function LoginDialog({ triggerClassName = "button button-secondary" }: { 
   const { session, login, isUnavailable } = useSession();
   const { notify } = useToast();
   const [open, setOpen] = useState(false);
-  const [token, setToken] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  function handleEmailChange(value: string) {
+    setEmail(value);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!token.trim() || submitting) return;
+    if (submitting) return;
+
     setSubmitting(true);
     setError(null);
-    const submittedToken = token;
     try {
-      await login(submittedToken);
-      setToken("");
+      await login(email, password, true);
+      setPassword("");
       setOpen(false);
-      notify("La sesión de operador está activa.", "success");
+      notify("Sesión verificada por el backend.", "success");
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : "No se pudo iniciar sesión. Inténtalo de nuevo.");
+      setError(cause instanceof ApiError && cause.status === 401
+        ? "Correo electrónico o contraseña incorrectos. Verifique sus credenciales de Gestor del Proyecto."
+        : cause instanceof ApiError
+          ? cause.message
+          : "No se pudo iniciar sesión. Inténtalo de nuevo.");
     } finally {
-      setToken("");
       setSubmitting(false);
     }
   }
@@ -35,7 +43,7 @@ export function LoginDialog({ triggerClassName = "button button-secondary" }: { 
   function handleOpenChange(nextOpen: boolean) {
     setOpen(nextOpen);
     if (!nextOpen) {
-      setToken("");
+      setPassword("");
       setError(null);
     }
   }
@@ -56,7 +64,7 @@ export function LoginDialog({ triggerClassName = "button button-secondary" }: { 
             <div>
               <Dialog.Title className="dialog-title">Acceso de operador</Dialog.Title>
               <Dialog.Description className="dialog-description">
-                Ingresa el token de operador aprovisionado por el backend. No es una clave de proveedor.
+                Inicia sesión con el correo y la contraseña de tu cuenta de Gestor del Proyecto.
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
@@ -67,23 +75,36 @@ export function LoginDialog({ triggerClassName = "button button-secondary" }: { 
           </div>
 
           <form className="form-stack" onSubmit={handleSubmit}>
-            <label className="field-label" htmlFor="operator-token">Token de operador</label>
-            <input
-              id="operator-token"
-              className="text-input"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              disabled={submitting || session?.login_available === false}
-              aria-invalid={Boolean(error)}
-              aria-describedby={error ? "login-error" : "login-help"}
-              required
-            />
-            <p className="field-help" id="login-help">
-              El token solo se envía al backend para verificar esta sesión y no se guarda en este dispositivo.
-            </p>
+            <label className="field-label" htmlFor="operator-email">Correo electrónico</label>
+            <div className="input-with-icon" style={{ position: "relative", marginBottom: "12px" }}>
+              <input
+                id="operator-email"
+                className="text-input"
+                type="email"
+                autoComplete="email"
+                required
+                placeholder="gestor@ejemplo.com"
+                value={email}
+                onChange={(event) => handleEmailChange(event.target.value)}
+                disabled={submitting || session?.login_available === false}
+              />
+            </div>
+
+            <label className="field-label" htmlFor="operator-password">Contraseña</label>
+            <div className="input-with-icon" style={{ position: "relative", marginBottom: "12px" }}>
+              <input
+                id="operator-password"
+                className="text-input"
+                type="password"
+                autoComplete="current-password"
+                required
+                placeholder="Contraseña"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={submitting || session?.login_available === false}
+              />
+            </div>
+
             {error && <p className="form-error" id="login-error" role="alert">{error}</p>}
             {session?.login_available === false && (
               <p className="form-error" role="status">El backend no ofrece inicio de sesión en este momento.</p>
@@ -95,9 +116,13 @@ export function LoginDialog({ triggerClassName = "button button-secondary" }: { 
               <Dialog.Close asChild>
                 <button className="button button-ghost" type="button">Cancelar</button>
               </Dialog.Close>
-              <button className="button button-primary" type="submit" disabled={submitting || !token.trim() || session?.login_available === false}>
+              <button
+                className="button button-primary"
+                type="submit"
+                disabled={submitting || session?.login_available === false}
+              >
                 {submitting ? <LoaderCircle className="spin" aria-hidden="true" size={16} /> : <KeyRound aria-hidden="true" size={16} />}
-                Verificar y continuar
+                Iniciar Sesión como Gestor
               </button>
             </div>
           </form>

@@ -49,6 +49,12 @@ class CandidateFinding(BaseModel):
     category: str = Field(default="otros", description="Finding category e.g. inyeccion_sql, manejo_recursos")
     evidence: str = Field(default="", description="Exact snippet or excerpt of problematic code")
     suggested_fix: str = Field(default="", description="Actionable proposal to fix the defect")
+    suggested_code: str = Field(default="", description="Coherent code example proposed for human review")
+    improvement_summary: str = Field(default="", description="Spanish-language summary of the proposed improvement")
+    decision_status: Literal["pending", "approved", "rejected", "changes_requested", "failed"] = "pending"
+    branch_name: Optional[str] = None
+    branch_url: Optional[str] = None
+    commit_sha_applied: Optional[str] = None
 
     @field_validator("id", "claim", "commit_sha", "file_path", mode="before")
     @classmethod

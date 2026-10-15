@@ -4,6 +4,7 @@ import math
 import os
 import re
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Type
 from zoneinfo import ZoneInfo
 from agente_gestion.domain.tasks import validate_due_soon_days
@@ -13,13 +14,15 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
+from dotenv import dotenv_values
 
 try:
     import yaml
 except ImportError:
     yaml = None
 
-_yaml_file_ctx: ContextVar[Optional[str]] = ContextVar("_yaml_file_ctx", default=None)
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_yaml_file_ctx: ContextVar[tuple[str, ...]] = ContextVar("_yaml_file_ctx", default=())
 
 FULL_SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 
@@ -64,13 +67,6 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
 
     if "providers" in file_data and isinstance(file_data["providers"], dict):
         prov_sec = file_data["providers"]
-        if "local" in prov_sec and isinstance(prov_sec["local"], dict):
-            local_sec = prov_sec["local"]
-            if "base_url" in local_sec:
-                merged["ollama_base_url"] = local_sec["base_url"]
-            if "model" in local_sec:
-                merged["ollama_monitoring_model"] = local_sec["model"]
-                merged["ollama_report_model"] = local_sec["model"]
         if "quality" in prov_sec and isinstance(prov_sec["quality"], dict):
             q_sec = prov_sec["quality"]
             if "provider" in q_sec:
@@ -78,36 +74,28 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             if "max_output_tokens" in q_sec:
                 merged["quality_max_output_tokens"] = q_sec["max_output_tokens"]
             if "model" in q_sec:
-                eff_prov = str(q_sec.get("provider", "groq")).lower()
-                if eff_prov == "groq":
-                    merged["groq_model"] = q_sec["model"]
-                elif eff_prov == "mistral":
-                    merged["mistral_model"] = q_sec["model"]
-                elif eff_prov == "ollama":
-                    merged["ollama_quality_model"] = q_sec["model"]
+                merged["groq_model"] = q_sec["model"]
         if "report" in prov_sec and isinstance(prov_sec["report"], dict):
             rep_sec = prov_sec["report"]
             if "provider" in rep_sec:
                 merged["report_provider"] = rep_sec["provider"]
             if "model" in rep_sec:
-                eff_prov = str(rep_sec.get("provider", "gemini")).lower()
-                if eff_prov == "gemini":
-                    merged["gemini_report_model"] = rep_sec["model"]
-                elif eff_prov == "ollama":
-                    merged["ollama_report_model"] = rep_sec["model"]
+                merged["gemini_report_model"] = rep_sec["model"]
         if "remote" in prov_sec and isinstance(prov_sec["remote"], dict):
             rem_sec = prov_sec["remote"]
             if "model" in rem_sec:
                 merged["gemini_model"] = rem_sec["model"]
+    if "external_writes_enabled" in file_data:
+        merged["external_writes_enabled"] = file_data["external_writes_enabled"]
 
     if "roles" in file_data and isinstance(file_data["roles"], dict):
         roles_sec = file_data["roles"]
-        if "elaborador" in roles_sec and roles_sec["elaborador"] in ("gemini", "ollama"):
-            merged["monitoring_provider"] = roles_sec["elaborador"]
-        if "revisor" in roles_sec and roles_sec["revisor"] in ("groq", "mistral", "ollama"):
-            merged["quality_provider"] = roles_sec["revisor"]
-        if "aprobador" in roles_sec and roles_sec["aprobador"] in ("gemini", "ollama"):
-            merged["report_provider"] = roles_sec["aprobador"]
+        if roles_sec.get("elaborador") == "gemini":
+            merged["monitoring_provider"] = "gemini"
+        if roles_sec.get("revisor") == "groq":
+            merged["quality_provider"] = "groq"
+        if roles_sec.get("aprobador") == "gemini":
+            merged["report_provider"] = "gemini"
 
     if "sources" in file_data and isinstance(file_data["sources"], dict):
         src_sec = file_data["sources"]
@@ -150,9 +138,11 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
                 merged["github_owner"] = gh["owner"]
             repo_val = gh.get("repo")
             repo_alias = gh.get("repository")
-            if repo_val is not None and repo_alias is not None and repo_val != repo_alias:
-                raise ValueError("Contradictory GitHub repository configuration: repo and repository aliases do not match.")
-            eff_repo = repo_val if repo_val is not None else repo_alias
+            if repo_val not in (None, "") and repo_alias not in (None, "") and repo_val != repo_alias:
+                raise ValueError(
+                    "Contradictory GitHub repository configuration: repo and repository aliases do not match."
+                )
+            eff_repo = repo_alias if repo_alias not in (None, "") else repo_val
             if eff_repo is not None:
                 merged["github_repo"] = eff_repo
                 merged["github_repository"] = eff_repo
@@ -183,6 +173,31 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
     return merged
 
 
+def _normalize_github_aliases(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize GitHub aliases within one source, rejecting ambiguous resources."""
+    normalized = dict(data)
+    repo = normalized.get("github_repo")
+    repository = normalized.get("github_repository")
+    if repo not in (None, "") and repository not in (None, "") and repo != repository:
+        raise ValueError(
+            "Contradictory GitHub repository configuration: repo and repository aliases do not match."
+        )
+    resolved_repo = repository if repository not in (None, "") else repo
+    if resolved_repo is not None:
+        normalized["github_repo"] = resolved_repo
+        normalized["github_repository"] = resolved_repo
+
+    branch = normalized.get("github_branch")
+    ref = normalized.get("github_ref")
+    if branch is not None and ref is not None and branch != ref:
+        raise ValueError("Contradictory GitHub branch configuration: branch and ref aliases do not match.")
+    resolved_branch = branch if branch is not None else ref
+    if resolved_branch is not None:
+        normalized["github_branch"] = resolved_branch
+        normalized["github_ref"] = resolved_branch
+    return normalized
+
+
 class YamlConfigSettingsSource(PydanticBaseSettingsSource):
     """Loads configuration values from a YAML file with lower precedence than dotenv and OS."""
 
@@ -192,10 +207,11 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
         return None, field_name, False
 
     def __call__(self) -> Dict[str, Any]:
-        yaml_path = _yaml_file_ctx.get()
-        if not yaml_path:
-            return {}
-        return _load_yaml_file(yaml_path)
+        merged: Dict[str, Any] = {}
+        for yaml_path in _yaml_file_ctx.get():
+            layer = _normalize_github_aliases(_load_yaml_file(yaml_path))
+            merged.update(layer)
+        return merged
 
 
 class AliasNormalizingSettingsSource(PydanticBaseSettingsSource):
@@ -209,28 +225,7 @@ class AliasNormalizingSettingsSource(PydanticBaseSettingsSource):
         return self.inner.get_field_value(field, field_name)
 
     def __call__(self) -> Dict[str, Any]:
-        data = dict(self.inner())
-        # Reconcile github_repo and github_repository within this source
-        r1 = data.get("github_repo")
-        r2 = data.get("github_repository")
-        if r1 is not None and r2 is not None and r1 != r2:
-            raise ValueError("Contradictory GitHub repository configuration: repo and repository aliases do not match.")
-        resolved_repo = r1 if r1 is not None else r2
-        if resolved_repo is not None:
-            data["github_repo"] = resolved_repo
-            data["github_repository"] = resolved_repo
-
-        # Reconcile github_branch and github_ref within this source
-        b1 = data.get("github_branch")
-        b2 = data.get("github_ref")
-        if b1 is not None and b2 is not None and b1 != b2:
-            raise ValueError("Contradictory GitHub branch configuration: branch and ref aliases do not match.")
-        resolved_branch = b1 if b1 is not None else b2
-        if resolved_branch is not None:
-            data["github_branch"] = resolved_branch
-            data["github_ref"] = resolved_branch
-
-        return data
+        return _normalize_github_aliases(dict(self.inner()))
 
 
 class Settings(BaseSettings):
@@ -240,22 +235,15 @@ class Settings(BaseSettings):
     default_fixture: str = Field(default="fixture_1_standard")
     timezone: str = Field(default="America/Guayaquil")
     allow_remote_ai: bool = Field(
-        default=False,
-        description="Whether remote AI providers (e.g. Gemini) are permitted. Must be explicitly enabled.",
+        default=True,
+        description="Server permission for remote AI and source adapters; each run also requires consent.",
     )
-    ollama_base_url: str = Field(
-        default="http://127.0.0.1:11435",
-        description="Ollama server base URL. Default port 11435 per ARCHITECTURA.v1.",
-    )
-    monitoring_provider: str = Field(default="ollama")
+    monitoring_provider: str = Field(default="gemini")
     gemini_monitoring_model: str = Field(default="gemini-3.5-flash-lite")
     monitoring_max_generation_tokens: Optional[int] = Field(default=None, gt=0, le=8192)
-    ollama_monitoring_model: str = Field(default="qwen3.5:2b-q4_K_M")
-    ollama_quality_model: str = Field(default="qwen3.5:4b-q4_K_M")
-    ollama_report_model: str = Field(default="qwen3.5:2b-q4_K_M")
     report_provider: str = Field(
-        default="ollama",
-        description="LLM provider for ReportAgent ('ollama', 'gemini'). Default: ollama.",
+        default="gemini",
+        description="LLM provider for ReportAgent. The deterministic sandbox is used when credentials are missing.",
     )
     gemini_report_model: str = Field(
         default="gemini-3.5-flash-lite",
@@ -269,8 +257,8 @@ class Settings(BaseSettings):
     )
     gemini_model: str = Field(default="gemini-2.5-flash")
     quality_provider: str = Field(
-        default="ollama",
-        description="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral'). Default: ollama.",
+        default="groq",
+        description="LLM provider for CodeQualityAgent. The deterministic sandbox is used when credentials are missing.",
     )
     groq_api_key: Optional[SecretStr] = Field(
         default=None,
@@ -285,20 +273,6 @@ class Settings(BaseSettings):
     groq_base_url: str = Field(
         default="https://api.groq.com/openai/v1",
         description="Groq API base URL.",
-    )
-    mistral_api_key: Optional[SecretStr] = Field(
-        default=None,
-        repr=False,
-        exclude=True,
-        description="Mistral API key. SecretStr excluded from repr, dumps, and fingerprints.",
-    )
-    mistral_model: str = Field(
-        default="mistral-large-latest",
-        description="Mistral model identifier for code quality review.",
-    )
-    mistral_base_url: str = Field(
-        default="https://api.mistral.ai/v1",
-        description="Mistral API base URL.",
     )
     quality_context_window: Optional[int] = Field(
         default=None,
@@ -414,7 +388,7 @@ class Settings(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -424,12 +398,14 @@ class Settings(BaseSettings):
         self,
         *args: Any,
         _yaml_file: Optional[str] = None,
+        _yaml_files: Optional[tuple[str, ...]] = None,
         yaml_file: Optional[str] = None,
         config_path: Optional[str] = None,
         **values: Any,
     ):
         target_yaml = _yaml_file or yaml_file or config_path
-        token = _yaml_file_ctx.set(target_yaml)
+        target_yamls = _yaml_files if _yaml_files is not None else ((target_yaml,) if target_yaml else ())
+        token = _yaml_file_ctx.set(tuple(target_yamls))
         try:
             super().__init__(*args, **values)
         finally:
@@ -517,9 +493,9 @@ class Settings(BaseSettings):
     @field_validator("monitoring_provider", mode="before")
     @classmethod
     def parse_monitoring_provider(cls, value: Any) -> str:
-        if not isinstance(value, str) or value.strip().lower() not in ("ollama", "gemini"):
-            raise ValueError("monitoring_provider must be 'ollama' or 'gemini'")
-        return value.strip().lower()
+        if not isinstance(value, str) or value.strip().lower() != "gemini":
+            raise ValueError("monitoring_provider must be 'gemini'")
+        return "gemini"
 
     @field_validator("quality_provider", mode="before")
     @classmethod
@@ -527,16 +503,13 @@ class Settings(BaseSettings):
         if not isinstance(v, str):
             raise ValueError("quality_provider must be a string")
         cleaned = v.strip().lower()
-        if cleaned not in ("ollama", "groq", "mistral"):
-            raise ValueError(
-                f"Invalid quality_provider: '{v}'. Must be 'ollama', 'groq', or 'mistral'."
-            )
-        return cleaned
+        if cleaned != "groq":
+            raise ValueError(f"Invalid quality_provider: '{v}'. Must be 'groq'.")
+        return "groq"
 
     @field_validator(
         "gemini_api_key",
         "groq_api_key",
-        "mistral_api_key",
         "trello_api_key",
         "trello_token",
         "github_token",
@@ -553,19 +526,44 @@ class Settings(BaseSettings):
             return SecretStr(cleaned) if cleaned else None
         return None
 
+    @field_validator("github_repo", "github_repository", mode="before")
+    @classmethod
+    def normalize_github_repository_value(cls, value: Any) -> str | None:
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str):
+            raise ValueError("GitHub repository must be a repository name or owner/repository.")
+        cleaned = value.strip()
+        if (not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", cleaned)
+                or cleaned in {".", ".."} or any(part in {".", ".."} for part in cleaned.split("/"))):
+            raise ValueError("GitHub repository must be a repository name or owner/repository.")
+        return cleaned
+
+    @field_validator("github_owner", mode="before")
+    @classmethod
+    def normalize_github_owner_value(cls, value: Any) -> str | None:
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value.strip()):
+            raise ValueError("GitHub owner is not valid.")
+        return value.strip()
+
     @model_validator(mode="after")
     def validate_sources_consistency(self) -> "Settings":
-        # Reconcile github_repo and github_repository aliases
-        repo = self.github_repo
-        repository = self.github_repository
-        if repo and repository and repo != repository:
+        if (self.github_repo and self.github_repository
+                and self.github_repo != self.github_repository):
             raise ValueError(
                 "Contradictory GitHub repository configuration: repo and repository aliases do not match."
             )
-        if repository and not repo:
-            object.__setattr__(self, "github_repo", repository)
-        elif repo and not repository:
-            object.__setattr__(self, "github_repository", repo)
+        selected_repo = self.github_repository or self.github_repo
+        if selected_repo:
+            if "/" in selected_repo:
+                owner, repository_name = selected_repo.split("/", 1)
+                object.__setattr__(self, "github_owner", owner)
+            else:
+                repository_name = selected_repo
+            object.__setattr__(self, "github_repo", repository_name)
+            object.__setattr__(self, "github_repository", repository_name)
 
         # Reconcile github_branch and github_ref aliases
         branch = self.github_branch
@@ -611,7 +609,6 @@ class Settings(BaseSettings):
         for fld in (
             "gemini_api_key",
             "groq_api_key",
-            "mistral_api_key",
             "trello_api_key",
             "trello_token",
             "github_token",
@@ -631,9 +628,16 @@ class Settings(BaseSettings):
         env_file: Optional[str] = None,
         _env_file: Any = ...,
     ) -> "Settings":
-        """Loads configuration with precedence: overrides > OS env > .env > YAML > defaults."""
+        """Load base/project/explicit YAML, then dotenv and process overrides."""
         kwargs: dict[str, Any] = {}
         if overrides:
+            for aliases, label in (
+                (("repo", "repository", "github_repo", "github_repository"), "GitHub repository"),
+                (("branch", "ref", "github_branch", "github_ref"), "GitHub branch"),
+            ):
+                supplied = [overrides[key] for key in aliases if key in overrides and overrides[key] not in (None, "")]
+                if supplied and any(value != supplied[0] for value in supplied[1:]):
+                    raise ValueError(f"Contradictory {label} aliases in explicit configuration.")
             for k, v in overrides.items():
                 if v is None:
                     continue
@@ -651,14 +655,68 @@ class Settings(BaseSettings):
                     kwargs[k] = v
 
         if _env_file is not ...:
+            dotenv_path = _env_file
             kwargs["_env_file"] = _env_file
         elif env_file is not None:
+            dotenv_path = env_file
             kwargs["_env_file"] = env_file
+        else:
+            dotenv_path = PROJECT_ROOT / ".env"
+            kwargs["_env_file"] = str(dotenv_path)
 
-        if config_path:
-            kwargs["_yaml_file"] = config_path
+        dotenv_values_by_name: dict[str, str] = {}
+        if dotenv_path is not None:
+            candidate = Path(dotenv_path)
+            if not candidate.is_absolute() and dotenv_path == ".env":
+                candidate = PROJECT_ROOT / candidate
+            if candidate.is_file():
+                dotenv_values_by_name = {
+                    key: value for key, value in dotenv_values(candidate, interpolate=False).items()
+                    if value is not None
+                }
+
+        selected_config = (
+            config_path or os.environ.get("AGENTE_CONFIG_PATH")
+            or dotenv_values_by_name.get("AGENTE_CONFIG_PATH")
+        )
+        selected_path = Path(selected_config) if selected_config else None
+        if selected_path is not None and not selected_path.is_absolute():
+            selected_path = PROJECT_ROOT / selected_path
+        kwargs["_yaml_files"] = tuple(
+            str(path) for path in _yaml_configuration_paths(PROJECT_ROOT, selected_path)
+        )
 
         return cls(**kwargs)
+
+
+def _yaml_project_id(config_path: Path) -> str | None:
+    """Read the identity declared by a YAML file without treating dotenv as YAML."""
+    if config_path.name.startswith(".env") or config_path.resolve(strict=False).name.startswith(".env"):
+        return None
+    project_id = _load_yaml_file(str(config_path)).get("project_id")
+    return str(project_id) if project_id is not None else None
+
+
+def _yaml_configuration_paths(project_root: Path, selected_config: Path | None) -> tuple[Path, ...]:
+    """Layer base defaults, the default project, then an optional scoped YAML file."""
+    base_config = project_root / "config" / "config.yaml"
+    project_config = project_root / "config" / "hormigestion.yaml"
+    paths = [base_config]
+
+    explicit_is_yaml = selected_config is not None and not (
+        selected_config.name.startswith(".env")
+        or selected_config.resolve(strict=False).name.startswith(".env")
+    )
+    explicit_project_id = _yaml_project_id(selected_config) if explicit_is_yaml else None
+    default_project_id = _yaml_project_id(project_config)
+    if not (explicit_project_id and default_project_id and explicit_project_id != default_project_id):
+        paths.append(project_config)
+
+    if explicit_is_yaml and all(
+        selected_config.resolve(strict=False) != path.resolve(strict=False) for path in paths
+    ):
+        paths.append(selected_config)
+    return tuple(paths)
 
 
 # SystemConfig is an alias for backwards compatibility

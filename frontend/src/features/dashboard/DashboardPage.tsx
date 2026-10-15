@@ -15,6 +15,7 @@ import { formatDate, formatPercentage, taskStateLabel, taskStateTone } from "../
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 import type { DomainTaskState, TaskDetailView, TaskPlanSummary, TaskQuery } from "../../api/types";
+import { DecisionCenter } from "../manager/DecisionCenter";
 import { ExecutiveInsights } from "./ExecutiveInsights";
 
 const numberFormatter = new Intl.NumberFormat("es-EC");
@@ -34,14 +35,18 @@ function MetricCard({ metric }: { metric: MetricDefinition }) {
   return (
     <Link className="metric-card metric-card-link" to={metric.href}>
       <div className="metric-card-top">
-        <span className={`metric-icon metric-icon-${metric.tone}`}><Icon aria-hidden="true" size={18} /></span>
-        <ArrowRight className="metric-arrow" aria-hidden="true" size={16} />
+        <div className="metric-card-leading">
+          <span className={`metric-icon metric-icon-${metric.tone}`}><Icon aria-hidden="true" size={14} /></span>
+          <span className="metric-label">{metric.label}</span>
+        </div>
+        <ArrowRight className="metric-arrow" aria-hidden="true" size={13} />
       </div>
-      <span className="metric-label">{metric.label}</span>
-      <strong className="metric-value">
-        {metric.loading ? "Cargando…" : metric.value === null ? "Sin dato" : typeof metric.value === "number" ? numberFormatter.format(metric.value) : metric.value}
-      </strong>
-      <span className="metric-caption">{metric.caption}</span>
+      <div className="metric-card-main">
+        <strong className="metric-value">
+          {metric.loading ? "Cargando…" : metric.value === null ? "Sin dato" : typeof metric.value === "number" ? numberFormatter.format(metric.value) : metric.value}
+        </strong>
+        <span className="metric-caption">{metric.caption}</span>
+      </div>
     </Link>
   );
 }
@@ -103,7 +108,7 @@ function StateDistributionChart({ summary }: { summary: TaskPlanSummary }) {
   return (
     <>
       <div className="chart-frame" role="img" aria-label="Distribución de tareas por estado">
-        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} initialDimension={{ width: 600, height: 220 }}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={170} initialDimension={{ width: 600, height: 185 }}>
           <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -14 }}>
             <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 5" vertical={false} />
             <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "var(--text-muted)", fontSize: 10 }} />
@@ -150,7 +155,7 @@ function CriticalSignalsChart({ summary, criticalCount }: { summary: TaskPlanSum
   return (
     <>
       <div className="chart-frame" role="img" aria-label="Señales de actividad crítica por categoría">
-        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} initialDimension={{ width: 600, height: 220 }}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={170} initialDimension={{ width: 600, height: 185 }}>
           <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -14 }}>
             <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 5" vertical={false} />
             <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "var(--text-muted)", fontSize: 10 }} />
@@ -252,7 +257,7 @@ function CaptureCharts({ captures }: { captures: Array<{ captured_at: string; su
           <Pill tone="accent">{captures.length} capturas</Pill>
         </div>
         <div className="chart-frame" role="img" aria-label="Gráfico de avance porcentual por captura histórica">
-          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} initialDimension={{ width: 600, height: 220 }}>
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={170} initialDimension={{ width: 600, height: 185 }}>
             <AreaChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: -14 }}>
               <defs>
                 <linearGradient id="progressFill" x1="0" y1="0" x2="0" y2="1">
@@ -281,7 +286,7 @@ function CaptureCharts({ captures }: { captures: Array<{ captured_at: string; su
           <Pill tone="neutral">Conteos del backend</Pill>
         </div>
         <div className="chart-frame" role="img" aria-label="Gráfico del total de tareas por captura histórica">
-          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200} initialDimension={{ width: 600, height: 220 }}>
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={170} initialDimension={{ width: 600, height: 185 }}>
             <BarChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: -14 }}>
               <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 5" vertical={false} />
               <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "var(--text-muted)", fontSize: 11 }} />
@@ -353,6 +358,8 @@ export function DashboardPage() {
           <ListTodo aria-hidden="true" size={16} /> Ver tareas <ArrowRight aria-hidden="true" size={15} />
         </Link>
       </div>
+
+      <DecisionCenter projectId={project.id} />
 
       {summaryQuery.isPending && <LoadingState label="Consultando métricas de la captura…" />}
       {summaryQuery.isError && (

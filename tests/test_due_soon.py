@@ -161,6 +161,11 @@ class DueSoonTests(unittest.TestCase):
                                  recommended_action="evidencia_insuficiente"),
                              recommendation="evidencia_insuficiente", summary="Backend facts")
         markdown = generate_report_markdown(report)
+        self.assertIn("Proveedor y modelo no registrados para esta ejecución.", markdown)
+        report.providers_used = {"elaborador": "gemini-3.5-flash-lite"}
+        recorded = generate_report_markdown(report)
+        self.assertIn("gemini-3.5-flash-lite", recorded)
+        self.assertNotIn("Proveedor y modelo no registrados", recorded)
         section = markdown.split("## Próximos vencimientos\n")[1].split("## Riesgos")[0]
         self.assertIn("**soon**", section)
         self.assertNotIn("**late**", section)

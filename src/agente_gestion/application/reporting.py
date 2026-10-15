@@ -215,7 +215,7 @@ def generate_report_markdown(
         for role, mod in prov_dict.items():
             lines.append(f"- **Rol `{role}`:** `{mod}`")
     else:
-        lines.append("- Modelos locales Ollama (qwen3.5:2b / 4b) y adaptadores de verificación.")
+        lines.append("- Proveedor y modelo no registrados para esta ejecución.")
     if execution_metrics and "duration_seconds" in execution_metrics:
         lines.append(f"- **Duración total:** {execution_metrics['duration_seconds']:.2f} s")
     lines.append("")

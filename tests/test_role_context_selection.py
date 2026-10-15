@@ -2,20 +2,18 @@
 import json
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import Mock
 
 from agente_gestion.agents.context import ContextBuilder, ContextBudgetExceededError, estimate_tokens_from_data
 from agente_gestion.agents.monitoring import ProjectMonitoringAgent
 from agente_gestion.agents.quality import CodeQualityAgent
 from agente_gestion.agents.verifier import VerifierAgent
 from agente_gestion.adapters.llm.fake import FakeProvider
-from agente_gestion.adapters.llm.ollama import OllamaProvider
 from agente_gestion.domain.tasks import TaskCard, TaskState, DeterministicTaskMetrics
 from agente_gestion.domain.code import CodeDiffSnippet, CIRunResult
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.report import MonitoringDraft
 from agente_gestion.domain.policies import QualityRule
-from agente_gestion.domain.llm import GenerationRequest, GenerationResult
+from agente_gestion.domain.llm import GenerationResult
 
 
 class CaptureProvider(FakeProvider):
@@ -135,18 +133,6 @@ class RoleContextSelectionTests(unittest.TestCase):
             ProjectMonitoringAgent(provider).run("p", minimal_metrics, [task])
         self.assertEqual(provider.requests, [])
 
-    def test_ollama_transport_receives_existing_window_and_exact_output(self):
-        transport = Mock(return_value={"body": {"message": {"content": "{}"}, "done": True}})
-        provider = OllamaProvider(context_tokens=3072, max_output_tokens=256, transport=transport)
-        request = GenerationRequest(role="test", instructions="test", model="test", max_generation_tokens=128)
-        self.assertEqual(provider.generate(request).status.value, "complete")
-        body = transport.call_args.kwargs["payload"]
-        self.assertEqual(body["options"], {"num_ctx": 3072, "num_predict": 128})
-        transport.reset_mock()
-        request.max_generation_tokens = 257
-        self.assertEqual(provider.generate(request).status.value, "error")
-        transport.assert_not_called()
-
     def test_monitoring_rejects_mentions_of_omitted_task_evidence(self):
         provider = CaptureProvider(context_tokens=3072)
         ProjectMonitoringAgent(provider).run("p", self.metrics, self.tasks)
@@ -173,17 +159,6 @@ class RoleContextSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             VerifierAgent(provider).run("p", [self.finding], [self.snippet], [self.rule], ["unrelated"])
         self.assertEqual(provider.requests, [])
-
-    def test_monitoring_through_ollama_fake_transport_has_no_window_expansion(self):
-        bodies = []
-        def transport(*args, payload=None, **kwargs):
-            bodies.append(payload)
-            return {"body": {"message": {"content": json.dumps({"summary": "Global progress summary",
-                    "referenced_task_ids": [], "evidence_ids": []})}, "done": True}}
-        provider = OllamaProvider(context_tokens=4096, max_output_tokens=768, transport=transport)
-        ProjectMonitoringAgent(provider).run("p", self.metrics, self.tasks)
-        self.assertEqual(len(bodies), 1)
-        self.assertEqual(bodies[0]["options"], {"num_ctx": 4096, "num_predict": 512})
 
     def test_mismatched_ci_is_not_selected_or_citable(self):
         ci = CIRunResult(id="wrong-ci", workflow_name="tests", commit_sha="other", status="success")

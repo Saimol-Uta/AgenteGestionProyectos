@@ -1,9 +1,15 @@
 """Tests for GitHub read-only commit source adapter (T3)."""
 
 from datetime import datetime, timezone
+import base64
+import hashlib
+import json
+from pathlib import Path
+import tempfile
 import unittest
 from typing import Any
 
+from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
 from agente_gestion.adapters.sources.http_transport import (
     HttpGetTransportPort,
     HttpResponse,
@@ -161,6 +167,59 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         self.assertEqual(cm.exception.category, SourceErrorCategory.configuration)
 
     # 3. Explicit commit SHA retrieval and verification
+    def test_full_file_source_is_captured_at_the_pinned_commit_with_hash_and_boundaries(self):
+        source = "def parse(value):\n    return value\n"
+        contents_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/src/parse.py"
+            f"?ref={self.valid_sha_1}"
+        )
+        transport = FakeTransport({
+            self.commit_url: HttpResponse(status_code=200, body={
+                "sha": self.valid_sha_1,
+                "files": [{
+                    "filename": "src/parse.py", "status": "modified",
+                    "patch": "@@ -1,2 +1,2 @@\n def parse(value):\n-    return value\n+    return value.strip()\n",
+                }],
+            }),
+            contents_url: HttpResponse(status_code=200, body={
+                "encoding": "base64", "content": base64.b64encode(source.encode()).decode(),
+                "sha": "b" * 40, "size": len(source.encode()),
+            }),
+        })
+        adapter = GitHubCodeSourceAdapter(owner=self.owner, repo=self.repo, transport=transport)
+
+        snippets = adapter.get_diffs("project", commit_sha=self.valid_sha_1)
+
+        full_file = next(snippet for snippet in snippets if snippet.evidence_scope == "full_file")
+        self.assertEqual(full_file.content, source)
+        self.assertEqual(full_file.commit_sha, self.valid_sha_1)
+        self.assertEqual(full_file.lines, [1, 2])
+        self.assertEqual(full_file.total_lines, 2)
+        self.assertEqual(full_file.source_sha256, hashlib.sha256(source.encode()).hexdigest())
+        source_calls = [call for call in transport.calls if "/contents/" in call["url"]]
+        self.assertEqual([call["url"] for call in source_calls], [contents_url])
+
+    def test_fixture_source_adapter_preserves_complete_file_boundaries_and_hash(self):
+        source = "def parse(value):\n    return value\n"
+        sha256 = hashlib.sha256(source.encode()).hexdigest()
+        fixture = {
+            "code_diffs": [{
+                "repository": "test-org/test-repo", "commit_sha": self.valid_sha_1,
+                "file_path": "src/parse.py", "lines": [1, 2], "content": source,
+                "evidence_scope": "full_file", "is_complete": True,
+                "start_line": 1, "end_line": 2, "total_lines": 2,
+                "truncated": False, "source_sha256": sha256,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "project.json").write_text(json.dumps(fixture), encoding="utf-8")
+            snippet = FixtureSourcesAdapter(tmp).get_diffs("project", self.valid_sha_1)[0]
+        self.assertEqual(snippet.evidence_scope, "full_file")
+        self.assertTrue(snippet.is_complete)
+        self.assertFalse(snippet.truncated)
+        self.assertEqual(snippet.lines, [1, 2])
+        self.assertEqual(snippet.source_sha256, sha256)
+
     def test_explicit_sha_retrieval_success(self):
         patch = "@@ -1,2 +1,3 @@\n def hello():\n-    pass\n+    x = 1\n+    return x\n"
         transport = FakeTransport({
@@ -201,7 +260,7 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         self.assertEqual(adapter.unavailable_file_paths, [])
 
         # Check call headers
-        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.calls), 2)
         call = transport.calls[0]
         self.assertEqual(call["headers"]["Authorization"], f"Bearer {self.token}")
         self.assertEqual(call["headers"]["Accept"], "application/vnd.github+json")
@@ -273,12 +332,12 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         snippets1 = adapter.get_diffs("proj1")
         self.assertEqual(len(snippets1), 1)
         self.assertEqual(adapter.last_resolved_commit_sha, self.valid_sha_1)
-        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.calls), 2)
 
         # Repeated call reuses cached resolution and does not make another HTTP request
         snippets2 = adapter.get_diffs("proj1")
         self.assertEqual(len(snippets2), 1)
-        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.calls), 2)
 
     def test_sha_omitted_resolves_default_branch_when_branch_omitted(self):
         repo_url = f"https://api.github.com/repos/{self.owner}/{self.repo}"
@@ -360,12 +419,15 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         self.assertEqual(len(snippets), 125)
         self.assertEqual(adapter.last_resolved_commit_sha, self.valid_sha_1)
 
-        # Page 1 was requested on branch, page 2 was requested strictly with pinned SHA
-        self.assertEqual(len(transport.calls), 2)
-        self.assertEqual(transport.calls[0]["url"], branch_url)
-        self.assertEqual(transport.calls[0]["params"], {"per_page": 100, "page": 1})
-        self.assertEqual(transport.calls[1]["url"], page2_pinned_url)
-        self.assertEqual(transport.calls[1]["params"], {"per_page": 100, "page": 2})
+        # Diff pages stay pinned; full-file reads are bounded by the remaining request budget.
+        commit_calls = [call for call in transport.calls if "/commits/" in call["url"]]
+        source_calls = [call for call in transport.calls if "/contents/" in call["url"]]
+        self.assertEqual(len(commit_calls), 2)
+        self.assertEqual(len(source_calls), 30)
+        self.assertEqual(commit_calls[0]["url"], branch_url)
+        self.assertEqual(commit_calls[0]["params"], {"per_page": 100, "page": 1})
+        self.assertEqual(commit_calls[1]["url"], page2_pinned_url)
+        self.assertEqual(commit_calls[1]["params"], {"per_page": 100, "page": 2})
 
     def test_pagination_page2_sha_mismatch_rejected(self):
         transport = FakeTransport()
@@ -849,10 +911,10 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         })
         adapter = GitHubCodeSourceAdapter(owner=self.owner, repo=self.repo, transport=transport)
         adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
-        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.calls), 2)
 
         adapter.refresh("proj1", commit_sha=self.valid_sha_1)
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 4)
 
     def test_no_partial_publication_on_failure(self):
         transport = FakeTransport({
@@ -1073,8 +1135,8 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         self.assertFalse(adapter.last_collection_complete)
         self.assertEqual(adapter.unavailable_file_paths, ["bin_b.bin"])
 
-        # Verify only 2 HTTP requests were made across all queries
-        self.assertEqual(len(transport.calls), 2)
+        # Two pinned commit reads and two source reads; cache hits perform no additional calls.
+        self.assertEqual(len(transport.calls), 4)
 
         # Verify unavailable_file_paths list mutation does not alias internal cache
         unavail = adapter.unavailable_file_paths

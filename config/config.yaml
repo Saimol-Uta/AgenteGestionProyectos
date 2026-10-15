@@ -2,7 +2,9 @@ project:
   id: proyecto-demo
   default_fixture: fixture_1_standard
   timezone: America/Guayaquil
-  allow_remote_ai: false
+  allow_remote_ai: true
+
+external_writes_enabled: true
 
 execution:
   max_concurrent_runs: 1
@@ -12,13 +14,6 @@ execution:
   quality_timeout_seconds: 120
 
 providers:
-  local:
-    adapter: ollama
-    base_url: http://127.0.0.1:11435
-    model: qwen3.5:2b-q4_K_M
-    context_tokens: 4096
-    max_generation_tokens: 768
-    thinking: false
   remote:
     adapter: gemini
     api_key_env: GEMINI_API_KEY
@@ -26,6 +21,6 @@ providers:
     max_generation_tokens: 1024
 
 roles:
-  elaborador: local
-  revisor: local
-  aprobador: local
+  elaborador: gemini
+  revisor: groq
+  aprobador: gemini

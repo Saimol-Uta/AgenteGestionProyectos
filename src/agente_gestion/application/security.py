@@ -113,7 +113,7 @@ class ProjectSecurityPolicy:
     ):
         self.project_id = project_id
         self.allow_remote_ai = allow_remote_ai
-        self.allowed_remote_providers = allowed_remote_providers or ["gemini", "groq", "mistral"]
+        self.allowed_remote_providers = allowed_remote_providers or ["gemini", "groq"]
         self.require_sanitization = require_sanitization
         self.max_payload_bytes = max_payload_bytes
 

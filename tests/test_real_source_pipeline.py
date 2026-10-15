@@ -6,6 +6,8 @@ Verifies target SHA pinning, empty commit handling, incomplete source availabili
 truthful audit persistence, and CLI integration.
 """
 
+import base64
+import hashlib
 import io
 import json
 import os
@@ -40,6 +42,11 @@ from agente_gestion.cli import main, run_command
 
 TARGET_SHA = "1" * 40
 MISMATCH_SHA = "2" * 40
+FULL_SOURCE = "def func():\n    return 1 / total\n    pass\n"
+FULL_SOURCE_BYTES = FULL_SOURCE.encode("utf-8")
+FULL_SOURCE_BLOB_SHA = hashlib.sha1(
+    b"blob " + str(len(FULL_SOURCE_BYTES)).encode("ascii") + b"\0" + FULL_SOURCE_BYTES
+).hexdigest()
 DEFAULT_TZ = ZoneInfo("America/Guayaquil")
 
 
@@ -85,6 +92,21 @@ class MockPipelineTransport(HttpGetTransportPort):
                     "labels": [],
                 }],
             )
+        if "api.github.com/repos/" in url and f"/contents/src/module.py?ref=" in url:
+            if url != (
+                "https://api.github.com/repos/test-owner/test-repo/contents/src/module.py"
+                f"?ref={TARGET_SHA}"
+            ):
+                return HttpResponse(status_code=404, body={})
+            return HttpResponse(
+                status_code=200,
+                body={
+                    "encoding": "base64",
+                    "content": base64.b64encode(FULL_SOURCE_BYTES).decode("ascii"),
+                    "sha": FULL_SOURCE_BLOB_SHA,
+                    "size": len(FULL_SOURCE_BYTES),
+                },
+            )
         if "api.github.com/repos/" in url and f"/commits/{TARGET_SHA}" in url:
             return HttpResponse(
                 status_code=200,
@@ -93,7 +115,8 @@ class MockPipelineTransport(HttpGetTransportPort):
                     "files": [{
                         "filename": "src/module.py",
                         "status": "modified",
-                        "patch": "@@ -1,2 +1,3 @@\n def func():\n+    return 42\n     pass\n",
+                        "sha": FULL_SOURCE_BLOB_SHA,
+                        "patch": "@@ -1,2 +1,3 @@\n def func():\n+    return 1 / total\n     pass\n",
                     }],
                 },
             )

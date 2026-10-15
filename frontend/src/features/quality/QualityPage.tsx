@@ -1,15 +1,19 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowRight, Code2, FileSearch, X } from "lucide-react";
+import { ArrowRight, Code2, FileSearch, GitBranch, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
-import { formatDate, findingVerificationLabel, formatPercentage, stageStatusLabel } from "../../api/formatters";
+import { analysisExecutionModeLabel, formatDate, findingVerificationLabel, formatPercentage, stageStatusLabel } from "../../api/formatters";
 import {
-  useFinding, usePolicies, useProject, useProjects, useQuality, useRunFindings, useRuns,
+  useDecideCodeFindingMutation, useFinding, usePolicies, useProject, useProjects, useQuality, useRunFindings, useRuns,
 } from "../../api/queries";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
-import type { FindingSummary } from "../../api/types";
+import type { CodeFindingDecision, DecideCodeFindingResponse, FindingDetail, FindingSummary } from "../../api/types";
 import { PolicyResults } from "./PolicyResults";
+import { useSession } from "../auth/SessionProvider";
+import { useToast } from "../../components/ToastProvider";
+import { codeSuggestionFor, defaultQualityBranch, qualityDisplayFingerprint, safeGitHubBranchUrl, validQualityBranch } from "./codeSuggestionHelper";
+import "./quality-phase1.css";
 
 function verificationTone(status: string): "neutral" | "positive" | "warning" | "danger" | "unknown" | "accent" {
   if (status === "confirmed") return "positive";
@@ -32,13 +36,131 @@ function findingMeta(finding: FindingSummary) {
   ];
 }
 
+function QualityRecommendation({ detail, projectId }: { detail: FindingDetail; projectId: string }) {
+  const suggestion = useMemo(() => codeSuggestionFor(detail), [detail]);
+  const [suggestedCode, setSuggestedCode] = useState(suggestion?.code ?? "");
+  const [branchName, setBranchName] = useState(() => validQualityBranch(detail.branch_name ?? "")
+    ? detail.branch_name! : defaultQualityBranch(detail.rule_id, detail.finding_id));
+  const [backendDecision, setBackendDecision] = useState<DecideCodeFindingResponse | null>(null);
+  const { session } = useSession();
+  const { notify } = useToast();
+  const mutation = useDecideCodeFindingMutation();
+  const [editing, setEditing] = useState(false);
+  const [reasonAction, setReasonAction] = useState<Exclude<CodeFindingDecision, "approve"> | null>(null);
+  const [reason, setReason] = useState("");
+  const [codeEdited, setCodeEdited] = useState(false);
+  const requestKeys = useRef(new Map<string, string>());
+  const submitting = useRef(false);
+  const canDecide = Boolean(session?.authenticated && session.csrf_token
+    && session.capabilities.includes("quality:decide"));
+  const status = backendDecision?.decision_status ?? detail.decision_status ?? "pending";
+  const pending = status === "pending";
+  const branchValid = validQualityBranch(branchName);
+  const hasBackendSuggestion = Boolean(suggestion?.code.trim() && suggestion.explanation.trim());
+  const backendRecorded = status !== "pending";
+  const resultMode = backendDecision?.execution_mode ?? detail.execution_mode ?? null;
+  const resultBranch = backendDecision?.branch_name ?? detail.branch_name ?? null;
+  const resultCommit = backendDecision?.commit_sha_applied ?? detail.commit_sha_applied ?? null;
+  const resultBranchUrl = backendDecision?.branch_url ?? detail.branch_url ?? null;
+  const liveBranchUrl = resultMode === "live" ? safeGitHubBranchUrl(resultBranchUrl) : null;
+  const displayedCode = backendDecision?.suggested_code ?? suggestedCode;
+  const displayedExplanation = backendDecision?.improvement_summary ?? suggestion?.explanation ?? "";
+  const language = suggestion?.language ?? (/\.pyw?$/i.test(detail.file_path ?? "") ? "Python" : "TypeScript");
+  const busy = mutation.isPending;
+
+  async function submitBackend(action: CodeFindingDecision, reasonText = "") {
+    if (!canDecide || !session?.csrf_token || !pending || busy || submitting.current) return;
+    const payload = action === "approve"
+      ? { decision: action, ...(codeEdited ? { suggested_code_override: suggestedCode } : {}), target_branch: branchName }
+      : { decision: action, reason: reasonText.trim() };
+    const identityKey = JSON.stringify([projectId, detail.run_id, detail.finding_id, payload]);
+    const idempotencyKey = requestKeys.current.get(identityKey) ?? crypto.randomUUID();
+    requestKeys.current.set(identityKey, idempotencyKey);
+    submitting.current = true;
+    try {
+      const response = await mutation.mutateAsync({
+        runId: detail.run_id,
+        findingId: detail.finding_id,
+        payload,
+        csrfToken: session.csrf_token,
+        idempotencyKey,
+      });
+      requestKeys.current.delete(identityKey);
+      setBackendDecision(response);
+      setSuggestedCode(response.suggested_code);
+      setEditing(false);
+      setReasonAction(null);
+      notify(`Decisión del backend: ${response.decision_status} · modo ${response.execution_mode}.`, "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "No se pudo registrar la decisión del hallazgo.", "error");
+    } finally {
+      submitting.current = false;
+    }
+  }
+
+  function decisionLabel(value: string) {
+    return ({ pending: "Pendiente", approved: "Aprobada", rejected: "Rechazada", changes_requested: "Cambios solicitados" } as Record<string, string>)[value] ?? value;
+  }
+
+  return (
+    <section className="quality-recommendation" aria-label="Recomendación técnica de calidad de código">
+      <h3>Recomendación técnica de calidad de código</h3>
+      <ol className="quality-agent-trace" aria-label="Trazabilidad de la recomendación">
+        <li><strong>1. Agente Ejecutor</strong><span>Detección y diagnóstico candidato</span></li>
+        <li><strong>2. Agente Revisor / VerifierAgent</strong><span>{findingVerificationLabel(detail.verification_status)}</span></li>
+        <li><strong>3. Agente Aprobador</strong><span>Decisión humana · {canDecide ? "backend" : "solo consulta"}</span></li>
+      </ol>
+      <div className="quality-example-note" role="note">
+        <Pill tone="warning">{hasBackendSuggestion ? "Código sugerido por el backend · pendiente de pruebas" : "Sugerencia de código no disponible"}</Pill>
+        <p>{displayedExplanation || "El backend no informó un ejemplo de código ni una explicación."}</p>
+        <p>La decisión no confirma por sí sola el defecto ni modifica el resultado del Agente Revisor. No se ejecuta código en el navegador.</p>
+      </div>
+      <div className="quality-code-comparison">
+        <section className="quality-code-panel quality-code-before" aria-label="Código actual observado">
+          <h4>Código Actual</h4>
+          {detail.code_excerpt ? <pre className="code-excerpt"><code>{detail.code_excerpt.content}</code></pre> : <p>Sin fragmento persistido: no se inventa código actual.</p>}
+        </section>
+        <section className="quality-code-panel quality-code-after" aria-label="Código sugerido por el backend">
+          <h4>Código sugerido</h4><span className="caption">{language} · respuesta del backend</span>
+          {editing ? <label className="quality-code-editor"><span>Código alternativo para el backend</span><textarea aria-label="Código sugerido editable" maxLength={100_000} rows={13} spellCheck={false} value={suggestedCode} onChange={(event) => { setCodeEdited(true); setSuggestedCode(event.target.value); }} /></label>
+            : displayedCode ? <div className="code-excerpt quality-example-code"><code>{displayedCode}</code></div> : <p>El backend no entregó código sugerido.</p>}
+          {canDecide && pending && hasBackendSuggestion && <button type="button" className="button button-secondary button-small" disabled={busy} onClick={() => setEditing((value) => !value)}>{editing ? "Ver sugerencia del backend" : "Editar código para enviar"}</button>}
+        </section>
+      </div>
+      <div className="quality-human-decision">
+        <h4><GitBranch aria-hidden="true" size={15} /> Decisión del gestor</h4>
+        <p>Las decisiones se envían al servidor. La validación del archivo completo y cualquier creación de rama son responsabilidad del backend.</p>
+        {!session?.authenticated && <p className="capability-note">Modo de consulta: inicia sesión para enviar una decisión protegida.</p>}
+        {session?.authenticated && !canDecide && <p className="capability-note">El servidor no concedió quality:decide; las acciones de decisión están ocultas.</p>}
+        {canDecide && pending && <>
+          {!hasBackendSuggestion && <p className="capability-note">No se puede aprobar: el backend no entregó código y explicación completos.</p>}
+          {hasBackendSuggestion && <label className="filter-control"><span>Rama de destino solicitada</span><input aria-label="Rama separada de verificación" value={branchName} maxLength={128} disabled={busy} aria-invalid={!branchValid} onChange={(event) => setBranchName(event.target.value)} /></label>}
+          {!branchValid && hasBackendSuggestion && <p className="form-error" role="alert">Usa un nombre de rama válido, sin espacios, puntos consecutivos ni componentes vacíos.</p>}
+          <div className="quality-decision-actions">
+            <button type="button" className="button button-primary" disabled={!hasBackendSuggestion || !branchValid || busy} onClick={() => void submitBackend("approve")}><GitBranch aria-hidden="true" size={15} />{busy ? "Enviando decisión…" : "Aprobar y crear rama"}</button>
+            <button type="button" className="button button-secondary" disabled={busy} onClick={() => setReasonAction("reject")}>Rechazar sugerencia</button>
+            <button type="button" className="button button-secondary" disabled={busy} onClick={() => setReasonAction("request_changes")}>Solicitar cambios</button>
+          </div>
+          {reasonAction && <div className="quality-reject-form"><label className="filter-control"><span>{reasonAction === "reject" ? "Motivo del rechazo" : "Cambios solicitados"}</span><textarea aria-label={reasonAction === "reject" ? "Motivo del rechazo" : "Cambios solicitados"} maxLength={2000} rows={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label><p className="field-help">El motivo es obligatorio y se enviará al backend.</p><button type="button" className="button button-secondary" disabled={!reason.trim() || busy} onClick={() => void submitBackend(reasonAction, reason)}>{reasonAction === "reject" ? "Confirmar rechazo" : "Enviar solicitud de cambios"}</button></div>}
+        </>}
+        {mutation.isError && <p className="form-error" role="alert">{mutation.error.message}</p>}
+        <div className="quality-decision-result" aria-live="polite" role="status">
+          {backendRecorded && <><Pill tone={status === "approved" ? "positive" : status === "rejected" ? "danger" : status === "changes_requested" ? "warning" : "neutral"}>{decisionLabel(status)} · {analysisExecutionModeLabel(resultMode ?? undefined) ?? "Modo no informado"}</Pill>{resultBranch && <strong>{resultBranch}</strong>}{resultCommit && <span>Commit informado: {resultCommit}</span>}{status === "approved" && <p>La aprobación no confirma por sí sola que exista un cambio en el repositorio.</p>}{liveBranchUrl && <a className="text-link" href={liveBranchUrl} target="_blank" rel="noopener noreferrer">Ver rama informada por GitHub</a>}{resultMode === "live" && resultBranchUrl && !liveBranchUrl && <p>Referencia de la rama: <code>{resultBranchUrl}</code></p>}</>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FindingDetailDialog({
   runId,
   findingId,
+  projectId,
   onClose,
 }: {
   runId: string | null;
   findingId: string | null;
+  projectId: string | null;
   onClose: () => void;
 }) {
   const detailQuery = useFinding(runId, findingId);
@@ -72,6 +194,7 @@ function FindingDetailDialog({
                 </div>
                 <dl className="finding-facts">
                   <div><dt>Regla</dt><dd>{detail.rule_id ?? "Sin dato"}</dd></div>
+                  <div><dt>Categoría</dt><dd>{detail.category ?? "Sin dato"}</dd></div>
                   <div><dt>Archivo</dt><dd>{detail.file_path ?? "Sin dato"}</dd></div>
                   <div><dt>Línea reportada</dt><dd>{detail.line ?? "Sin dato"}</dd></div>
                   <div><dt>Commit analizado</dt><dd>{detail.commit_sha ?? "Sin dato"}</dd></div>
@@ -123,9 +246,9 @@ function FindingDetailDialog({
                       </div>
                       {excerptIsPartial && <p>El fragmento mostrado es parcial.</p>}
                       <p className="excerpt-lines">Líneas persistidas: {excerpt.lines.length ? excerpt.lines.join(", ") : "Sin dato"} · Alcance: <code>{excerpt.evidence_scope}</code></p>
-                      <pre className="code-excerpt"><code>{excerpt.content}</code></pre>
                     </>
                   )}
+                  {projectId && <QualityRecommendation key={`${projectId}:${detail.run_id}:${detail.finding_id}:${qualityDisplayFingerprint(JSON.stringify([detail.commit_sha, detail.code_excerpt, detail.suggested_code]))}`} detail={detail} projectId={projectId} />}
                 </section>
               </>
             )}
@@ -284,8 +407,8 @@ export function QualityPage() {
         ) : <EmptyState title="Sin hallazgos para esta ejecución" message="La API no devolvió candidatos persistidos para la ejecución seleccionada." />)}
       </section>
 
-      <div className="quality-security-note"><Pill tone="neutral">Revisión humana pendiente</Pill><span>La pantalla presenta hallazgos candidatos y evidencia acotada. No aplica cambios al repositorio ni ejecuta acciones externas.</span></div>
-      <FindingDetailDialog runId={findingDetails.runId} findingId={findingDetails.findingId} onClose={closeFinding} />
+      <div className="quality-security-note"><Pill tone="neutral">Decisión del gestor</Pill><span>La pantalla presenta hallazgos candidatos y evidencia acotada. Las decisiones se aplican en la nube o localmente; un resultado local no crea cambios en el repositorio.</span></div>
+      <FindingDetailDialog runId={findingDetails.runId} findingId={findingDetails.findingId} projectId={project.id} onClose={closeFinding} />
     </section>
   );
 }

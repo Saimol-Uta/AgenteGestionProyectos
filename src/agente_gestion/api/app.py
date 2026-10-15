@@ -17,6 +17,9 @@ from agente_gestion.api.control_plane import ControlPlaneRepository
 from agente_gestion.api.errors import ApiProblem
 from agente_gestion.api.repository import DataIntegrityError, SQLiteQueryRepository
 from agente_gestion.api.routes import router
+from agente_gestion.api.email_notifications import router as email_notifications_router
+from agente_gestion.api.finding_actions import router as finding_actions_router
+from agente_gestion.api.proposal_execution import router as proposal_execution_router
 from agente_gestion.api.schemas import ErrorEnvelope
 from agente_gestion.api.security import OperatorSessionStore
 from agente_gestion.api.settings import ApiSettings, ProjectConfig, load_api_settings
@@ -105,6 +108,20 @@ def create_app(
 
     @app.exception_handler(ApiProblem)
     async def handle_api_problem(_request: Request, exc: ApiProblem) -> JSONResponse:
+        if exc.status_code == 401 and exc.code == "credenciales_invalidas":
+            # Preserve the existing client error extension inside RFC 7807 Problem Details.
+            body = ErrorEnvelope(error={"code": exc.code, "message": exc.message})
+            return JSONResponse(
+                status_code=exc.status_code,
+                media_type="application/problem+json",
+                content={
+                    "type": "about:blank",
+                    "title": "Unauthorized",
+                    "status": exc.status_code,
+                    "detail": exc.message,
+                    **body.model_dump(mode="json"),
+                },
+            )
         return _error(exc.status_code, exc.code, exc.message)
 
     @app.exception_handler(RequestValidationError)
@@ -132,6 +149,9 @@ def create_app(
         return _error(500, "error_interno", "Ocurrió un error interno al procesar la solicitud.")
 
     app.include_router(router)
+    app.include_router(finding_actions_router)
+    app.include_router(proposal_execution_router)
+    app.include_router(email_notifications_router)
     return app
 
 

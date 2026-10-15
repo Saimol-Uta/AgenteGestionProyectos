@@ -10,6 +10,7 @@ export function ConfirmActionDialog({
   onConfirm,
   working = false,
   danger = false,
+  error,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -19,6 +20,7 @@ export function ConfirmActionDialog({
   onConfirm: () => void;
   working?: boolean;
   danger?: boolean;
+  error?: string;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -37,6 +39,7 @@ export function ConfirmActionDialog({
               </button>
             </Dialog.Close>
           </div>
+          {error && <p role="alert" className="inline-warning">{error}</p>}
           <div className="dialog-actions">
             <Dialog.Close asChild>
               <button type="button" className="button button-secondary" disabled={working}>Cancelar</button>

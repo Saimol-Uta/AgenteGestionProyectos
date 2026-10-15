@@ -6,7 +6,11 @@ import type {
   AuditEventDetail,
   CaptureSummary,
   ConfirmAnalysisResponse,
+  DecideCodeFindingRequest,
+  DecideCodeFindingResponse,
   DownloadedFile,
+  ExecuteProposalRequest,
+  ExecuteProposalResponse,
   ExecutiveSummary,
   EvidenceSummary,
   FindingDetail,
@@ -14,6 +18,8 @@ import type {
   OperatorSession,
   OutboxCollection,
   OutboxDetail,
+  SendManagerEmailRequest,
+  SendManagerEmailResponse,
   PoliciesSummary,
   QualitySummary,
   RunDetail,
@@ -24,9 +30,6 @@ import type {
   ProjectConfiguration,
   ProposalCollection,
   ProposalDetail,
-  ProposalMutationResponse,
-  ProposalDryRunResponse,
-  ProposalReviewFilter,
   ReportCollection,
   ReportHumanDecision,
   ReportDecisionResponse,
@@ -158,12 +161,11 @@ async function download(path: string, fallbackFilename: string): Promise<Downloa
 export const api = {
   getHealth: () => request<SystemHealth>("/system/health"),
   getSession: () => request<OperatorSession>("/auth/session"),
-  login: async (token: string): Promise<void> => {
-    await request<{ token: string }>("/auth/login", {
+  login: (email: string, password: string): Promise<OperatorSession> =>
+    request<OperatorSession>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ token }),
-    });
-  },
+      body: JSON.stringify({ email, password }),
+    }),
   logout: (csrfToken: string) =>
     request<void>("/auth/logout", { method: "POST", csrfToken }),
   getProjects: (page = 1, pageSize = 100) =>
@@ -213,6 +215,10 @@ export const api = {
     request<Paginated<FindingSummary>>(`/runs/${encodeURIComponent(runId)}/findings${query({ page, page_size: pageSize })}`),
   getFinding: (runId: string, findingId: string) =>
     request<FindingDetail>(`/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(findingId)}`),
+  decideCodeFinding: (runId: string, findingId: string, payload: DecideCodeFindingRequest, csrfToken: string, idempotencyKey: string) =>
+    request<DecideCodeFindingResponse>(`/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(findingId)}/decision`, {
+      method: "POST", csrfToken, headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload),
+    }),
   getRunEvidence: (runId: string, page = 1, pageSize = 25) =>
     request<Paginated<EvidenceSummary>>(`/runs/${encodeURIComponent(runId)}/evidence${query({ page, page_size: pageSize })}`),
   prepareAnalysis: (projectId: string, csrfToken: string) =>
@@ -240,20 +246,12 @@ export const api = {
   getAnalysisJobs: (projectId: string, page = 1, pageSize = 25) =>
     request<Paginated<AnalysisJob>>(`/analysis/jobs${query({ project_id: projectId, page, page_size: pageSize })}`),
   getAnalysisJob: (jobId: string) => request<AnalysisJob>(`/analysis/jobs/${encodeURIComponent(jobId)}`),
-  getProposals: (projectId: string, page = 1, pageSize = 25, reviewStatus?: ProposalReviewFilter) =>
-    request<ProposalCollection>(`/projects/${encodeURIComponent(projectId)}/proposals${query({ page, page_size: pageSize, review_status: reviewStatus })}`),
+  getProposals: (projectId: string, page = 1, pageSize = 25) =>
+    request<ProposalCollection>(`/projects/${encodeURIComponent(projectId)}/proposals${query({ page, page_size: pageSize })}`),
   getProposal: (projectId: string, proposalId: string) =>
     request<ProposalDetail>(`/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}`),
-  reviewProposal: (projectId: string, proposalId: string, payload: { decision: "approve" | "reject"; expected_version: number; proposal_body_sha256: string; capture_id: string }, csrfToken: string, idempotencyKey: string) =>
-    request<ProposalMutationResponse>(`/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}/review`, {
-      method: "POST", csrfToken, headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload),
-    }),
-  authorizeProposalDryRun: (projectId: string, proposalId: string, payload: { authorize: true; expected_version: number; proposal_body_sha256: string; capture_id: string }, csrfToken: string, idempotencyKey: string) =>
-    request<ProposalMutationResponse>(`/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}/dry-run-authorization`, {
-      method: "POST", csrfToken, headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload),
-    }),
-  runProposalDryRun: (projectId: string, proposalId: string, payload: { expected_version: number; proposal_body_sha256: string; capture_id: string; permission_event_id: string }, csrfToken: string, idempotencyKey: string) =>
-    request<ProposalDryRunResponse>(`/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}/dry-runs`, {
+  executeProposal: (projectId: string, proposalId: string, payload: ExecuteProposalRequest, csrfToken: string, idempotencyKey: string) =>
+    request<ExecuteProposalResponse>(`/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}/execute`, {
       method: "POST", csrfToken, headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload),
     }),
   getReports: (projectId: string, page = 1, pageSize = 25, decision?: ReportHumanDecision) =>
@@ -276,6 +274,40 @@ export const api = {
     request<OutboxCollection>(`/projects/${encodeURIComponent(projectId)}/schedule/outbox${query({ page, page_size: pageSize })}`),
   getOutboxDetail: (projectId: string, deliveryId: string) =>
     request<OutboxDetail>(`/projects/${encodeURIComponent(projectId)}/schedule/outbox/${encodeURIComponent(deliveryId)}`),
+  sendManagerEmail: (projectId: string, payload: SendManagerEmailRequest, csrfToken: string, idempotencyKey: string) =>
+    request<SendManagerEmailResponse>(`/projects/${encodeURIComponent(projectId)}/notifications/email`, {
+      method: "POST", csrfToken, headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload),
+    }),
+  getManagerEmailPreview: async (projectId: string, previewUrl: string): Promise<string> => {
+    let url: URL;
+    try {
+      url = new URL(previewUrl, window.location.origin);
+    } catch {
+      throw new ApiError("La URL de vista previa del correo no es válida.", 0);
+    }
+    const projectPath = `${API_BASE}/projects/${encodeURIComponent(projectId)}/notifications/email/`;
+    if (url.origin !== window.location.origin || url.username || url.password || !url.pathname.startsWith(projectPath)) {
+      throw new ApiError("La vista previa debe pertenecer al endpoint protegido del mismo proyecto.", 0);
+    }
+    let response: Response;
+    try {
+      response = await fetch(url.href, { headers: { Accept: "text/html" }, credentials: "same-origin" });
+    } catch {
+      throw new ApiError("No fue posible cargar la vista previa protegida del correo.", 0);
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      let body: unknown = null;
+      try { body = JSON.parse(text); } catch { /* keep the status-based error */ }
+      const problem = readProblem(body);
+      throw new ApiError(problem?.message ?? `La vista previa no pudo cargarse (HTTP ${response.status}).`, response.status, problem?.code ?? null);
+    }
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (!contentType.toLowerCase().includes("text/html")) {
+      throw new ApiError("El endpoint de vista previa no devolvió contenido HTML.", response.status);
+    }
+    return response.text();
+  },
   downloadOutbox: (projectId: string, deliveryId: string, format: "markdown" | "json") =>
     download(`/projects/${encodeURIComponent(projectId)}/schedule/outbox/${encodeURIComponent(deliveryId)}/download${query({ format })}`, `outbox-${deliveryId}.${format === "markdown" ? "md" : "json"}`),
   prepareWeeklyCycle: (projectId: string, csrfToken: string) =>

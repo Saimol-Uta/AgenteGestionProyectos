@@ -1,9 +1,11 @@
 """VerifierAgent: selectively verifies candidate findings using independent inspection."""
 
+import hashlib
+import re
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 
-from agente_gestion.domain.code import CodeDiffSnippet
+from agente_gestion.domain.code import CodeDiffSnippet, validate_source_syntax
 from agente_gestion.domain.findings import (
     CandidateFinding,
     FindingVerification,
@@ -34,6 +36,44 @@ class VerifierOutputSchema(BaseModel):
         default_factory=list,
         description="List of independent finding verifications"
     )
+
+
+def _suggestion_verification_issue(
+    finding: CandidateFinding, snippets: list[CodeDiffSnippet],
+) -> str | None:
+    """Require one hashed, complete, pinned file before verifying a code suggestion."""
+    replacement = finding.suggested_code
+    if not replacement.strip():
+        return None
+    full_files = [snippet for snippet in snippets
+                  if snippet.commit_sha == finding.commit_sha
+                  and snippet.file_path == finding.file_path
+                  and snippet.evidence_scope == "full_file"]
+    if len(full_files) != 1:
+        return "Se requiere un único archivo completo para validar el código sugerido."
+    full_file = full_files[0]
+    source = full_file.content
+    expected_hash = full_file.source_sha256
+    if (not full_file.is_complete or full_file.truncated
+            or not full_file.repository.strip()
+            or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", full_file.commit_sha) is None
+            or expected_hash is None
+            or hashlib.sha256(source.encode("utf-8")).hexdigest() != expected_hash
+            or full_file.total_lines != len(source.splitlines())
+            or full_file.lines != list(range(1, full_file.total_lines + 1))):
+        return "El archivo completo no conserva límites o hash verificables."
+    excerpt = finding.evidence
+    if not excerpt:
+        return "El hallazgo no contiene un fragmento original explícito para el parche."
+    if source.count(excerpt) != 1:
+        return "El fragmento original no coincide de forma única con el archivo completo."
+    updated = source.replace(excerpt, replacement, 1)
+    syntax_status = validate_source_syntax(finding.file_path, updated)
+    if syntax_status == "unsupported":
+        return "Validación sintáctica no soportada para el lenguaje de este archivo."
+    if syntax_status == "invalid":
+        return "El código sugerido rompe la sintaxis del archivo completo."
+    return None
 
 
 class VerifierAgent:
@@ -70,6 +110,21 @@ class VerifierAgent:
         if not findings:
             return []
 
+        source_issues = {
+            finding.id: issue for finding in findings
+            if (issue := _suggestion_verification_issue(finding, snippets)) is not None
+        }
+        verifiable_findings = [finding for finding in findings if finding.id not in source_issues]
+        if not verifiable_findings:
+            return [
+                FindingVerification(
+                    finding_id=finding.id, verdict=VerificationVerdict.insufficient,
+                    reason=source_issues[finding.id], verified_by="verifier_agent",
+                    evidence_ids=[],
+                )
+                for finding in findings
+            ]
+
         valid_ev_ids = set(evidence_ids) if evidence_ids else set()
 
         instructions = (
@@ -90,10 +145,11 @@ class VerifierAgent:
             "- Solo full_file con is_complete=true y truncated=false permite conclusiones de ausencia dentro del archivo completo.\n"
             "- Si faltan lineas necesarias, declara evidencia insuficiente y solicita contexto adicional; no reportes ausencia como defecto.\n"
             "- El verificador debe usar insufficient cuando confirmar dependa de contenido no visible.\n"
+            "- Si hay un archivo completo, aplica mentalmente suggested_code al fragmento original único y valida la sintaxis del archivo resultante antes de confirmar.\n"
         )
 
         context = self.context_builder.build_verifier_context(
-            project_id, findings, snippets, rules or [], sorted(valid_ev_ids), strict_budget=True,
+            project_id, verifiable_findings, snippets, rules or [], sorted(valid_ev_ids), strict_budget=True,
         )
         capabilities = self.provider.get_capabilities()
         output_tokens = min(1024, capabilities.max_output_tokens)
@@ -125,6 +181,14 @@ class VerifierAgent:
             parsed_verifs: list[FindingVerification] = []
             for item in raw_verifs:
                 raw_verdict = item.get("verdict", "insufficient").lower()
+                reason = item.get("reason", "")
+                finding = next((candidate for candidate in verifiable_findings
+                                if candidate.id == item.get("finding_id")), None)
+                if finding is not None:
+                    issue = _suggestion_verification_issue(finding, snippets)
+                    if issue:
+                        raw_verdict = VerificationVerdict.insufficient.value
+                        reason = issue
                 try:
                     verdict_enum = VerificationVerdict(raw_verdict)
                 except ValueError:
@@ -134,7 +198,7 @@ class VerifierAgent:
                     FindingVerification(
                         finding_id=item.get("finding_id", ""),
                         verdict=verdict_enum,
-                        reason=item.get("reason", ""),
+                        reason=reason,
                         verified_by="verifier_agent",
                         evidence_ids=item.get("evidence_ids", []),
                     )
@@ -142,7 +206,7 @@ class VerifierAgent:
 
             return SemanticValidator.validate_finding_verifications(
                 verifications=parsed_verifs,
-                candidate_findings=findings,
+                candidate_findings=verifiable_findings,
                 available_evidence_ids=valid_ev_ids,
                 available_snippets=snippets,
                 rules=rules,
@@ -159,6 +223,14 @@ class VerifierAgent:
         result_verifs: list[FindingVerification] = []
         for item in raw_verifs:
             raw_v = item.get("verdict", "insufficient").lower()
+            reason = item.get("reason", "")
+            finding = next((candidate for candidate in verifiable_findings
+                            if candidate.id == item.get("finding_id")), None)
+            if finding is not None:
+                issue = _suggestion_verification_issue(finding, snippets)
+                if issue:
+                    raw_v = VerificationVerdict.insufficient.value
+                    reason = issue
             try:
                 verdict_enum = VerificationVerdict(raw_v)
             except ValueError:
@@ -168,10 +240,20 @@ class VerifierAgent:
                 FindingVerification(
                     finding_id=item["finding_id"],
                     verdict=verdict_enum,
-                    reason=item.get("reason", ""),
+                    reason=reason,
                     verified_by="verifier_agent",
                     evidence_ids=item.get("evidence_ids", []),
                 )
             )
 
-        return result_verifs
+        verified_by_id = {item.finding_id: item for item in result_verifs}
+        results: list[FindingVerification] = []
+        for finding in findings:
+            if finding.id in source_issues:
+                results.append(FindingVerification(
+                    finding_id=finding.id, verdict=VerificationVerdict.insufficient,
+                    reason=source_issues[finding.id], verified_by="verifier_agent", evidence_ids=[],
+                ))
+            elif finding.id in verified_by_id:
+                results.append(verified_by_id[finding.id])
+        return results

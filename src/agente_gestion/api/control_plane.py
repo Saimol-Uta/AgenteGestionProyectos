@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import stat
 import re
+import secrets
 import sqlite3
 from typing import Any, Iterator, Literal
 from urllib.parse import urlsplit
@@ -28,11 +29,11 @@ from agente_gestion.api.control_schemas import (
     OutboxReceiptSummary,
     PoliciesConfiguration,
     ProposalCollection,
-    ProposalDecisionEvent,
     ProposalDetail,
-    ProposalDryRun,
     ProposalEvidence,
     ProposalSummary,
+    ProposalTechnicalReviewView,
+    ProposalTechnicalDryRun,
     ProjectConfiguration,
     RepositoryConfiguration,
     ReportCollection,
@@ -57,8 +58,6 @@ from agente_gestion.api.settings import ApiSettings
 from agente_gestion.domain.action_proposal import ActionProposal
 from agente_gestion.domain.proposal_review import assess_proposal
 from agente_gestion.domain.notification_outbox import OutboxMessage, OutboxReceipt
-from agente_gestion.domain.proposal_dry_run import DryRunRequest
-from agente_gestion.domain.proposal_review import DecisionEvent, OfflineActorClaim
 from agente_gestion.domain.report import FinalReport, HumanDecisionState
 from agente_gestion.domain.run import ExecutionRun, RunStatus
 from agente_gestion.domain.security_rbac import SecurityAuditEntry, hash_token_fingerprint
@@ -67,11 +66,11 @@ from agente_gestion.domain.weekly_schedule import WeeklySchedule
 
 _DECISION_VALUES = {item.value for item in HumanDecisionState}
 _WEB_PERMISSIONS = {
-    "proposal_review": "web:proposal_review",
-    "dry_run_authorization": "web:dry_run_authorization",
-    "dry_run": "web:dry_run",
     "report_decision": "web:report_decision",
     "weekly_cycle": "web:weekly_cycle",
+    "manager_email": "web:manager_email",
+    "finding_decision": "web:finding_decision",
+    "proposal_execution": "web:proposal_execute",
 }
 _HTML_BLOCKS = re.compile(r"(?is)<\s*(script|style|iframe|object|svg|math|form)\b[^>]*>.*?<\s*/\s*\1\s*>")
 _HTML_TAG = re.compile(r"(?is)<[^>]{0,4096}>")
@@ -136,13 +135,15 @@ def _safe_component(value: object) -> str | None:
 
 
 class ControlPlaneRepository:
-    """Read-only access to existing persisted contracts; never initializes a database."""
+    """Read projections and write only explicit governance or security-audit records."""
 
     def __init__(self, settings: ApiSettings):
         self.settings = settings
         self.queries = SQLiteQueryRepository(settings)
         self._secrets: tuple[str, ...] = tuple(
             ([settings.operator_token.get_secret_value()] if settings.operator_token else [])
+            + ([settings.manager_login_password.get_secret_value()]
+               if settings.manager_login_password else [])
             + list(self.queries._configured_secrets())
         )
 
@@ -161,8 +162,22 @@ class ControlPlaneRepository:
         return SQLiteStorageAdapter(str(self.queries.db_path), read_only=True)
 
     def _write_storage(self) -> SQLiteStorageAdapter:
-        # Core migrations and writes occur only on an explicitly authorized POST.
+        # Writable storage is opened only for explicit mutation or security-audit POSTs.
         return SQLiteStorageAdapter(self.settings.db_path)
+
+    def record_failed_login(self) -> None:
+        """Persist a failed authentication attempt without retaining supplied credentials."""
+        event = SecurityAuditEntry(
+            event_id="auth-" + secrets.token_hex(16),
+            project_id="GLOBAL",
+            actor_id="anonymous",
+            role="anonymous",
+            permission_checked="manager_login",
+            decision="denied",
+            reason="invalid_credentials",
+            token_fingerprint="none",
+        )
+        self._write_storage().append_security_audit_event(event)
 
     def _safe_text(self, value: str | None, limit: int = 2000) -> str | None:
         return sanitize_text(value, secrets_to_redact=self._secrets, limit=limit)
@@ -212,7 +227,9 @@ class ControlPlaneRepository:
                 status = "unknown"
             policy_results.append({
                 "rule_id": self._safe_text(evaluation.rule_id, 128) or "unknown",
-                "description": self._safe_text(evaluation.description, 500) or "",
+                "description": _safe_markdown(
+                    evaluation.description, secrets_to_redact=self._secrets,
+                ) or "",
                 "status": status,
                 "mandatory": bool(evaluation.mandatory),
                 "observed_value": _scalar(evaluation.observed_value),
@@ -362,21 +379,6 @@ class ControlPlaneRepository:
         body = _json_text(detail.model_dump(mode="json"))
         return "application/json; charset=utf-8", f"report-{report_id}.json", body
 
-    def _proposal_digest(self, project_id: str, proposal_id: str) -> str | None:
-        with self._connect() as connection:
-            if connection is None or "action_proposals" not in self._tables(connection):
-                return None
-            row = connection.execute(
-                "SELECT content_hash FROM action_proposals WHERE project_id=? AND proposal_id=?",
-                (project_id, proposal_id),
-            ).fetchone()
-            if row is None:
-                return None
-            digest = str(row["content_hash"])
-            if not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise DataIntegrityError("Stored proposal digest is invalid")
-            return digest
-
     def _decision_timestamps(self, project_id: str, proposal_id: str) -> tuple[dict[str, datetime], str]:
         with self._connect() as connection:
             if connection is None or "proposal_decisions" not in self._tables(connection):
@@ -396,55 +398,49 @@ class ControlPlaneRepository:
             )
         return result, "available"
 
-    def _dry_run_records(self, storage: SQLiteStorageAdapter, project_id: str, proposal_id: str):
+    def _technical_review_view(self, project_id: str, proposal: ActionProposal, digest: str):
+        """Read a bound technical result without granting or fabricating human approval."""
+        from agente_gestion.application.proposal_auto_review import ProposalTechnicalReview
+
         with self._connect() as connection:
-            if connection is None or "proposal_dry_runs" not in self._tables(connection):
-                return [], "unknown"
-            rows = connection.execute(
-                "SELECT request_id FROM proposal_dry_runs WHERE project_id=? AND proposal_id=? "
-                "ORDER BY recorded_at DESC, request_id DESC LIMIT 100",
-                (project_id, proposal_id),
-            ).fetchall()
-        result = []
-        for row in rows:
-            request_id = safe_identifier(str(row["request_id"]))
-            if request_id is None:
-                raise DataIntegrityError("Stored dry-run request identifier is invalid")
-            stored = storage.get_proposal_dry_run(project_id, proposal_id, request_id)
-            if stored is None:
-                raise DataIntegrityError("Stored dry-run binding is invalid")
-            request, dry_run, recorded_at = stored
-            before = list(dry_run.before) if isinstance(dry_run.before, tuple) else dry_run.before
-            after = list(dry_run.after) if isinstance(dry_run.after, tuple) else dry_run.after
-            if isinstance(before, str):
-                before = self._safe_text(before, 1000)
-            elif isinstance(before, list):
-                before = [self._safe_text(item, 256) or "" for item in before]
-            if isinstance(after, str):
-                after = self._safe_text(after, 1000)
-            elif isinstance(after, list):
-                after = [self._safe_text(item, 256) or "" for item in after]
-            result.append(ProposalDryRun(
-                request_id=request.request_id,
-                status=dry_run.status,
-                reasons=[self._safe_text(item, 128) or "unknown" for item in dry_run.reasons],
-                field=dry_run.field,
-                before=before,
-                after=after,
-                recorded_at=_normalized_datetime(datetime.fromisoformat(recorded_at), self.settings.timezone),
-            ))
-        return result, "available"
+            if connection is None or "proposal_technical_reviews" not in self._tables(connection):
+                return None
+            row = connection.execute(
+                "SELECT review_json, review_sha256 FROM proposal_technical_reviews "
+                "WHERE project_id=? AND proposal_id=? AND proposal_body_sha256=? AND capture_id=?",
+                (project_id, proposal.proposal_id, digest, proposal.observed_capture_id),
+            ).fetchone()
+        if row is None:
+            return None
+        if hashlib.sha256(row["review_json"].encode("utf-8")).hexdigest() != row["review_sha256"]:
+            raise DataIntegrityError("Stored technical review integrity mismatch")
+        try:
+            review = ProposalTechnicalReview.model_validate_json(row["review_json"])
+        except (ValidationError, ValueError, TypeError):
+            raise DataIntegrityError("Stored technical review is invalid") from None
+        if (review.project_id, review.proposal_id, review.proposal_body_sha256, review.capture_id) != (
+            project_id, proposal.proposal_id, digest, proposal.observed_capture_id,
+        ):
+            raise DataIntegrityError("Stored technical review binding mismatch")
+        return ProposalTechnicalReviewView(
+            review_id=safe_identifier(review.review_id) or "unknown",
+            technical_status=review.technical_status,
+            technical_errors=[self._safe_text(item, 256) or "unknown" for item in review.technical_errors],
+            dry_run=ProposalTechnicalDryRun(
+                status=review.dry_run.status,
+                reasons=[self._safe_text(item, 256) or "unknown" for item in review.dry_run.reasons],
+                field=review.dry_run.field,
+                before=_safe_proposal_value(review.dry_run.before, self._safe_text),
+                after=_safe_proposal_value(review.dry_run.after, self._safe_text),
+            ),
+            recorded_at=_normalized_datetime(review.recorded_at, self.settings.timezone),
+        )
 
     def _proposal_data(self, project_id: str, proposal: ActionProposal, evidence_items, storage):
-        try:
-            review = storage.get_proposal_review_state(project_id, proposal.proposal_id)
-        except NotImplementedError:
-            review = None
-        digest = review[0] if review is not None else self._proposal_digest(project_id, proposal.proposal_id)
-        if digest is None:
-            raise DataIntegrityError("Stored proposal digest is unavailable")
-        events = review[1] if review is not None else []
-        projection = review[2] if review is not None else None
+        review = storage.get_proposal_review_state(project_id, proposal.proposal_id)
+        if review is None:
+            raise DataIntegrityError("Stored proposal review state is unavailable")
+        digest, _events, projection = review
         try:
             capture = self.queries.selected_capture(project_id, proposal.observed_capture_id)
             assessment = assess_proposal(proposal, capture, evidence_items)
@@ -510,14 +506,13 @@ class ControlPlaneRepository:
                 version=version,
                 technical_eligibility=technical,
                 technical_errors=errors,
+                technical_review=self._technical_review_view(project_id, proposal, digest),
                 freshness=freshness,
                 review_status=review_status,
                 authorization_status=authorization_status,
                 execution_status=execution_status,
             ),
-            "events": events,
             "projection": projection,
-            "decision_history_availability": "available" if review is not None else "unknown",
             "digest": digest,
         }
 
@@ -530,10 +525,7 @@ class ControlPlaneRepository:
         with self._connect() as connection:
             if "action_proposals" not in self._tables(connection):
                 return [], 0, "unknown"
-        try:
-            proposals = storage.list_action_proposals(project_id)
-        except NotImplementedError:
-            return [], 0, "unknown"
+        proposals = storage.list_action_proposals(project_id)
         views = [self._proposal_data(project_id, proposal, evidence, storage)["summary"]
                  for proposal, evidence in proposals]
         if review_status is not None:
@@ -554,44 +546,7 @@ class ControlPlaneRepository:
             raise LookupError("proposal_not_found")
         proposal, evidence = item
         data = self._proposal_data(project_id, proposal, evidence, storage)
-        event_times, event_availability = self._decision_timestamps(project_id, proposal_id)
-        events = []
-        for event in data["events"]:
-            events.append(ProposalDecisionEvent(
-                event_id=safe_identifier(event.event_id) or "unknown",
-                decision=event.decision,
-                version=event.expected_version + 1,
-                recorded_at=event_times.get(event.event_id),
-                actor_id=None,
-                actor_provenance="asserted_offline",
-            ))
-        dry_runs, dry_run_availability = self._dry_run_records(storage, project_id, proposal_id)
-        summary: ProposalSummary = data["summary"]
-        return ProposalDetail(
-            **summary.model_dump(),
-            decision_history_availability=("available" if event_availability == "available"
-                                           and data["decision_history_availability"] == "available" else "unknown"),
-            dry_run_availability=dry_run_availability,
-            decision_history=events,
-            dry_runs=dry_runs,
-        )
-
-    def _require_current_proposal(self, project_id: str, proposal_id: str, *, require_fresh: bool = True):
-        storage = self._read_storage()
-        if storage is None:
-            raise LookupError("proposal_not_found")
-        with self._connect() as connection:
-            tables = self._tables(connection)
-            if connection is None or "action_proposals" not in tables:
-                raise ApiProblem(503, "catalogo_de_propuestas_no_disponible", "El catálogo de propuestas no está disponible.")
-        item = storage.get_action_proposal(proposal_id)
-        if item is None or item[0].project_id != project_id:
-            raise LookupError("proposal_not_found")
-        proposal, evidence = item
-        data = self._proposal_data(project_id, proposal, evidence, storage)
-        if data["projection"] is None:
-            raise ApiProblem(503, "registro_de_revision_no_disponible", "El registro de revisión no está disponible.")
-        return storage, proposal, evidence, data
+        return ProposalDetail(**data["summary"].model_dump())
 
     def _web_audit_entry(
         self, *, project_id: str, actor_id: str, session_cookie: str | None,
@@ -663,158 +618,6 @@ class ControlPlaneRepository:
         session_hash = hashlib.sha256((session_cookie or "").encode("utf-8")).hexdigest()
         value = "|".join((session_hash, project_id, resource_id, permission, idempotency_key))
         return "web-" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
-
-    @staticmethod
-    def _require_proposal_binding(data, capture_id: str, body_sha256: str, expected_version: int) -> None:
-        summary: ProposalSummary = data["summary"]
-        if capture_id != summary.capture_id or body_sha256 != summary.proposal_body_sha256:
-            raise ApiProblem(409, "vinculo_de_propuesta_invalido", "La captura o la propuesta cambió desde la revisión.")
-        if summary.version != expected_version:
-            raise ApiProblem(409, "version_obsoleta", "La propuesta cambió desde la revisión.")
-
-    def _ensure_proposal_fresh(self, data) -> None:
-        if data["summary"].freshness != "current":
-            raise ApiProblem(409, "captura_obsoleta", "La propuesta no está vinculada a la captura actual disponible.")
-
-    def review_proposal(
-        self, project_id: str, proposal_id: str, decision: str, expected_version: int,
-        body_sha256: str, capture_id: str, actor_id: str, session_cookie: str | None,
-        idempotency_key: str,
-    ) -> tuple[ProposalDetail, bool, str]:
-        storage, proposal, _evidence, data = self._require_current_proposal(project_id, proposal_id)
-        summary: ProposalSummary = data["summary"]
-        if capture_id != summary.capture_id or body_sha256 != summary.proposal_body_sha256:
-            raise ApiProblem(409, "vinculo_de_propuesta_invalido", "La captura o la propuesta cambió desde la revisión.")
-        domain_decision = "approve_offline" if decision == "approve" else "reject"
-        event_id = self._operation_event_id(
-            project_id, proposal_id, _WEB_PERMISSIONS["proposal_review"], session_cookie, idempotency_key,
-        )
-        event = DecisionEvent(
-            event_id=event_id,
-            project_id=project_id,
-            proposal_id=proposal_id,
-            capture_id=capture_id,
-            proposal_body_sha256=body_sha256,
-            expected_version=expected_version,
-            actor=OfflineActorClaim(actor_id=actor_id),
-            decision=domain_decision,
-        )
-        old = next((item for item in data["events"] if item.event_id == event_id), None)
-        if old is not None and old != event:
-            raise ApiProblem(409, "idempotencia_conflictiva", "La clave de idempotencia ya se usó con otra solicitud.")
-        if old is None:
-            if summary.version != expected_version:
-                raise ApiProblem(409, "version_obsoleta", "La propuesta cambió desde la revisión.")
-            self._ensure_proposal_fresh(data)
-        request_fingerprint = self._operation_fingerprint({
-            "decision": domain_decision, "expected_version": expected_version,
-            "proposal_body_sha256": body_sha256, "capture_id": capture_id,
-        })
-        audit_entry = self._web_audit_entry(
-            project_id=project_id, actor_id=actor_id, session_cookie=session_cookie,
-            permission=_WEB_PERMISSIONS["proposal_review"], resource_id=proposal_id,
-            idempotency_key=idempotency_key, request_fingerprint=request_fingerprint,
-        )
-        try:
-            storage = self._write_storage()
-            storage.append_proposal_decision(event, security_audit_entry=audit_entry)
-        except ValueError as exc:
-            raise _proposal_domain_problem(exc) from None
-        return self.proposal_detail(project_id, proposal_id), old is not None, audit_entry.event_id
-
-    def authorize_proposal_dry_run(
-        self, project_id: str, proposal_id: str, expected_version: int, body_sha256: str,
-        capture_id: str, actor_id: str, session_cookie: str | None, idempotency_key: str,
-    ) -> tuple[ProposalDetail, bool, str]:
-        storage, _proposal, _evidence, data = self._require_current_proposal(project_id, proposal_id)
-        summary: ProposalSummary = data["summary"]
-        if capture_id != summary.capture_id or body_sha256 != summary.proposal_body_sha256:
-            raise ApiProblem(409, "vinculo_de_propuesta_invalido", "La captura o la propuesta cambió desde la revisión.")
-        event_id = self._operation_event_id(
-            project_id, proposal_id, _WEB_PERMISSIONS["dry_run_authorization"], session_cookie, idempotency_key,
-        )
-        event = DecisionEvent(
-            event_id=event_id,
-            project_id=project_id,
-            proposal_id=proposal_id,
-            capture_id=capture_id,
-            proposal_body_sha256=body_sha256,
-            expected_version=expected_version,
-            actor=OfflineActorClaim(actor_id=actor_id),
-            decision="authorize_dry_run",
-        )
-        old = next((item for item in data["events"] if item.event_id == event_id), None)
-        if old is not None and old != event:
-            raise ApiProblem(409, "idempotencia_conflictiva", "La clave de idempotencia ya se usó con otra solicitud.")
-        if old is None:
-            if summary.version != expected_version:
-                raise ApiProblem(409, "version_obsoleta", "La propuesta cambió desde la revisión.")
-            self._ensure_proposal_fresh(data)
-        request_fingerprint = self._operation_fingerprint({
-            "decision": "authorize_dry_run", "expected_version": expected_version,
-            "proposal_body_sha256": body_sha256, "capture_id": capture_id,
-        })
-        audit_entry = self._web_audit_entry(
-            project_id=project_id, actor_id=actor_id, session_cookie=session_cookie,
-            permission=_WEB_PERMISSIONS["dry_run_authorization"], resource_id=proposal_id,
-            idempotency_key=idempotency_key, request_fingerprint=request_fingerprint,
-        )
-        try:
-            storage = self._write_storage()
-            storage.append_proposal_decision(event, security_audit_entry=audit_entry)
-        except ValueError as exc:
-            raise _proposal_domain_problem(exc) from None
-        return self.proposal_detail(project_id, proposal_id), old is not None, audit_entry.event_id
-
-    def simulate_proposal(
-        self, project_id: str, proposal_id: str, expected_version: int, body_sha256: str,
-        capture_id: str, permission_event_id: str, actor_id: str, session_cookie: str | None,
-        idempotency_key: str,
-    ) -> tuple[ProposalDryRun, bool, str]:
-        storage, _proposal, _evidence, data = self._require_current_proposal(project_id, proposal_id)
-        self._require_proposal_binding(data, capture_id, body_sha256, expected_version)
-        request_id = "webdry-" + hashlib.sha256((
-            hashlib.sha256((session_cookie or "").encode("utf-8")).hexdigest()
-            + "|" + project_id + "|" + proposal_id + "|" + idempotency_key
-        ).encode("utf-8")).hexdigest()[:32]
-        request = DryRunRequest(
-            request_id=request_id,
-            project_id=project_id,
-            proposal_id=proposal_id,
-            proposal_body_sha256=body_sha256,
-            capture_id=capture_id,
-            permission_event_id=permission_event_id,
-            expected_version=expected_version,
-        )
-        fingerprint = self._operation_fingerprint({
-            "expected_version": expected_version, "proposal_body_sha256": body_sha256,
-            "capture_id": capture_id, "permission_event_id": permission_event_id,
-        })
-        audit_entry = self._web_audit_entry(
-            project_id=project_id, actor_id=actor_id, session_cookie=session_cookie,
-            permission=_WEB_PERMISSIONS["dry_run"], resource_id=proposal_id,
-            idempotency_key=idempotency_key, request_fingerprint=fingerprint,
-        )
-        try:
-            storage = self._write_storage()
-            stored_request, result, recorded_at, reused = storage.append_proposal_dry_run(
-                request, security_audit_entry=audit_entry,
-            )
-        except ValueError as exc:
-            raise _proposal_domain_problem(exc) from None
-        value = ProposalDryRun(
-            request_id=stored_request.request_id,
-            status=result.status,
-            reasons=[self._safe_text(item, 128) or "unknown" for item in result.reasons],
-            field=result.field,
-            before=_safe_proposal_value(result.before, self._safe_text),
-            after=_safe_proposal_value(result.after, self._safe_text),
-            recorded_at=_normalized_datetime(datetime.fromisoformat(recorded_at), self.settings.timezone),
-            execution_status=result.execution_status,
-            live_state_changed=result.live_state_changed,
-            real_execution_allowed=result.real_execution_allowed,
-        )
-        return value, reused, audit_entry.event_id
 
     def _web_audit_event(self, event_id: str) -> SecurityAuditEntry | None:
         with self._connect() as connection:
@@ -1075,6 +878,7 @@ class ControlPlaneRepository:
             project_id=receipt.project_id,
             window_id=safe_identifier(receipt.window_id) or "unknown",
             channel=receipt.channel,
+            delivery_channel=receipt.delivery_channel,
             status=receipt.status,
             dispatched_at=_normalized_datetime(receipt.dispatched_at, self.settings.timezone),
             artifact_available=artifact_available,
@@ -1160,10 +964,34 @@ class ControlPlaneRepository:
 
     def audit_records(self, project_id: str) -> tuple[list[tuple[AuditEvent, dict[str, str | int | float | bool | None]]], str]:
         records: list[tuple[AuditEvent, dict[str, str | int | float | bool | None]]] = []
+        execution_human_reasons: dict[str, str] = {}
+        security_human_reasons: dict[str, str] = {}
         with self._connect() as connection:
             tables = self._tables(connection)
             if connection is None:
                 return [], "unknown"
+            if "proposal_executions" in tables:
+                columns = {row["name"] for row in connection.execute(
+                    "PRAGMA table_info(proposal_executions)")}
+                if "human_reason" in columns:
+                    execution_human_reasons = {
+                        str(row["execution_id"]): str(row["human_reason"])
+                        for row in connection.execute(
+                            "SELECT execution_id, human_reason FROM proposal_executions "
+                            "WHERE project_id=? AND human_reason IS NOT NULL", (project_id,),
+                        ).fetchall()
+                    }
+            if "security_audit_log" in tables:
+                columns = {row["name"] for row in connection.execute(
+                    "PRAGMA table_info(security_audit_log)")}
+                if "human_reason" in columns:
+                    security_human_reasons = {
+                        str(row["event_id"]): str(row["human_reason"])
+                        for row in connection.execute(
+                            "SELECT event_id, human_reason FROM security_audit_log "
+                            "WHERE project_id=? AND human_reason IS NOT NULL", (project_id,),
+                        ).fetchall()
+                    }
             for row in (connection.execute(
                 "SELECT run_id, project_id, status, created_at, report_id FROM runs "
                 "WHERE project_id=? ORDER BY created_at DESC LIMIT 10000", (project_id,),
@@ -1210,12 +1038,9 @@ class ControlPlaneRepository:
             if "action_proposals" in tables:
                 try:
                     for proposal, evidence in storage.list_action_proposals(project_id):
-                        try:
-                            state = storage.get_proposal_review_state(project_id, proposal.proposal_id)
-                        except NotImplementedError:
-                            state = None
+                        state = storage.get_proposal_review_state(project_id, proposal.proposal_id)
                         if state is None:
-                            continue
+                            raise DataIntegrityError("Stored proposal review state is unavailable")
                         times, _availability = self._decision_timestamps(project_id, proposal.proposal_id)
                         for event in state[1]:
                             stamp = times.get(event.event_id)
@@ -1232,16 +1057,6 @@ class ControlPlaneRepository:
                                 outcome=event.decision, summary=f"Decisión de propuesta: {event.decision}.",
                                 actor_id=None, actor_verification="unknown", source="engine",
                             ), {"decision": event.decision, "version": event.expected_version + 1}))
-                        dry_runs, _dry_availability = self._dry_run_records(storage, project_id, proposal.proposal_id)
-                        for item in dry_runs:
-                            records.append((AuditEvent(
-                                event_id=item.request_id, project_id=project_id, event_type="proposal_dry_run",
-                                occurred_at=item.recorded_at, resource_type="proposal", resource_id=proposal.proposal_id,
-                                outcome=item.status, summary=("Simulación segura registrada." if item.status == "SIMULATED"
-                                                              else "La simulación fue denegada."),
-                                actor_id=None, actor_verification="unknown", source="engine",
-                            ), {"status": item.status, "field": item.field,
-                                "live_state_changed": item.live_state_changed}))
                         if "proposal_executions" in tables:
                             for execution in storage.list_proposal_executions(project_id, proposal.proposal_id):
                                 execution_id = safe_identifier(execution.execution_id)
@@ -1254,7 +1069,8 @@ class ControlPlaneRepository:
                                     outcome=execution.status, summary=f"Intento de ejecución registrado: {execution.status}.",
                                     actor_id=None, actor_verification="unknown", source="engine",
                                 ), {"status": execution.status, "verification_status": execution.verification_status,
-                                    "field": execution.field}))
+                                    "field": execution.field,
+                                    "human_reason": execution_human_reasons.get(execution_id)}))
                 except (sqlite3.Error, ValueError, DataIntegrityError):
                     raise DataIntegrityError("Stored governance audit records are invalid") from None
             if "security_audit_log" in tables:
@@ -1282,7 +1098,8 @@ class ControlPlaneRepository:
                         outcome=entry.decision, summary=f"Evento de seguridad: {permission} ({entry.decision}).",
                         actor_id=actor, actor_verification=("verified_local_session" if verified_web else "unknown"),
                         source=("web" if verified_web else "engine"),
-                    ), {"permission": permission, "decision": entry.decision}))
+                    ), {"permission": permission, "decision": entry.decision,
+                        "human_reason": security_human_reasons.get(entry.event_id)}))
 
         outbox_rows, _total, _availability = self._outbox_rows(project_id, page=1, page_size=10000)
         for receipt, message in outbox_rows:
@@ -1302,7 +1119,7 @@ class ControlPlaneRepository:
         with self._connect() as connection:
             available_tables = self._tables(connection)
         available = bool(records) or bool(available_tables & {
-            "runs", "human_decisions", "action_proposals", "proposal_decisions", "proposal_dry_runs",
+            "runs", "human_decisions", "action_proposals", "proposal_decisions",
             "proposal_executions", "notification_outbox", "security_audit_log",
         })
         return sorted(records, key=lambda item: _utc_key(item[0].occurred_at, self.settings.timezone), reverse=True), (
@@ -1439,21 +1256,3 @@ def _int_or_none(value: object) -> int | None:
 def _float_or_none(value: object) -> float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
-
-def _proposal_domain_problem(exc: ValueError) -> ApiProblem:
-    code = str(exc)
-    if code in {"stale_version", "version_mismatch"}:
-        return ApiProblem(409, "version_obsoleta", "La propuesta cambió desde la revisión.")
-    if code in {"binding_mismatch", "capture_mismatch", "proposal_body_sha256"}:
-        return ApiProblem(409, "vinculo_de_propuesta_invalido", "La propuesta o su captura no coincide con la solicitud.")
-    if code in {"review_not_pending", "review_not_approved", "review_terminal"}:
-        return ApiProblem(409, "estado_de_revision_invalido", "La propuesta ya no admite esta decisión.")
-    if code in {"technical_ineligible", "stale_capture", "ambiguous_latest_capture"}:
-        return ApiProblem(409, "propuesta_no_elegible", "La propuesta no cumple las condiciones para esta operación.")
-    if code in {"event_id_conflict", "request_id_conflict", "security_audit_event_conflict"}:
-        return ApiProblem(409, "idempotencia_conflictiva", "La clave de idempotencia ya se usó con otra solicitud.")
-    if code.startswith("dry_run_retry_denied"):
-        return ApiProblem(409, "simulacion_previa_no_repetible", "La simulación previa ya no es válida; consulte su recibo histórico.")
-    if code == "permission_not_effective":
-        return ApiProblem(409, "permiso_de_simulacion_requerido", "Autorice por separado una simulación vigente.")
-    return ApiProblem(409, "operacion_de_gobernanza_no_aplicada", "La operación no pudo superar las validaciones del dominio.")

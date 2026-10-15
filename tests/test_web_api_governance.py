@@ -15,15 +15,16 @@ from agente_gestion.domain.notification_outbox import OutboxMessage, OutboxRecei
 from agente_gestion.domain.weekly_schedule import WeeklySchedule
 from tests.web_fixtures import (
     EVIDENCE_SECRET,
+    OLDER_RUN_ID,
     OPERATOR_TOKEN,
     PROJECT_ID,
     REPORT_ID,
+    RUN_ID,
     build_web_api_fixture,
 )
 
 
 ORIGIN = "http://testserver"
-PROPOSAL_ID = "proposal-date-001"
 
 
 class WebApiGovernanceTests(unittest.TestCase):
@@ -53,14 +54,28 @@ class WebApiGovernanceTests(unittest.TestCase):
             "Content-Type": "application/json",
         }
 
-    def test_read_contracts_project_persisted_proposals_reports_schedule_outbox_and_audit(self):
+    def _proposal_path(self) -> str:
+        self.assertIsNotNone(self.fixture.proposal_id)
+        return f"/api/v1/projects/{PROJECT_ID}/proposals/{self.fixture.proposal_id}"
+
+    def test_read_contracts_current_pipeline_proposals_reports_history_and_audit(self):
+        self.assertGreaterEqual(len(self.fixture.run_ids), 2)
+        self.assertGreaterEqual(len(self.fixture.report_ids), 2)
+        self.assertGreaterEqual(len({self.fixture.older_capture_id, self.fixture.current_capture_id}), 2)
+        self.assertEqual(self.fixture.current_run_id, RUN_ID)
+        self.assertEqual(self.fixture.current_report_id, REPORT_ID)
+        self.assertIn(OLDER_RUN_ID, self.fixture.run_ids)
+        self.assertEqual(
+            set(self.fixture.report_ids), {f"rep-{run_id}" for run_id in self.fixture.run_ids},
+        )
+
         proposals = self.client.get(f"/api/v1/projects/{PROJECT_ID}/proposals")
         self.assertEqual(proposals.status_code, 200, proposals.text)
         proposal_page = proposals.json()
         self.assertEqual(proposal_page["availability"], "available")
         self.assertEqual(proposal_page["total"], 1)
         proposal = proposal_page["items"][0]
-        self.assertEqual(proposal["proposal_id"], PROPOSAL_ID)
+        self.assertEqual(proposal["proposal_id"], self.fixture.proposal_id)
         self.assertEqual(proposal["review_status"], "pending")
         self.assertEqual(proposal["authorization_status"], "not_authorized")
         self.assertEqual(proposal["execution_status"], "not_executed")
@@ -68,21 +83,28 @@ class WebApiGovernanceTests(unittest.TestCase):
         self.assertNotIn(EVIDENCE_SECRET, proposals.text)
         self.assertNotIn("payload", proposals.text)
 
-        proposal_detail = self.client.get(
-            f"/api/v1/projects/{PROJECT_ID}/proposals/{PROPOSAL_ID}"
-        )
+        proposal_detail = self.client.get(self._proposal_path())
         self.assertEqual(proposal_detail.status_code, 200, proposal_detail.text)
-        self.assertEqual(proposal_detail.json()["decision_history"], [])
-        self.assertEqual(proposal_detail.json()["dry_runs"], [])
+        self.assertNotIn("decision_history", proposal_detail.json())
+        self.assertNotIn("dry_runs", proposal_detail.json())
 
+        history = self.client.get(f"/api/v1/projects/{PROJECT_ID}/history")
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertEqual(history.json()["total"], 2)
+        self.assertEqual(
+            {item["capture_id"] for item in history.json()["items"]},
+            {self.fixture.older_capture_id, self.fixture.current_capture_id},
+        )
         reports = self.client.get(f"/api/v1/projects/{PROJECT_ID}/reports")
         self.assertEqual(reports.status_code, 200, reports.text)
-        self.assertEqual(reports.json()["total"], 1)
-        report = self.client.get(
-            f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}"
+        self.assertEqual(reports.json()["total"], len(self.fixture.report_ids))
+        self.assertEqual(
+            {item["report_id"] for item in reports.json()["items"]}, set(self.fixture.report_ids),
         )
+        report_id = self.fixture.current_report_id
+        report = self.client.get(f"/api/v1/projects/{PROJECT_ID}/reports/{report_id}")
         self.assertEqual(report.status_code, 200, report.text)
-        self.assertEqual(report.json()["run_id"], "run-current")
+        self.assertEqual(report.json()["run_id"], self.fixture.current_run_id)
         self.assertEqual(report.json()["human_decision"], "pending")
         self.assertIn("Tarea", report.json()["markdown_text"])
         self.assertNotIn("<script", report.text.lower())
@@ -91,7 +113,7 @@ class WebApiGovernanceTests(unittest.TestCase):
         self.assertNotIn(EVIDENCE_SECRET, report.text)
 
         download = self.client.get(
-            f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}/download",
+            f"/api/v1/projects/{PROJECT_ID}/reports/{report_id}/download",
             params={"format": "markdown"},
         )
         self.assertEqual(download.status_code, 200, download.text)
@@ -147,149 +169,166 @@ class WebApiGovernanceTests(unittest.TestCase):
             for item in audit.json()["items"]
         ))
 
-    def test_proposal_review_and_verified_audit_commit_atomically(self):
+    def test_only_unified_proposal_mutation_is_advertised_and_manual_routes_are_retired(self):
         csrf = self._login()
-        path = f"/api/v1/projects/{PROJECT_ID}/proposals/{PROPOSAL_ID}"
-        proposal = self.client.get(path).json()
-        body = {
-            "decision": "approve",
-            "expected_version": proposal["version"],
-            "proposal_body_sha256": proposal["proposal_body_sha256"],
-            "capture_id": proposal["capture_id"],
-        }
-        headers = self._mutation_headers(csrf, "atomic-proposal-review-01")
+        session = self.client.get("/api/v1/auth/session")
+        self.assertEqual(session.status_code, 200, session.text)
+        capabilities = set(session.json()["capabilities"])
+        self.assertTrue({
+            "governance:proposal_execute", "quality:decide", "notifications:email_send",
+        }.issubset(capabilities))
+        self.assertTrue({
+            "governance:proposal_review", "governance:dry_run_authorization", "governance:dry_run",
+        }.isdisjoint(capabilities))
+
+        for index, suffix in enumerate(("review", "dry-run-authorization", "dry-runs")):
+            with self.subTest(route=suffix):
+                response = self.client.post(
+                    self._proposal_path() + f"/{suffix}",
+                    headers=self._mutation_headers(csrf, f"retired-manual-{index:02d}"),
+                    json={},
+                )
+                self.assertEqual(response.status_code, 404, response.text)
+
+    def test_unified_execute_audit_failure_leaves_no_outcome_and_blocks_replay(self):
+        csrf = self._login()
+        proposal = self.client.get(self._proposal_path()).json()
+        reason = "  Aprobación completa\nrevisada por la gestora.  "
+        body = {"decision": "approve_and_execute", "reason": reason}
+        headers = self._mutation_headers(csrf, "atomic-execute-0001")
         with sqlite3.connect(self.fixture.database_path) as connection:
             connection.execute(
-                "CREATE TRIGGER fail_proposal_audit BEFORE INSERT ON security_audit_log "
-                "WHEN NEW.permission_checked='web:proposal_review' "
-                "BEGIN SELECT RAISE(ABORT, 'test audit insert fault'); END"
+                "CREATE TRIGGER fail_execution_audit BEFORE INSERT ON security_audit_log "
+                "WHEN NEW.permission_checked='web:proposal_execute' "
+                "BEGIN SELECT RAISE(ABORT, 'test execution audit fault'); END"
             )
-        failed = self.client.post(path + "/review", headers=headers, json=body)
+
+        failed = self.client.post(self._proposal_path() + "/execute", headers=headers, json=body)
         self.assertEqual(failed.status_code, 503, failed.text)
-        after_failure = self.client.get(path)
-        self.assertEqual(after_failure.status_code, 200, after_failure.text)
-        self.assertEqual(after_failure.json()["review_status"], "pending")
-        self.assertEqual(after_failure.json()["version"], 0)
-        self.assertEqual(after_failure.json()["decision_history"], [])
         with sqlite3.connect(self.fixture.database_path) as connection:
+            execution_count = connection.execute(
+                "SELECT count(*) FROM proposal_executions WHERE project_id=? AND proposal_id=?",
+                (PROJECT_ID, self.fixture.proposal_id),
+            ).fetchone()[0]
             audit_count = connection.execute(
                 "SELECT count(*) FROM security_audit_log "
-                "WHERE project_id=? AND permission_checked='web:proposal_review' AND resource_id=?",
-                (PROJECT_ID, PROPOSAL_ID),
+                "WHERE project_id=? AND permission_checked='web:proposal_execute' AND resource_id=?",
+                (PROJECT_ID, self.fixture.proposal_id),
             ).fetchone()[0]
-        self.assertEqual(audit_count, 0)
-        with sqlite3.connect(self.fixture.database_path) as connection:
-            connection.execute("DROP TRIGGER fail_proposal_audit")
-        retried = self.client.post(path + "/review", headers=headers, json=body)
-        self.assertEqual(retried.status_code, 200, retried.text)
-        self.assertFalse(retried.json()["reused"])
-        self.assertEqual(retried.json()["proposal"]["review_status"], "approved_offline")
-        replay = self.client.post(path + "/review", headers=headers, json=body)
-        self.assertEqual(replay.status_code, 200, replay.text)
-        self.assertTrue(replay.json()["reused"])
-        with sqlite3.connect(self.fixture.database_path) as connection:
-            audit_count = connection.execute(
-                "SELECT count(*) FROM security_audit_log "
-                "WHERE project_id=? AND permission_checked='web:proposal_review' AND resource_id=?",
-                (PROJECT_ID, PROPOSAL_ID),
+            outcome_count = connection.execute(
+                "SELECT count(*) FROM proposal_execution_outcomes",
             ).fetchone()[0]
-        self.assertEqual(audit_count, 1)
+            reservation_count = connection.execute(
+                "SELECT count(*) FROM proposal_execution_idempotency "
+                "WHERE project_id=? AND idempotency_key=?",
+                (PROJECT_ID, "atomic-execute-0001"),
+            ).fetchone()[0]
+        self.assertEqual((execution_count, audit_count, outcome_count, reservation_count), (0, 0, 0, 1))
 
-    def test_review_authorization_and_dry_run_are_distinct_bound_idempotent_operations(self):
-        csrf = self._login()
-        path = f"/api/v1/projects/{PROJECT_ID}/proposals/{PROPOSAL_ID}"
-        proposal = self.client.get(path).json()
-        body = {
-            "decision": "approve",
-            "expected_version": proposal["version"],
-            "proposal_body_sha256": proposal["proposal_body_sha256"],
-            "capture_id": proposal["capture_id"],
-        }
-        headers = self._mutation_headers(csrf, "proposal-review-0001")
-        missing_csrf = self.client.post(path + "/review", headers={
-            "Origin": ORIGIN, "Idempotency-Key": "proposal-review-0001",
-        }, json=body)
-        self.assertEqual(missing_csrf.status_code, 403)
-
-        reviewed = self.client.post(path + "/review", headers=headers, json=body)
-        self.assertEqual(reviewed.status_code, 200, reviewed.text)
-        result = reviewed.json()
-        self.assertFalse(result["reused"])
-        self.assertEqual(result["proposal"]["review_status"], "approved_offline")
-        self.assertEqual(result["proposal"]["authorization_status"], "not_authorized")
-        self.assertEqual(result["proposal"]["execution_status"], "not_executed")
-        self.assertIsNone(result["proposal"]["decision_history"][0]["actor_id"])
-        self.assertEqual(result["proposal"]["decision_history"][0]["actor_provenance"], "asserted_offline")
-        self.assertFalse(result["proposal"].get("real_execution_allowed", False))
-
-        replay = self.client.post(path + "/review", headers=headers, json=body)
-        self.assertEqual(replay.status_code, 200, replay.text)
-        self.assertTrue(replay.json()["reused"])
-        conflict = self.client.post(path + "/review", headers=headers, json={**body, "decision": "reject"})
-        self.assertEqual(conflict.status_code, 409)
-        self.assertEqual(conflict.json()["error"]["code"], "idempotencia_conflictiva")
-
-        authorization_body = {
-            "authorize": True,
-            "expected_version": result["proposal"]["version"],
-            "proposal_body_sha256": proposal["proposal_body_sha256"],
-            "capture_id": proposal["capture_id"],
-        }
-        authorized = self.client.post(path + "/dry-run-authorization", headers=self._mutation_headers(
-            csrf, "proposal-auth-0001",
-        ), json=authorization_body)
-        self.assertEqual(authorized.status_code, 200, authorized.text)
-        self.assertEqual(authorized.json()["proposal"]["authorization_status"], "authorized_dry_run")
-        self.assertEqual(authorized.json()["proposal"]["version"], 2)
-        permission_event = next(
-            event["event_id"] for event in authorized.json()["proposal"]["decision_history"]
-            if event["decision"] == "authorize_dry_run"
+        with sqlite3.connect(self.fixture.database_path) as connection:
+            connection.execute("DROP TRIGGER fail_execution_audit")
+        uncertain = self.client.post(self._proposal_path() + "/execute", headers=headers, json=body)
+        self.assertEqual(uncertain.status_code, 409, uncertain.text)
+        self.assertEqual(uncertain.json()["error"]["code"], "resultado_de_ejecucion_incierto")
+        self.assertEqual(
+            self.client.get(self._proposal_path()).json()["proposal_id"], self.fixture.proposal_id,
         )
-        dry_run_body = {
-            "expected_version": authorized.json()["proposal"]["version"],
-            "proposal_body_sha256": proposal["proposal_body_sha256"],
-            "capture_id": proposal["capture_id"],
-            "permission_event_id": permission_event,
-        }
-        dry_headers = self._mutation_headers(csrf, "proposal-dry-run-0001")
-        with sqlite3.connect(self.fixture.database_path) as connection:
-            connection.execute(
-                "CREATE TRIGGER fail_dry_run_audit BEFORE INSERT ON security_audit_log "
-                "WHEN NEW.permission_checked='web:dry_run' "
-                "BEGIN SELECT RAISE(ABORT, 'test audit insert fault'); END"
-            )
-        failed_simulation = self.client.post(path + "/dry-runs", headers=dry_headers, json=dry_run_body)
-        self.assertEqual(failed_simulation.status_code, 503, failed_simulation.text)
-        self.assertEqual(self.client.get(path).json()["dry_runs"], [])
-        with sqlite3.connect(self.fixture.database_path) as connection:
-            audit_count = connection.execute(
-                "SELECT count(*) FROM security_audit_log "
-                "WHERE project_id=? AND permission_checked='web:dry_run' AND resource_id=?",
-                (PROJECT_ID, PROPOSAL_ID),
-            ).fetchone()[0]
-        self.assertEqual(audit_count, 0)
-        with sqlite3.connect(self.fixture.database_path) as connection:
-            connection.execute("DROP TRIGGER fail_dry_run_audit")
-        simulated = self.client.post(path + "/dry-runs", headers=dry_headers, json=dry_run_body)
-        self.assertEqual(simulated.status_code, 200, simulated.text)
-        self.assertEqual(simulated.json()["dry_run"]["status"], "SIMULATED")
-        self.assertEqual(simulated.json()["dry_run"]["execution_status"], "not_executed")
-        self.assertFalse(simulated.json()["dry_run"]["live_state_changed"])
-        self.assertFalse(simulated.json()["dry_run"]["real_execution_allowed"])
-        replayed_simulation = self.client.post(path + "/dry-runs", headers=dry_headers, json=dry_run_body)
-        self.assertEqual(replayed_simulation.status_code, 200, replayed_simulation.text)
-        self.assertTrue(replayed_simulation.json()["reused"])
-        self.assertFalse(self.client.get("/api/v1/system/health").json()["external_writes_enabled"])
+        self.assertNotIn("decision_history", proposal)
 
-        audit = self.client.get(f"/api/v1/projects/{PROJECT_ID}/audit").json()
-        web_actor_events = [event for event in audit["items"] if event["event_id"] == result["audit_event_id"]]
-        self.assertEqual(len(web_actor_events), 1)
-        self.assertEqual(web_actor_events[0]["actor_verification"], "verified_local_session")
-        self.assertEqual(web_actor_events[0]["actor_id"], "operador-local-de-prueba")
+    def test_unified_execute_requires_reason_and_exposes_automatic_review_and_audit(self):
+        csrf = self._login()
+        path = self._proposal_path()
+        for index, body in enumerate((
+            {"decision": "approve_and_execute"},
+            {"decision": "approve_and_execute", "reason": "  "},
+        )):
+            with self.subTest(body=body):
+                response = self.client.post(
+                    path + "/execute",
+                    headers=self._mutation_headers(csrf, f"reason-required-{index:02d}"),
+                    json=body,
+                )
+                self.assertEqual(response.status_code, 422, response.text)
+        with sqlite3.connect(self.fixture.database_path) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT count(*) FROM proposal_executions WHERE project_id=?",
+                (PROJECT_ID,),
+            ).fetchone()[0], 0)
+            self.assertEqual(connection.execute(
+                "SELECT count(*) FROM security_audit_log "
+                "WHERE project_id=? AND permission_checked='web:proposal_execute'",
+                (PROJECT_ID,),
+            ).fetchone()[0], 0)
+
+        reason = "  Dictamen humano exacto\ncon evidencia revisada.  "
+        body = {"decision": "approve_and_execute", "reason": reason}
+        headers = self._mutation_headers(csrf, "unified-execute-0001")
+        executed = self.client.post(path + "/execute", headers=headers, json=body)
+        self.assertEqual(executed.status_code, 200, executed.text)
+        receipt = executed.json()
+        self.assertEqual(receipt["proposal_id"], self.fixture.proposal_id)
+        self.assertEqual(receipt["decision"], "approve_and_execute")
+        self.assertEqual(receipt["execution_mode"], "sandbox")
+        self.assertEqual(receipt["execution"]["status"], "SIMULATED")
+        self.assertFalse(receipt["execution"]["live_state_changed"])
+        self.assertEqual(receipt["technical_review"]["technical_status"], "ready")
+        self.assertEqual(receipt["technical_review"]["dry_run"]["status"], "SIMULATED")
+        self.assertEqual(receipt["technical_review"]["human_approval_status"], "required")
+        self.assertFalse(receipt["technical_review"]["execution_authorized"])
+
+        replay = self.client.post(path + "/execute", headers=headers, json=body)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["replayed"])
+        conflicting = self.client.post(path + "/execute", headers=headers, json={
+            **body, "reason": "Different human decision reason",
+        })
+        self.assertEqual(conflicting.status_code, 409, conflicting.text)
+        self.assertEqual(conflicting.json()["error"]["code"], "idempotencia_conflictiva")
+
+        with sqlite3.connect(self.fixture.database_path) as connection:
+            execution = connection.execute(
+                "SELECT execution_id, human_reason FROM proposal_executions "
+                "WHERE project_id=? AND proposal_id=?",
+                (PROJECT_ID, self.fixture.proposal_id),
+            ).fetchone()
+            audit = connection.execute(
+                "SELECT event_id, reason, human_reason FROM security_audit_log "
+                "WHERE project_id=? AND resource_id=? AND permission_checked='web:proposal_execute'",
+                (PROJECT_ID, self.fixture.proposal_id),
+            ).fetchone()
+            request_hash = connection.execute(
+                "SELECT request_sha256 FROM proposal_execution_idempotency "
+                "WHERE project_id=? AND proposal_id=?",
+                (PROJECT_ID, self.fixture.proposal_id),
+            ).fetchone()[0]
+        self.assertEqual(execution[1], reason)
+        self.assertEqual(audit[2], reason)
+        self.assertTrue(audit[1].startswith("request_sha256="))
+        self.assertRegex(request_hash, r"^[0-9a-f]{64}$")
+        with self.assertRaises(sqlite3.IntegrityError):
+            with sqlite3.connect(self.fixture.database_path) as connection:
+                connection.execute(
+                    "UPDATE proposal_executions SET human_reason='tampered' WHERE execution_id=?",
+                    (execution[0],),
+                )
+        with self.assertRaises(sqlite3.IntegrityError):
+            with sqlite3.connect(self.fixture.database_path) as connection:
+                connection.execute(
+                    "UPDATE security_audit_log SET human_reason='tampered' WHERE event_id=?",
+                    (audit[0],),
+                )
+        audit_detail = self.client.get(
+            f"/api/v1/projects/{PROJECT_ID}/audit/{audit[0]}"
+        )
+        self.assertEqual(audit_detail.status_code, 200, audit_detail.text)
+        self.assertEqual(audit_detail.json()["details"]["human_reason"], reason)
+        self.assertEqual(audit_detail.json()["actor_verification"], "verified_local_session")
+        self.assertEqual(audit_detail.json()["actor_id"], "operador-local-de-prueba")
 
     def test_report_decision_and_verified_audit_commit_atomically(self):
         csrf = self._login()
-        path = f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}/decision"
+        report_id = self.fixture.current_report_id
+        path = f"/api/v1/projects/{PROJECT_ID}/reports/{report_id}/decision"
         body = {
             "expected_report_version": 1,
             "expected_human_decision": "pending",
@@ -307,7 +346,7 @@ class WebApiGovernanceTests(unittest.TestCase):
         failed = self.client.post(path, headers=headers, json=body)
         self.assertEqual(failed.status_code, 503, failed.text)
         self.assertEqual(failed.json()["error"]["code"], "base_no_disponible")
-        after_failure = self.client.get(f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}")
+        after_failure = self.client.get(f"/api/v1/projects/{PROJECT_ID}/reports/{report_id}")
         self.assertEqual(after_failure.status_code, 200, after_failure.text)
         self.assertEqual(after_failure.json()["human_decision"], "pending")
         self.assertEqual(after_failure.json()["report_version"], 1)
@@ -316,10 +355,10 @@ class WebApiGovernanceTests(unittest.TestCase):
             audit_count = connection.execute(
                 "SELECT count(*) FROM security_audit_log "
                 "WHERE project_id=? AND permission_checked='web:report_decision' AND resource_id=?",
-                (PROJECT_ID, REPORT_ID),
+                (PROJECT_ID, report_id),
             ).fetchone()[0]
             decision_count = connection.execute(
-                "SELECT count(*) FROM human_decisions WHERE report_id=?", (REPORT_ID,),
+                "SELECT count(*) FROM human_decisions WHERE report_id=?", (report_id,),
             ).fetchone()[0]
         self.assertEqual(audit_count, 0)
         self.assertEqual(decision_count, 0)
@@ -350,17 +389,18 @@ class WebApiGovernanceTests(unittest.TestCase):
             audit_count = connection.execute(
                 "SELECT count(*) FROM security_audit_log "
                 "WHERE project_id=? AND permission_checked='web:report_decision' AND resource_id=?",
-                (PROJECT_ID, REPORT_ID),
+                (PROJECT_ID, report_id),
             ).fetchone()[0]
             decision_count = connection.execute(
-                "SELECT count(*) FROM human_decisions WHERE report_id=?", (REPORT_ID,),
+                "SELECT count(*) FROM human_decisions WHERE report_id=?", (report_id,),
             ).fetchone()[0]
         self.assertEqual(audit_count, 1)
         self.assertEqual(decision_count, 1)
 
     def test_protected_human_report_decision_is_version_bound_and_idempotent(self):
         csrf = self._login()
-        path = f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}/decision"
+        report_id = self.fixture.current_report_id
+        path = f"/api/v1/projects/{PROJECT_ID}/reports/{report_id}/decision"
         body = {
             "expected_report_version": 1,
             "expected_human_decision": "pending",
@@ -391,7 +431,7 @@ class WebApiGovernanceTests(unittest.TestCase):
         self.assertEqual(other_key.status_code, 409)
         self.assertEqual(other_key.json()["error"]["code"], "version_de_informe_obsoleta")
         self.assertEqual(self.client.get(
-            f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}"
+            f"/api/v1/projects/{PROJECT_ID}/reports/{report_id}"
         ).json()["human_decision"], "approved")
 
     def test_outbox_symlink_and_report_binding_are_rejected_for_downloads(self):
@@ -404,7 +444,7 @@ class WebApiGovernanceTests(unittest.TestCase):
         storage = SQLiteStorageAdapter(str(self.fixture.database_path))
         message = OutboxMessage(
             message_id="message-symlink-0001", project_id=PROJECT_ID,
-            window_id=window_id, report_id=REPORT_ID, channel="file",
+            window_id=window_id, report_id=self.fixture.current_report_id, channel="file",
             subject="Recibo con ruta simbólica", summary="No se debe leer el destino.",
             body_markdown="Contenido generado y ligado al informe.", metrics={}, risks=[],
         )
@@ -445,7 +485,7 @@ class WebApiGovernanceTests(unittest.TestCase):
             "H5_ALLOWED_HOSTS": "testserver",
         }
         with patch.dict(os.environ, environment, clear=True):
-            incomplete = load_api_settings()
+            incomplete = load_api_settings(env_file=None)
         self.assertTrue(incomplete.weekly_cycle_enabled)
         self.assertIsNone(incomplete.weekly_schedule)
         self.assertEqual(incomplete.weekly_schedule_status, "incomplete")
@@ -454,7 +494,7 @@ class WebApiGovernanceTests(unittest.TestCase):
             **environment,
             "H5_WEEKLY_SCHEDULE_WINDOW_RULE": "previous_scheduled_week",
         }, clear=True):
-            configured = load_api_settings()
+            configured = load_api_settings(env_file=None)
         self.assertEqual(configured.weekly_schedule_status, "configured")
         self.assertEqual(configured.weekly_schedule.project_id, PROJECT_ID)
         self.assertEqual(configured.weekly_schedule.weekday, 3)
@@ -464,7 +504,7 @@ class WebApiGovernanceTests(unittest.TestCase):
             "H5_WEEKLY_SCHEDULE_WEEKDAY": "7",
             "H5_WEEKLY_SCHEDULE_WINDOW_RULE": "previous_scheduled_week",
         }, clear=True):
-            invalid = load_api_settings()
+            invalid = load_api_settings(env_file=None)
         self.assertIsNone(invalid.weekly_schedule)
         self.assertEqual(invalid.weekly_schedule_status, "invalid")
 
@@ -524,7 +564,7 @@ class WebApiGovernanceTests(unittest.TestCase):
         self.assertEqual(prepared.status_code, 200, prepared.text)
         self.assertTrue(prepared.json()["eligible"])
         decision = self.client.post(
-            f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}/decision",
+            f"/api/v1/projects/{PROJECT_ID}/reports/{self.fixture.current_report_id}/decision",
             headers=self._mutation_headers(csrf, "report-binding-change-01"),
             json={
                 "expected_report_version": 1, "expected_human_decision": "pending",
@@ -674,20 +714,15 @@ class WebApiGovernanceTests(unittest.TestCase):
         before = self.fixture.database_path.read_bytes()
         headers = self._mutation_headers(csrf)
         proposal_response = self.client.post(
-            f"/api/v1/projects/{PROJECT_ID}/proposals/{PROPOSAL_ID}/review",
+            self._proposal_path() + "/execute",
             headers=headers,
-            json={
-                "decision": "approve",
-                "expected_version": 0,
-                "proposal_body_sha256": "0" * 64,
-                "capture_id": "0" * 64,
-            },
+            json={"decision": "approve_and_execute", "reason": "Decision blocked by server configuration"},
         )
         self.assertEqual(proposal_response.status_code, 503)
         self.assertEqual(proposal_response.json()["error"]["code"], "gobernanza_no_habilitada")
 
         report_response = self.client.post(
-            f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}/decision",
+            f"/api/v1/projects/{PROJECT_ID}/reports/{self.fixture.current_report_id}/decision",
             headers={**headers, "Idempotency-Key": "report-decision-0001"},
             json={
                 "expected_report_version": 1,

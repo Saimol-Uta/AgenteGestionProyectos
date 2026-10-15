@@ -13,11 +13,6 @@ from agente_gestion.api.control_schemas import (
     OutboxDetail,
     ProposalCollection,
     ProposalDetail,
-    ProposalDryRunAuthorizationRequest,
-    ProposalDryRunRequest,
-    ProposalDryRunResponse,
-    ProposalMutationResponse,
-    ProposalReviewRequest,
     ProjectConfiguration,
     ReportCollection,
     ReportDecisionRequest,
@@ -48,6 +43,8 @@ from agente_gestion.api.schemas import (
     Page,
     PoliciesSummary,
     PrepareAnalysisRequest,
+    ProjectBoundConfirmAnalysisRequest,
+    ProjectBoundPrepareAnalysisRequest,
     ProjectView,
     QualitySummary,
     RunDetail,
@@ -81,6 +78,9 @@ def _session_view(
             csrf_token=None,
             capabilities=[],
             login_available=store.login_available,
+            email=None,
+            notification_email=None,
+            role=None,
         )
     capabilities = ["operator_session"]
     configured_project_ids = {project.id for project in settings.projects}
@@ -95,7 +95,7 @@ def _session_view(
         capabilities.extend(["analysis:prepare", "analysis:confirm"])
     if settings.governance_enabled and executable_scoped_projects:
         capabilities.extend([
-            "governance:proposal_review", "governance:dry_run_authorization", "governance:dry_run",
+            "governance:proposal_execute", "quality:decide", "notifications:email_send",
         ])
     if settings.report_decisions_enabled and executable_scoped_projects:
         capabilities.append("reports:decide")
@@ -106,12 +106,21 @@ def _session_view(
         authenticated=True,
         actor=sanitize_text(
             session.actor,
-            secrets_to_redact=(settings.operator_token.get_secret_value(),) if settings.operator_token else (),
+            secrets_to_redact=tuple(
+                secret for secret in (
+                    settings.operator_token.get_secret_value() if settings.operator_token else None,
+                    settings.manager_login_password.get_secret_value()
+                    if settings.manager_login_password else None,
+                ) if secret is not None
+            ),
             limit=128,
         ),
         csrf_token=session.csrf_token,
         capabilities=capabilities,
         login_available=store.login_available,
+        email=session.email,
+        notification_email=(session.email or settings.manager_email or settings.manager_login_email),
+        role=session.role,
     )
 
 
@@ -141,7 +150,11 @@ def _require_project_capability(
         raise ApiProblem(404, "proyecto_no_configurado", "El proyecto no está configurado para esta operación.")
     if project_id not in session.project_ids:
         raise ApiProblem(403, "proyecto_fuera_de_sesion", "La sesión no tiene alcance para este proyecto.")
-    if capability.startswith("governance:") and not settings.governance_enabled:
+    governed_capability = (
+        capability.startswith("governance:")
+        or capability in {"quality:decide", "notifications:email_send"}
+    )
+    if governed_capability and not settings.governance_enabled:
         raise ApiProblem(503, "gobernanza_no_habilitada", "El servidor no habilitó las operaciones de gobernanza.")
     if capability == "reports:decide" and not settings.report_decisions_enabled:
         raise ApiProblem(503, "decision_informe_no_habilitada", "El servidor no habilitó decisiones humanas de informes.")
@@ -178,8 +191,12 @@ def _require_analysis_access(
 
 
 @router.get("/system/health", response_model=SystemHealth, tags=["Sistema"])
-def system_health() -> SystemHealth:
-    return SystemHealth(status="ok", version="0.1.0", external_writes_enabled=False)
+def system_health(request: Request) -> SystemHealth:
+    settings: ApiSettings = request.app.state.settings
+    return SystemHealth(
+        status="ok", version="0.1.0",
+        external_writes_enabled=settings.external_writes_enabled,
+    )
 
 
 @router.get("/auth/session", response_model=AuthSessionView, tags=["Sesión"])
@@ -194,11 +211,20 @@ def auth_login(body: LoginRequest, request: Request, response: Response) -> Auth
     settings: ApiSettings = request.app.state.settings
     _require_exact_origin(request, settings)
     store: OperatorSessionStore = request.app.state.sessions
-    if not store.login_available:
-        raise ApiProblem(503, "inicio_no_configurado", "El acceso local de operador no está configurado.")
-    if not store.verify_operator_token(body.token):
-        raise ApiProblem(401, "credenciales_invalidas", "No se pudo verificar la credencial de operador.")
-    cookie_value, session = store.issue()
+    supplied_fields = body.model_fields_set
+    manager_credentials_supplied = bool(supplied_fields.intersection({"email", "password"}))
+
+    if manager_credentials_supplied:
+        if not store.verify_manager_credentials(body.email, body.password):
+            _reject_login(request)
+        cookie_value, session = store.issue_manager()
+    else:
+        if not store.login_available:
+            raise ApiProblem(503, "inicio_no_configurado", "El acceso local de operador no está configurado.")
+        if "token" not in supplied_fields or body.token is None or not store.verify_operator_token(body.token):
+            _reject_login(request)
+        cookie_value, session = store.issue()
+
     response.set_cookie(
         key=settings.session_cookie_name,
         value=cookie_value,
@@ -209,6 +235,11 @@ def auth_login(body: LoginRequest, request: Request, response: Response) -> Auth
         path="/api/v1",
     )
     return _session_view(store, session, settings)
+
+
+def _reject_login(request: Request) -> None:
+    request.app.state.control_plane.record_failed_login()
+    raise ApiProblem(401, "credenciales_invalidas", "Correo electrónico o contraseña incorrectos.")
 
 
 @router.post("/auth/logout", status_code=204, response_class=Response, tags=["Sesión"])
@@ -512,6 +543,55 @@ def confirm_project_analysis(
     )
 
 
+@router.post(
+    "/analysis/prepare",
+    response_model=AnalysisPreparation,
+    tags=["Análisis"],
+)
+def prepare_unscoped_analysis(
+    request: Request,
+    body: ProjectBoundPrepareAnalysisRequest,
+) -> AnalysisPreparation:
+    project_id = body.project_id
+    _require_analysis_access(request, project_id, mutation=True)
+    return request.app.state.analysis_jobs.prepare(
+        project_id,
+        request.cookies.get(request.app.state.settings.session_cookie_name),
+    )
+
+
+@router.post(
+    "/analysis/confirm",
+    response_model=ConfirmAnalysisResponse,
+    status_code=202,
+    tags=["Análisis"],
+)
+def confirm_unscoped_analysis(
+    request: Request,
+    body: ProjectBoundConfirmAnalysisRequest,
+    idempotency_key: Annotated[str, Header(
+        alias="Idempotency-Key", min_length=8, max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
+    )],
+) -> ConfirmAnalysisResponse:
+    project_id = body.project_id
+    _require_analysis_access(request, project_id, mutation=True)
+    job, reused = request.app.state.analysis_jobs.confirm(
+        project_id=project_id,
+        preparation_id=body.preparation_id,
+        configuration_fingerprint=body.configuration_fingerprint,
+        remote_consent=body.remote_consent,
+        session_cookie=request.cookies.get(request.app.state.settings.session_cookie_name),
+        idempotency_key=idempotency_key,
+    )
+    return ConfirmAnalysisResponse(
+        job=job,
+        reused=reused,
+        poll_url=f"/api/v1/analysis/jobs/{job.job_id}",
+        poll_after_ms=1000,
+    )
+
+
 @router.get("/analysis/jobs", response_model=Page[AnalysisJobView], tags=["Análisis"])
 def list_analysis_jobs(
     request: Request,
@@ -574,89 +654,6 @@ def get_project_proposal(
         return request.app.state.control_plane.proposal_detail(project_id, proposal_id)
     except LookupError as exc:
         _raise_lookup(exc)
-
-
-@router.post(
-    "/projects/{project_id}/proposals/{proposal_id}/review",
-    response_model=ProposalMutationResponse,
-    tags=["Gobernanza"],
-)
-def review_project_proposal(
-    request: Request,
-    body: ProposalReviewRequest,
-    project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    proposal_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    idempotency_key: Annotated[str, Header(
-        alias="Idempotency-Key", min_length=8, max_length=128,
-        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
-    )],
-) -> ProposalMutationResponse:
-    session = _require_project_capability(request, project_id, "governance:proposal_review", mutation=True)
-    cookie = request.cookies.get(request.app.state.settings.session_cookie_name)
-    try:
-        proposal, reused, audit_event_id = request.app.state.control_plane.review_proposal(
-            project_id, proposal_id, body.decision, body.expected_version,
-            body.proposal_body_sha256, body.capture_id, session.actor, cookie, idempotency_key,
-        )
-    except LookupError as exc:
-        _raise_lookup(exc)
-    return ProposalMutationResponse(proposal=proposal, reused=reused, audit_event_id=audit_event_id)
-
-
-@router.post(
-    "/projects/{project_id}/proposals/{proposal_id}/dry-run-authorization",
-    response_model=ProposalMutationResponse,
-    tags=["Gobernanza"],
-)
-def authorize_project_proposal_dry_run(
-    request: Request,
-    body: ProposalDryRunAuthorizationRequest,
-    project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    proposal_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    idempotency_key: Annotated[str, Header(
-        alias="Idempotency-Key", min_length=8, max_length=128,
-        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
-    )],
-) -> ProposalMutationResponse:
-    session = _require_project_capability(
-        request, project_id, "governance:dry_run_authorization", mutation=True,
-    )
-    cookie = request.cookies.get(request.app.state.settings.session_cookie_name)
-    try:
-        proposal, reused, audit_event_id = request.app.state.control_plane.authorize_proposal_dry_run(
-            project_id, proposal_id, body.expected_version, body.proposal_body_sha256,
-            body.capture_id, session.actor, cookie, idempotency_key,
-        )
-    except LookupError as exc:
-        _raise_lookup(exc)
-    return ProposalMutationResponse(proposal=proposal, reused=reused, audit_event_id=audit_event_id)
-
-
-@router.post(
-    "/projects/{project_id}/proposals/{proposal_id}/dry-runs",
-    response_model=ProposalDryRunResponse,
-    tags=["Gobernanza"],
-)
-def run_project_proposal_dry_run(
-    request: Request,
-    body: ProposalDryRunRequest,
-    project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    proposal_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    idempotency_key: Annotated[str, Header(
-        alias="Idempotency-Key", min_length=8, max_length=128,
-        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
-    )],
-) -> ProposalDryRunResponse:
-    session = _require_project_capability(request, project_id, "governance:dry_run", mutation=True)
-    cookie = request.cookies.get(request.app.state.settings.session_cookie_name)
-    try:
-        result, reused, audit_event_id = request.app.state.control_plane.simulate_proposal(
-            project_id, proposal_id, body.expected_version, body.proposal_body_sha256,
-            body.capture_id, body.permission_event_id, session.actor, cookie, idempotency_key,
-        )
-    except LookupError as exc:
-        _raise_lookup(exc)
-    return ProposalDryRunResponse(dry_run=result, reused=reused, audit_event_id=audit_event_id)
 
 
 @router.get("/projects/{project_id}/reports", response_model=ReportCollection, tags=["Informes"])
@@ -759,7 +756,7 @@ def list_project_audit(
     except LookupError as exc:
         _raise_lookup(exc)
     if event_type is not None and event_type not in {
-        "analysis_run", "report_decision", "proposal_decision", "proposal_dry_run",
+        "analysis_run", "report_decision", "proposal_decision",
         "proposal_execution", "outbox_delivery", "security",
     }:
         raise ApiProblem(422, "tipo_de_evento_invalido", "El filtro de evento de auditoría no es válido.")

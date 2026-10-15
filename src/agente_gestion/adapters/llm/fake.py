@@ -57,9 +57,9 @@ class FakeProvider(LLMProviderPort):
         if "elaborador" in role or "monitoring" in role:
             # Deterministic draft
             tasks_in_ev = request.evidences.get("tasks", [])
-            task_ids = [t.get("id") for t in tasks_in_ev[:2]] if tasks_in_ev else ["T1", "T2"]
+            task_ids = [t.get("id") for t in tasks_in_ev[:2]] if tasks_in_ev else []
             available_ev = request.evidences.get("available_evidence_ids", [])
-            ev_ids = available_ev[:2] if available_ev else ["ev-1"]
+            ev_ids = available_ev[:2] if available_ev else []
             structured = {
                 "summary": "Resumen semanal: el avance progresa de acuerdo con las tareas planificadas.",
                 "risks": ["Riesgo potencial de sincronizacion"],
@@ -104,6 +104,8 @@ class FakeProvider(LLMProviderPort):
                         "category": "division_cero",
                         "evidence": "return 1 / total",
                         "suggested_fix": "if total == 0: return 0",
+                        "suggested_code": "return 0 if total == 0 else 1 / total",
+                        "improvement_summary": "Evita la división por cero y conserva el cálculo para valores válidos.",
                     }
                 ]
             }

@@ -1,11 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import type {
   AuditEventDetail,
+  DecideCodeFindingRequest,
+  ExecuteProposalRequest,
   OutboxDetail,
   ProjectConfiguration,
   ProposalDetail,
-  ProposalReviewFilter,
+  SendManagerEmailRequest,
   ReportDetail,
   ReportHumanDecision,
   TaskQuery,
@@ -33,7 +35,7 @@ export const queryKeys = {
   evidence: (runId: string, page: number, pageSize: number) => ["run-evidence", runId, page, pageSize] as const,
   analysisJobs: (projectId: string, page: number, pageSize: number) => ["analysis-jobs", projectId, page, pageSize] as const,
   analysisJob: (jobId: string) => ["analysis-job", jobId] as const,
-  proposals: (projectId: string, page: number, pageSize: number, reviewStatus: string) => ["proposals", projectId, page, pageSize, reviewStatus] as const,
+  proposals: (projectId: string, page: number, pageSize: number) => ["proposals", projectId, page, pageSize] as const,
   proposal: (projectId: string, proposalId: string) => ["proposal", projectId, proposalId] as const,
   reports: (projectId: string, page: number, pageSize: number, decision: string) => ["reports", projectId, page, pageSize, decision] as const,
   report: (projectId: string, reportId: string) => ["report", projectId, reportId] as const,
@@ -183,10 +185,10 @@ export function useAnalysisJobs(projectId: string | null, page = 1, pageSize = 2
   });
 }
 
-export function useProposals(projectId: string | null, page = 1, pageSize = 25, reviewStatus: ProposalReviewFilter | "" = "") {
+export function useProposals(projectId: string | null, page = 1, pageSize = 25) {
   return useQuery({
-    queryKey: queryKeys.proposals(projectId ?? "", page, pageSize, reviewStatus),
-    queryFn: () => api.getProposals(projectId!, page, pageSize, reviewStatus || undefined),
+    queryKey: queryKeys.proposals(projectId ?? "", page, pageSize),
+    queryFn: () => api.getProposals(projectId!, page, pageSize),
     enabled: Boolean(projectId),
     staleTime: 10_000,
   });
@@ -289,5 +291,65 @@ export function useProjectConfiguration(projectId: string | null, enabled: boole
     queryFn: () => api.getProjectConfiguration(projectId!),
     enabled: Boolean(projectId && enabled),
     staleTime: 30_000,
+  });
+}
+
+export function useDecideCodeFindingMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (variables: {
+      runId: string;
+      findingId: string;
+      payload: DecideCodeFindingRequest;
+      csrfToken: string;
+      idempotencyKey: string;
+    }) => api.decideCodeFinding(variables.runId, variables.findingId, variables.payload, variables.csrfToken, variables.idempotencyKey),
+    onSuccess: async (_result, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.finding(variables.runId, variables.findingId), refetchType: "none" }),
+        queryClient.invalidateQueries({ queryKey: ["findings", variables.runId] }),
+      ]);
+    },
+  });
+}
+
+export function useExecuteProposalMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (variables: {
+      projectId: string;
+      proposalId: string;
+      payload: ExecuteProposalRequest;
+      csrfToken: string;
+      idempotencyKey: string;
+    }) => api.executeProposal(variables.projectId, variables.proposalId, variables.payload, variables.csrfToken, variables.idempotencyKey),
+    onSuccess: async (_result, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["proposals", variables.projectId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.proposal(variables.projectId, variables.proposalId) }),
+        queryClient.invalidateQueries({ queryKey: ["tasks", variables.projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["summary", variables.projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["audit", variables.projectId] }),
+      ]);
+    },
+  });
+}
+
+export function useSendManagerEmailMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (variables: {
+      projectId: string;
+      payload: SendManagerEmailRequest;
+      csrfToken: string;
+      idempotencyKey: string;
+    }) => api.sendManagerEmail(variables.projectId, variables.payload, variables.csrfToken, variables.idempotencyKey),
+    onSuccess: async (_result, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["schedule-outbox", variables.projectId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.schedule(variables.projectId) }),
+        queryClient.invalidateQueries({ queryKey: ["audit", variables.projectId] }),
+      ]);
+    },
   });
 }

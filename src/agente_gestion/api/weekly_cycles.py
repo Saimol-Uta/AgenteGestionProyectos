@@ -569,6 +569,8 @@ class WeeklyCycleService:
                 self.ledger.update(job_id, status="completed", outcome="SKIPPED_NOT_DUE")
                 return
             storage = SQLiteStorageAdapter(self.settings.db_path)
+            # This existing confirmation explicitly authorizes a local SQLite-only cycle.
+            # Manager email is sent through its separate protected confirmation route.
             scheduler = WeeklySchedulerService(
                 storage,
                 outbox=HybridNotificationOutboxAdapter(storage, Path(self.settings.outbox_dir)),

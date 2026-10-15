@@ -64,8 +64,8 @@ class CLIHistoryTests(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with ExitStack() as stack:
             for name in ("_build_orchestrator", "ArtifactStorageAdapter", "Settings",
-                         "FakeProvider", "OllamaProvider", "GeminiProvider", "GroqProvider",
-                         "MistralProvider", "create_composite_source", "create_task_source",
+                         "FakeProvider", "GeminiProvider", "GroqProvider",
+                         "create_analysis_composite_source", "create_task_source",
                          "create_code_source", "create_ci_source", "create_policy_source"):
                 stack.enter_context(patch.object(cli, name, side_effect=AssertionError(name)))
             stack.enter_context(patch.object(SQLiteStorageAdapter, "_ensure_dir_and_schema",

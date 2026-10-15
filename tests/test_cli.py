@@ -10,6 +10,10 @@ import sys
 
 from agente_gestion.cli import main
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+from agente_gestion.application.config import Settings
+from agente_gestion.adapters.llm.fake import FakeProvider
+from agente_gestion.adapters.llm.gemini import GeminiProvider
+from agente_gestion.adapters.llm.groq import GroqProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
 
@@ -19,6 +23,16 @@ class CLITestCase(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.temp_dir, "cli_test.db")
         self.runs_dir = os.path.join(self.temp_dir, "runs")
+
+        # CLI tests use explicit synthetic dotenvs only; never read the real project .env.
+        original_loader = Settings.from_env_and_file.__func__
+        def isolated_loader(cls, *args, **kwargs):
+            if kwargs.get("env_file") is None and "_env_file" not in kwargs:
+                kwargs["_env_file"] = None
+            return original_loader(cls, *args, **kwargs)
+        env_guard = patch.object(Settings, "from_env_and_file", classmethod(isolated_loader))
+        env_guard.start()
+        self.addCleanup(env_guard.stop)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -149,7 +163,7 @@ class CLITestCase(unittest.TestCase):
         self.assertIsNotNone(report)
         self.assertEqual(report.project_id, "custom-project-x")
 
-    def test_cli_real_mode_default_disabled_verificador_is_unavailable_and_no_ollama_fallback(self):
+    def test_cli_remote_disabled_uses_deterministic_verifier_without_remote_constructors(self):
         cmd = [
             "run",
             "fixture_1_standard",
@@ -159,20 +173,23 @@ class CLITestCase(unittest.TestCase):
         ]
 
         stdout_capture = io.StringIO()
-        from agente_gestion.application.config import Settings
         orig_loader = Settings.from_env_and_file
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"ALLOW_REMOTE_AI": "false"}, clear=True), \
              patch(
                  "agente_gestion.cli.Settings.from_env_and_file",
                  side_effect=lambda *a, **kw: orig_loader(*a, **{**kw, "_env_file": None}),
              ), \
              patch.object(sys, "argv", ["agente_gestion"] + cmd), \
              patch("sys.stdout", stdout_capture), \
+             patch.object(GeminiProvider, "__init__", autospec=True,
+                          side_effect=AssertionError("Gemini constructor must stay idle")) as gemini_constructor, \
+             patch.object(GroqProvider, "__init__", autospec=True,
+                          side_effect=AssertionError("Groq constructor must stay idle")) as groq_constructor, \
              patch("agente_gestion.cli.ProjectOrchestrator") as mock_orch_cls:
 
             mock_run = MagicMock()
             mock_run.run_id = "run-test-123"
-            mock_run.status.value = "needs_attention"
+            mock_run.status = RunStatus.awaiting_human
             mock_run.duration_seconds = 1.23
             mock_orch_instance = MagicMock()
             mock_orch_instance.execute.return_value = mock_run
@@ -180,18 +197,19 @@ class CLITestCase(unittest.TestCase):
 
             exit_code = main()
 
-        # Orchestrator should have received verificador_provider=None, NOT OllamaProvider!
-        call_kwargs = mock_orch_cls.call_args[1]
-        self.assertIsNone(
-            call_kwargs.get("verificador_provider"),
-            "Expected verificador_provider to be None when remote AI is disabled (no Ollama fallback allowed)",
-        )
+        self.assertEqual(exit_code, 0)
+        verifier = mock_orch_cls.call_args[1].get("verificador_provider")
+        self.assertIsInstance(verifier, FakeProvider)
+        self.assertTrue(verifier.is_simulated)
+        self.assertEqual(verifier.model, "sandbox-verifier")
+        gemini_constructor.assert_not_called()
+        groq_constructor.assert_not_called()
 
         output = stdout_capture.getvalue()
-        self.assertIn("Verificador=unavailable", output)
+        self.assertIn("Verificador=sandbox-verifier", output)
 
     def test_cli_remote_disabled_scenario_immune_to_ambient_host_dotenv_and_os_flags(self):
-        """Regression test: ambient host dotenv or OS remote flag cannot contaminate remote-disabled scenario."""
+        """A host dotenv cannot override explicit remote-off policy or construct remote providers."""
         from agente_gestion.application.config import Settings
         orig_loader = Settings.from_env_and_file
         host_env_path = os.path.join(self.temp_dir, "host.env")
@@ -210,7 +228,7 @@ class CLITestCase(unittest.TestCase):
         ]
 
         # Case 1: Scoped Settings factory using _env_file=None ignores ambient host dotenv
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"ALLOW_REMOTE_AI": "false"}, clear=True), \
              patch(
                  "agente_gestion.cli.Settings.from_env_and_file",
                  side_effect=lambda *a, **kw: orig_loader(*a, **{**kw, "_env_file": None}),
@@ -225,10 +243,7 @@ class CLITestCase(unittest.TestCase):
 
             main()
             call_kwargs = mock_orch_cls.call_args[1]
-            self.assertIsNone(
-                call_kwargs.get("verificador_provider"),
-                "Scoped factory _env_file=None must shield against ambient host dotenv",
-            )
+            self.assertIsInstance(call_kwargs.get("verificador_provider"), FakeProvider)
 
         # Case 2: OS environment ALLOW_REMOTE_AI=false strictly beats host dotenv ALLOW_REMOTE_AI=true
         cmd_with_host_env = cmd + ["--env-file", host_env_path]
@@ -243,10 +258,7 @@ class CLITestCase(unittest.TestCase):
 
             main()
             call_kwargs_2 = mock_orch_cls_2.call_args[1]
-            self.assertIsNone(
-                call_kwargs_2.get("verificador_provider"),
-                "OS ALLOW_REMOTE_AI=false must override host dotenv ALLOW_REMOTE_AI=true",
-            )
+            self.assertIsInstance(call_kwargs_2.get("verificador_provider"), FakeProvider)
 
     def test_cli_wires_verifier_timeout_from_config_to_orchestrator(self):
         """CLI must wire verifier_timeout_seconds from Settings into OrchestratorConfig."""
@@ -286,7 +298,6 @@ class CLITestCase(unittest.TestCase):
         with open(env_custom_path, "w", encoding="utf-8") as f:
             f.write(
                 "PROJECT_ID=env-project\n"
-                "OLLAMA_BASE_URL=http://env-host:11435\n"
             )
 
         cmd = [
@@ -323,7 +334,6 @@ class CLITestCase(unittest.TestCase):
         with patch.dict(os.environ, {"GEMINI_API_KEY": "synthetic-cli-key", "ALLOW_REMOTE_AI": "true"}, clear=True), \
              patch.object(sys, "argv", ["agente_gestion"] + cmd), \
              patch("sys.stdout", io.StringIO()), \
-             patch("agente_gestion.cli.GeminiProvider") as mock_gemini_cls, \
              patch("agente_gestion.cli.ProjectOrchestrator") as mock_orch_cls:
 
             mock_run = MagicMock()
@@ -334,17 +344,17 @@ class CLITestCase(unittest.TestCase):
             mock_orch_instance.execute.return_value = mock_run
             mock_orch_cls.return_value = mock_orch_instance
 
-            mock_gemini_instance = MagicMock()
-            mock_gemini_instance.model = "gemini-2.5-flash"
-            mock_gemini_cls.return_value = mock_gemini_instance
-
             exit_code = main()
+            wired = mock_orch_cls.call_args.kwargs
 
         self.assertEqual(exit_code, 0)
-        # Verify GeminiProvider was instantiated with the string key extracted from SecretStr
-        mock_gemini_cls.assert_called_once()
-        self.assertEqual(mock_gemini_cls.call_args[1]["api_key"], "synthetic-cli-key")
-        self.assertTrue(mock_gemini_cls.call_args[1]["allow_remote_ai"])
+        # Gemini owns monitoring, verification, and reporting; Groq is local without its key.
+        gemini_roles = [wired[name] for name in
+                        ("elaborador_provider", "verificador_provider", "aprobador_provider")]
+        self.assertTrue(all(isinstance(provider, GeminiProvider) for provider in gemini_roles))
+        self.assertTrue(all(provider.api_key == "synthetic-cli-key" for provider in gemini_roles))
+        self.assertTrue(all(provider.allow_remote_ai for provider in gemini_roles))
+        self.assertIsInstance(wired["revisor_provider"], FakeProvider)
 
 
 if __name__ == "__main__":

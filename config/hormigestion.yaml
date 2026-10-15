@@ -3,6 +3,8 @@ project:
   timezone: America/Guayaquil
   allow_remote_ai: true
 
+external_writes_enabled: true
+
 execution:
   due_soon_days: 7
   max_llm_calls_per_run: 8
