@@ -4,7 +4,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
-import ipaddress
 import json
 from pathlib import Path
 import re
@@ -13,7 +12,6 @@ import sqlite3
 from threading import RLock
 import time
 from typing import Any, Callable
-from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
@@ -40,12 +38,17 @@ class AnalysisRuntimePlan:
     fingerprint: str
     preflight: AnalysisPreflight
     remote: RemotePreflight
+    execution_mode: str = "sandbox"
+    fallback_reasons: tuple[str, ...] = ()
     engine_settings: EngineSettings | None = field(default=None, repr=False, compare=False)
 
     @property
     def eligible(self) -> bool:
-        return (self.preflight.configuration_status == "ready" and self.remote.server_allowed
-                and self.engine_settings is not None)
+        return (
+            self.preflight.configuration_status == "ready"
+            and (not self.remote.required or self.remote.server_allowed)
+            and self.engine_settings is not None
+        )
 
 
 def _credential_status(secret: SecretStr | None) -> str:
@@ -62,24 +65,11 @@ def _public_model_name(value: object) -> str:
     return value
 
 
-def _transport(provider: str, base_url: str | None = None) -> str:
-    if provider in {"gemini", "groq", "mistral", "trello", "github", "github_actions"}:
+def _transport(provider: str) -> str:
+    if provider in {"gemini", "groq", "trello", "github", "github_actions"}:
         return "remote"
-    if provider == "fake_simulated":
+    if provider in {"fake_simulated", "sandbox"}:
         return "local"
-    if provider == "ollama":
-        try:
-            hostname = urlsplit(base_url or "").hostname
-        except ValueError:
-            return "unknown"
-        if not hostname:
-            return "unknown"
-        if hostname.lower() == "localhost":
-            return "local"
-        try:
-            return "local" if ipaddress.ip_address(hostname).is_loopback else "remote"
-        except ValueError:
-            return "remote"
     return "unknown"
 
 
@@ -114,159 +104,167 @@ def _unavailable_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRun
             checks=[PreflightCheck(code="configuration_unavailable", status="incomplete")],
         ),
         remote=RemotePreflight(
-            required=bool(project and project.source_mode == "real"),
-            server_allowed=False,
-            providers=[],
+            required=False, server_allowed=False, providers=[],
         ),
+        execution_mode="sandbox",
+        fallback_reasons=("Effective analysis configuration is unavailable; no run can be confirmed.",),
     )
 
 
 def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRuntimePlan:
-    """Load the effective YAML/environment configuration without dotenv or network access."""
+    """Load one effective config using the same YAML and dotenv layers as API startup."""
     project = next((item for item in api_settings.projects if item.id == project_id), None)
     source_mode = project.source_mode if project else "unknown"
     config_path = api_settings.analysis_config_path
     if (not config_path or Path(config_path).name.startswith(".env")
             or Path(config_path).resolve(strict=False).name.startswith(".env")):
-        fingerprint = _fingerprint(api_settings, None, project_id)
-        return AnalysisRuntimePlan(
-            fingerprint=fingerprint,
-            preflight=AnalysisPreflight(
-                source_mode=source_mode,
-                configuration_status="incomplete",
-                checks=[PreflightCheck(code="configuration_unavailable", status="incomplete")],
-            ),
-            remote=RemotePreflight(
-                required=source_mode == "real", server_allowed=False, providers=[],
-            ),
-        )
+        return _unavailable_plan(api_settings, project_id)
+
+    overrides: dict[str, Any] = {
+        "project_id": project_id,
+        "source_mode": source_mode,
+        "db_path": api_settings.db_path,
+        "runs_dir": api_settings.runs_dir,
+        "timezone": api_settings.timezone,
+        "due_soon_days": api_settings.due_soon_days,
+    }
+    for name, value in (
+        ("github_token", api_settings.github_token),
+        ("trello_api_key", api_settings.trello_api_key),
+        ("trello_token", api_settings.trello_token),
+    ):
+        if value is not None:
+            overrides[name] = value
+    if api_settings.github_repository:
+        repository = api_settings.github_repository.split("/", 1)
+        if len(repository) == 2:
+            overrides.update(github_owner=repository[0], github_repo=repository[1])
+    mapped_board = api_settings.trello_board_ids.get(project_id)
+    if api_settings.trello_board_bindings_explicit:
+        overrides["trello_board_id"] = mapped_board or ""
+    elif mapped_board:
+        overrides["trello_board_id"] = mapped_board
+
     try:
         engine = EngineSettings.from_env_and_file(
             config_path=config_path,
-            overrides={
-                "project_id": project_id,
-                "source_mode": source_mode,
-                "db_path": api_settings.db_path,
-                "runs_dir": api_settings.runs_dir,
-                "timezone": api_settings.timezone,
-                "due_soon_days": api_settings.due_soon_days,
-            },
-            _env_file=None,
+            overrides=overrides,
+            _env_file=api_settings.analysis_env_file,
         )
     except Exception:
-        fingerprint = _fingerprint(api_settings, None, project_id)
-        return AnalysisRuntimePlan(
-            fingerprint=fingerprint,
-            preflight=AnalysisPreflight(
-                source_mode=source_mode,
-                configuration_status="incomplete",
-                checks=[PreflightCheck(code="configuration_invalid", status="incomplete")],
-            ),
-            remote=RemotePreflight(required=source_mode == "real", server_allowed=False, providers=[]),
-        )
+        return _unavailable_plan(api_settings, project_id)
 
     providers: list[ProviderPreflight] = []
-    remote_ai_required = False
-    required_remote_credentials_ready = True
-    required_provider_transport_ready = True
+    fallback_reasons: list[str] = []
+    remote_used = False
+    remote_permission = bool(engine.allow_remote_ai and not engine.is_fake)
 
-    def add_llm(stage: str, provider: str, model: str, credential: str,
-                base_url: str | None = None, *, required: bool = True) -> None:
-        nonlocal remote_ai_required, required_remote_credentials_ready, required_provider_transport_ready
-        transport = _transport(provider, base_url)
-        if transport != "local":
-            remote_ai_required = True
-        if required and transport == "unknown":
-            required_provider_transport_ready = False
-        credential_status = credential
-        if required and transport != "local" and credential_status == "missing":
-            required_remote_credentials_ready = False
+    def add_model(stage: str, provider: str, model: str, secret: SecretStr | None) -> None:
+        nonlocal remote_used
+        credential_status = _credential_status(secret)
+        if engine.is_fake:
+            providers.append(ProviderPreflight(
+                stage=stage, provider="fake_simulated", model=f"sandbox-{stage}",
+                transport="local", credential_status="not_required",
+            ))
+            return
+        if remote_permission and credential_status == "configured":
+            remote_used = True
+            providers.append(ProviderPreflight(
+                stage=stage, provider=provider, model=_public_model_name(model),
+                transport="remote", credential_status="configured",
+            ))
+            return
+        reason = (
+            f"{stage}: ALLOW_REMOTE_AI is false; deterministic sandbox selected."
+            if not engine.allow_remote_ai else
+            f"{stage}: {provider} credentials are missing; deterministic sandbox selected."
+        )
+        fallback_reasons.append(reason)
         providers.append(ProviderPreflight(
-            stage=stage,
-            provider=provider,
-            model=_public_model_name(model),
-            transport=transport,
-            credential_status=credential_status,
+            stage=stage, provider="fake_simulated", model=f"sandbox-{stage}",
+            transport="local", credential_status=credential_status,
         ))
 
-    if engine.is_fake:
-        add_llm("monitoring", "fake_simulated", "fake-qwen-2b", "not_required")
-        add_llm("quality", "fake_simulated", "fake-qwen-4b", "not_required")
-        add_llm("verifier", "fake_simulated", "fake-gemini-flash", "not_required", required=False)
-        add_llm("report", "fake_simulated", "fake-qwen-2b", "not_required")
-    else:
-        monitoring_provider = "gemini" if engine.monitoring_provider == "gemini" else "ollama"
-        monitoring_model = engine.gemini_monitoring_model if monitoring_provider == "gemini" else engine.ollama_monitoring_model
-        add_llm("monitoring", monitoring_provider, monitoring_model,
-                _credential_status(engine.gemini_api_key) if monitoring_provider == "gemini" else "not_required",
-                engine.ollama_base_url if monitoring_provider == "ollama" else None)
-
-        if engine.quality_provider == "groq":
-            add_llm("quality", "groq", engine.groq_model, _credential_status(engine.groq_api_key), engine.groq_base_url)
-        elif engine.quality_provider == "mistral":
-            add_llm("quality", "mistral", engine.mistral_model, _credential_status(engine.mistral_api_key), engine.mistral_base_url)
-        else:
-            add_llm("quality", "ollama", engine.ollama_quality_model, "not_required", engine.ollama_base_url)
-
-        report_provider = "gemini" if engine.report_provider == "gemini" else "ollama"
-        add_llm("report", report_provider,
-                engine.gemini_report_model if report_provider == "gemini" else engine.ollama_report_model,
-                _credential_status(engine.gemini_api_key) if report_provider == "gemini" else "not_required",
-                engine.ollama_base_url if report_provider == "ollama" else None)
-        if engine.allow_remote_ai:
-            add_llm("verifier", "gemini", engine.gemini_model,
-                    _credential_status(engine.gemini_api_key), required=False)
+    add_model("monitoring", "gemini", engine.gemini_monitoring_model, engine.gemini_api_key)
+    add_model("quality", "groq", engine.groq_model, engine.groq_api_key)
+    add_model("verifier", "gemini", engine.gemini_model, engine.gemini_api_key)
+    add_model("report", "gemini", engine.gemini_report_model, engine.gemini_api_key)
 
     checks: list[PreflightCheck] = []
+    source_remote_ready = False
+    source_needs_fixture = False
     if engine.source_mode == "fixtures":
-        fixtures_ready = Path(engine.fixtures_dir).is_dir()
-        checks.append(PreflightCheck(
-            code="fixture_source",
-            status="ready" if fixtures_ready else "incomplete",
-        ))
+        source_needs_fixture = True
     elif engine.source_mode == "real":
         task_ready = bool(engine.trello_board_id and engine.trello_api_key and engine.trello_token)
-        code_ready = bool(engine.github_owner and (engine.github_repo or engine.github_repository))
+        repo_ready = bool(engine.github_owner and engine.github_repo and engine.github_token)
+        ci_ready = bool(repo_ready and engine.github_commit_sha)
+
+        def add_source(stage: str, provider: str, ready: bool, configured: bool) -> None:
+            nonlocal source_remote_ready, source_needs_fixture
+            if remote_permission and ready:
+                source_remote_ready = True
+                providers.append(ProviderPreflight(
+                    stage=stage, provider=provider, model="not_applicable",
+                    transport="remote", credential_status="configured",
+                ))
+                return
+            source_needs_fixture = True
+            if engine.is_fake:
+                reason = f"{stage}: explicit fake mode selects the deterministic sandbox."
+            elif not engine.allow_remote_ai:
+                reason = f"{stage}: ALLOW_REMOTE_AI is false; local fixture source selected."
+            else:
+                reason = f"{stage}: remote credentials or resource binding are missing; local fixture source selected."
+            fallback_reasons.append(reason)
+            providers.append(ProviderPreflight(
+                stage=stage, provider="sandbox", model="fixture-source", transport="local",
+                credential_status="configured" if configured else "missing",
+            ))
+
+        add_source("task_source", "trello", task_ready, bool(engine.trello_api_key and engine.trello_token))
+        add_source("code_source", "github", repo_ready, bool(engine.github_owner and engine.github_repo and engine.github_token))
+        add_source("ci_source", "github_actions", ci_ready, bool(engine.github_token and engine.github_commit_sha))
+
         policy_ready = Path(engine.policies_path).is_file()
-        checks.extend([
-            PreflightCheck(code="task_source_configuration", status="ready" if task_ready else "incomplete"),
-            PreflightCheck(code="code_and_ci_source_configuration", status="ready" if code_ready else "incomplete"),
-            PreflightCheck(code="policy_configuration", status="ready" if policy_ready else "incomplete"),
-        ])
+        if not policy_ready:
+            source_needs_fixture = True
+            fallback_reasons.append("policy_source: local policy file is missing; fixture policy source selected.")
+        checks.append(PreflightCheck(
+            code="policy_configuration",
+            status="ready" if policy_ready or Path(engine.fixtures_dir).is_dir() else "incomplete",
+        ))
     else:
         checks.append(PreflightCheck(code="source_mode", status="incomplete"))
 
-    if not required_remote_credentials_ready:
-        checks.append(PreflightCheck(code="provider_credentials", status="incomplete"))
-    if not required_provider_transport_ready:
-        checks.append(PreflightCheck(code="provider_transport_configuration", status="incomplete"))
-    if remote_ai_required and not engine.allow_remote_ai:
-        checks.append(PreflightCheck(code="remote_ai_server_permission", status="incomplete"))
+    if source_needs_fixture:
+        fixtures_ready = Path(engine.fixtures_dir).is_dir()
+        checks.append(PreflightCheck(
+            code="sandbox_source", status="ready" if fixtures_ready else "incomplete",
+        ))
+    elif engine.source_mode == "fixtures":
+        fixtures_ready = Path(engine.fixtures_dir).is_dir()
+        checks.append(PreflightCheck(
+            code="fixture_source", status="ready" if fixtures_ready else "incomplete",
+        ))
     if not checks:
         checks.append(PreflightCheck(code="effective_configuration", status="ready"))
     configuration_status = "ready" if all(check.status == "ready" for check in checks) else "incomplete"
 
-    source_remote = engine.source_mode == "real"
-    remote_required = source_remote or any(provider.transport != "local" for provider in providers)
-    server_allowed = not remote_ai_required or bool(engine.allow_remote_ai)
-    if source_remote:
-        providers.extend([
-            ProviderPreflight(
-                stage="task_source", provider="trello", model="not_applicable", transport="remote",
-                credential_status=("configured" if engine.trello_board_id and engine.trello_api_key and engine.trello_token
-                                   else "missing"),
-            ),
-            ProviderPreflight(
-                stage="code_source", provider="github", model="not_applicable", transport="remote",
-                credential_status="configured" if engine.github_owner and (engine.github_repo or engine.github_repository)
-                else "missing",
-            ),
-            ProviderPreflight(
-                stage="ci_source", provider="github_actions", model="not_applicable", transport="remote",
-                credential_status="configured" if engine.github_owner and (engine.github_repo or engine.github_repository)
-                else "missing",
-            ),
-        ])
+    remote_required = remote_used or source_remote_ready
+    if remote_required and fallback_reasons:
+        execution_mode = "mixed"
+    elif remote_required:
+        execution_mode = "live"
+    else:
+        execution_mode = "sandbox"
+    remote = RemotePreflight(
+        required=remote_required,
+        server_allowed=bool(engine.allow_remote_ai),
+        availability="not_checked",
+        providers=providers,
+    )
     return AnalysisRuntimePlan(
         fingerprint=_fingerprint(api_settings, engine, project_id),
         preflight=AnalysisPreflight(
@@ -274,12 +272,9 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
             configuration_status=configuration_status,
             checks=checks,
         ),
-        remote=RemotePreflight(
-            required=remote_required,
-            server_allowed=server_allowed,
-            availability="not_checked",
-            providers=providers,
-        ),
+        remote=remote,
+        execution_mode=execution_mode,
+        fallback_reasons=tuple(fallback_reasons),
         engine_settings=engine,
     )
 
@@ -326,9 +321,20 @@ class AnalysisJobLedger:
                 request_fingerprint TEXT NOT NULL,
                 preparation_id TEXT NOT NULL,
                 configuration_fingerprint TEXT NOT NULL,
+                execution_mode TEXT NOT NULL DEFAULT 'sandbox',
+                fallback_reasons_json TEXT NOT NULL DEFAULT '[]',
                 UNIQUE(project_id, idempotency_hash)
             )
         """)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(analysis_jobs)")}
+        if "execution_mode" not in columns:
+            connection.execute(
+                "ALTER TABLE analysis_jobs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'sandbox'"
+            )
+        if "fallback_reasons_json" not in columns:
+            connection.execute(
+                "ALTER TABLE analysis_jobs ADD COLUMN fallback_reasons_json TEXT NOT NULL DEFAULT '[]'"
+            )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_analysis_jobs_project_created "
             "ON analysis_jobs(project_id, created_at DESC)"
@@ -362,6 +368,8 @@ class AnalysisJobLedger:
         preparation_id: str,
         configuration_fingerprint: str,
         remote_consent: bool,
+        execution_mode: str,
+        fallback_reasons: tuple[str, ...],
         queue_capacity: int,
     ) -> tuple[dict[str, Any], bool]:
         connection = self._ensure_schema()
@@ -396,9 +404,11 @@ class AnalysisJobLedger:
             connection.execute(
                 "INSERT INTO analysis_jobs (job_id, project_id, status, created_at, updated_at, run_id, "
                 "error_code, remote_consent, idempotency_hash, request_fingerprint, preparation_id, "
-                "configuration_fingerprint) VALUES (?, ?, 'queued', ?, ?, NULL, NULL, ?, ?, ?, ?, ?)",
+                "configuration_fingerprint, execution_mode, fallback_reasons_json) "
+                "VALUES (?, ?, 'queued', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)",
                 (job_id, project_id, now, now, int(remote_consent), idempotency_hash,
-                 request_fingerprint, preparation_id, configuration_fingerprint),
+                 request_fingerprint, preparation_id, configuration_fingerprint, execution_mode,
+                 json.dumps(list(fallback_reasons), ensure_ascii=False)),
             )
             row = connection.execute("SELECT * FROM analysis_jobs WHERE job_id = ?", (job_id,)).fetchone()
             connection.commit()
@@ -542,6 +552,9 @@ class AnalysisJobService:
             expires_at=now_local + timedelta(seconds=self.settings.analysis_prepare_ttl_seconds),
             configuration_fingerprint=plan.fingerprint,
             eligible=plan.eligible,
+            ready=plan.eligible,
+            execution_mode=plan.execution_mode,
+            fallback_reasons=list(plan.fallback_reasons),
             capabilities=["analysis:prepare", "analysis:confirm"],
             preflight=plan.preflight,
             remote=plan.remote,
@@ -585,6 +598,15 @@ class AnalysisJobService:
         except (KeyError, ValueError):
             raise ApiProblem(500, "registro_de_trabajo_invalido", "No se pudo validar el trabajo almacenado.") from None
         run_id = safe_identifier(row.get("run_id")) if row.get("run_id") is not None else None
+        execution_mode = row.get("execution_mode", "sandbox")
+        if execution_mode not in {"live", "sandbox", "mixed"}:
+            raise ApiProblem(500, "registro_de_trabajo_invalido", "No se pudo validar el modo del trabajo almacenado.")
+        try:
+            fallback_reasons = json.loads(str(row.get("fallback_reasons_json", "[]")))
+        except (TypeError, ValueError):
+            raise ApiProblem(500, "registro_de_trabajo_invalido", "No se pudieron validar las razones del trabajo almacenado.") from None
+        if not isinstance(fallback_reasons, list) or any(not isinstance(item, str) for item in fallback_reasons):
+            raise ApiProblem(500, "registro_de_trabajo_invalido", "No se pudieron validar las razones del trabajo almacenado.")
         allowed_errors = {
             "process_interrupted", "pipeline_failed", "analysis_failed", "worker_unavailable",
             "executor_invalid_result",
@@ -600,6 +622,8 @@ class AnalysisJobService:
             run_id=run_id,
             error_code=str(error_code) if error_code else None,
             remote_consent=bool(row.get("remote_consent")),
+            execution_mode=execution_mode,
+            fallback_reasons=fallback_reasons,
             stage_progress_available=self._stage_progress_available(run_id, project_id) if run_id else False,
         )
 
@@ -673,6 +697,8 @@ class AnalysisJobService:
             preparation_id=preparation_id,
             configuration_fingerprint=current_plan.fingerprint,
             remote_consent=remote_consent,
+            execution_mode=current_plan.execution_mode,
+            fallback_reasons=current_plan.fallback_reasons,
             queue_capacity=self.settings.analysis_queue_capacity,
         )
         if not reused:

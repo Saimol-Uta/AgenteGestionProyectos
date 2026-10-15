@@ -2,6 +2,7 @@
 
 from hashlib import sha256
 import json
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -157,6 +158,57 @@ def create_policy_source(settings: Settings) -> PolicySourcePort:
         return FixtureSourcesAdapter(fixtures_dir=settings.fixtures_dir)
 
     return LocalYamlPolicyAdapter(policy_file_path=settings.policies_path)
+
+
+def create_analysis_composite_source(
+    settings: Settings,
+    commit_sha: Optional[str] = None,
+    transport: Optional[HttpGetTransportPort] = None,
+) -> CompositeSourcesAdapter | FixtureSourcesAdapter:
+    """Build an analysis source graph with per-component local fallback and a strict remote gate."""
+    fixtures = FixtureSourcesAdapter(fixtures_dir=settings.fixtures_dir)
+    if settings.source_mode == "fixtures":
+        return fixtures
+
+    remote_allowed = settings.allow_remote_ai and not settings.is_fake
+    repository = settings.github_repo or settings.github_repository
+    repo_bound = bool(settings.github_owner and repository and settings.github_token)
+    target_sha = commit_sha or settings.github_commit_sha
+
+    task_source = (
+        create_task_source(settings, transport=transport)
+        if remote_allowed and settings.trello_board_id and settings.trello_api_key and settings.trello_token
+        else fixtures
+    )
+    code_source = create_code_source(settings, transport=transport) if remote_allowed and repo_bound else fixtures
+    ci_source = (
+        create_ci_source(settings, commit_sha=target_sha, transport=transport)
+        if remote_allowed and repo_bound and target_sha
+        else fixtures
+    )
+    policy_source = (
+        create_policy_source(settings)
+        if Path(settings.policies_path).is_file()
+        else fixtures
+    )
+
+    tz: Optional[ZoneInfo] = None
+    if settings.timezone:
+        try:
+            tz = ZoneInfo(settings.timezone)
+        except Exception:
+            raise SourceError(SourceProvider.local_policy, SourceErrorCategory.configuration) from None
+
+    return CompositeSourcesAdapter(
+        task_source=task_source,
+        code_source=code_source,
+        ci_source=ci_source,
+        policy_source=policy_source,
+        default_commit_sha=target_sha,
+        default_timezone=tz,
+        known_secret_values=settings.get_known_secret_values(),
+        task_source_identity=_task_source_identity(task_source),
+    )
 
 
 def create_composite_source(

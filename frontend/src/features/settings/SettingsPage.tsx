@@ -1,7 +1,13 @@
 import { EmailDeliveryPanel } from "../notifications/EmailDeliveryPanel";
 import { ArrowUpRight, Clock3, Database, Moon, ShieldCheck, Sun } from "lucide-react";
 import { Link } from "react-router-dom";
-import { formatDate, runStatusLabel } from "../../api/formatters";
+import {
+  formatDate,
+  providerModelLabel,
+  providerNameLabel,
+  runStatusLabel,
+  stageNameLabel,
+} from "../../api/formatters";
 import { useProject, useProjects, useProjectConfiguration, useSystemHealth } from "../../api/queries";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 import { useWorkspace } from "../../app/WorkspaceContext";
@@ -158,7 +164,7 @@ export function SettingsPage() {
               <div className="settings-config-card"><h3>Trello · metadatos</h3><dl><div><dt>Configurado</dt><dd>{configurationQuery.data.trello.configured ? "Sí" : "No"}</dd></div><div><dt>Tablero</dt><dd><code>{configurationQuery.data.trello.board_id ?? "No publicado"}</code></dd></div><div><dt>Presencia de credencial</dt><dd>{configurationQuery.data.trello.credential_status === "configured" ? "Credencial Trello: configurada" : configurationQuery.data.trello.credential_status === "missing" ? "Credencial Trello: no configurada" : "Credencial Trello: desconocida"}</dd></div></dl></div>
               <div className="settings-config-card"><h3>Políticas publicadas</h3><dl><div><dt>Configuradas</dt><dd>{configurationQuery.data.policies.configured === null ? "Desconocido" : configurationQuery.data.policies.configured ? "Sí" : "No"}</dd></div><div><dt>Versión</dt><dd>{configurationQuery.data.policies.version ?? "No publicada"}</dd></div></dl></div>
             </div>
-            <section className="settings-providers"><h3>Proveedores configurados</h3><p className="settings-note">Estos metadatos no comprueban disponibilidad ni exponen valores de credenciales. La presencia configurada no inicia una conexión.</p>{configurationQuery.data.providers.length ? <ul>{configurationQuery.data.providers.map((provider, index) => <li key={`${provider.stage}-${provider.provider}-${index}`}><strong>{provider.stage}</strong><span>{provider.provider}</span><span>{provider.model}</span><span>Transporte: {provider.transport}</span><span>Credencial: {provider.credential_status === "configured" ? "configurada (valor oculto)" : provider.credential_status === "missing" ? "ausente" : provider.credential_status === "not_required" ? "no requerida" : "desconocida"}</span></li>)}</ul> : <p className="unknown-note">El backend no publicó proveedores configurados.</p>}</section>
+            <section className="settings-providers"><h3>Proveedores configurados</h3><p className="settings-note">Estos metadatos no comprueban disponibilidad ni exponen valores de credenciales. La presencia configurada no inicia una conexión.</p>{configurationQuery.data.providers.length ? <ul>{configurationQuery.data.providers.map((provider, index) => <li key={`${provider.stage}-${provider.provider}-${index}`}><strong>{stageNameLabel(provider.stage)}</strong><span>{providerNameLabel(provider.provider)}</span>{providerModelLabel(provider.provider, provider.model) && <span>{providerModelLabel(provider.provider, provider.model)}</span>}<span>{provider.transport === "remote" ? "Servicios en la nube" : provider.transport === "local" ? "Procesamiento local" : "Ubicación sin confirmar"}</span><span>Acceso: {provider.credential_status === "configured" ? "disponible (valor oculto)" : provider.credential_status === "missing" ? "no disponible" : provider.credential_status === "not_required" ? "no se necesita" : "sin confirmar"}</span></li>)}</ul> : <p className="unknown-note">El backend no publicó proveedores configurados.</p>}</section>
             <p className="settings-note">Ningún campo de configuración es editable desde esta interfaz.</p>
             <section className="settings-providers"><h3>Capabilities devueltas por el servidor</h3>{configurationQuery.data.capabilities.length ? <ul className="settings-capabilities">{configurationQuery.data.capabilities.map((capability) => <li key={capability}><code>{capability}</code></li>)}</ul> : <p className="unknown-note">No hay capabilities publicadas para el proyecto.</p>}<p className="settings-note">Campos editables declarados por el servidor: {configurationQuery.data.editable_fields.length ? configurationQuery.data.editable_fields.join(", ") : "ninguno"}.</p></section>
           </>}

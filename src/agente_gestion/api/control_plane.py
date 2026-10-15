@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import stat
 import re
+import secrets
 import sqlite3
 from typing import Any, Iterator, Literal
 from urllib.parse import urlsplit
@@ -134,13 +135,15 @@ def _safe_component(value: object) -> str | None:
 
 
 class ControlPlaneRepository:
-    """Read-only access to existing persisted contracts; never initializes a database."""
+    """Read projections and write only explicit governance or security-audit records."""
 
     def __init__(self, settings: ApiSettings):
         self.settings = settings
         self.queries = SQLiteQueryRepository(settings)
         self._secrets: tuple[str, ...] = tuple(
             ([settings.operator_token.get_secret_value()] if settings.operator_token else [])
+            + ([settings.manager_login_password.get_secret_value()]
+               if settings.manager_login_password else [])
             + list(self.queries._configured_secrets())
         )
 
@@ -159,8 +162,22 @@ class ControlPlaneRepository:
         return SQLiteStorageAdapter(str(self.queries.db_path), read_only=True)
 
     def _write_storage(self) -> SQLiteStorageAdapter:
-        # Core migrations and writes occur only on an explicitly authorized POST.
+        # Writable storage is opened only for explicit mutation or security-audit POSTs.
         return SQLiteStorageAdapter(self.settings.db_path)
+
+    def record_failed_login(self) -> None:
+        """Persist a failed authentication attempt without retaining supplied credentials."""
+        event = SecurityAuditEntry(
+            event_id="auth-" + secrets.token_hex(16),
+            project_id="GLOBAL",
+            actor_id="anonymous",
+            role="anonymous",
+            permission_checked="manager_login",
+            decision="denied",
+            reason="invalid_credentials",
+            token_fingerprint="none",
+        )
+        self._write_storage().append_security_audit_event(event)
 
     def _safe_text(self, value: str | None, limit: int = 2000) -> str | None:
         return sanitize_text(value, secrets_to_redact=self._secrets, limit=limit)

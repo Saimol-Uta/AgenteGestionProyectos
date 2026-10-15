@@ -8,9 +8,9 @@ from agente_gestion.api.settings import ApiSettings, load_api_settings
 
 
 class Phase2SettingsTests(unittest.TestCase):
-    def test_external_actions_default_to_sandbox_and_secrets_are_not_serialized(self):
+    def test_external_write_permission_defaults_on_without_credentials(self):
         settings = ApiSettings()
-        self.assertFalse(settings.external_writes_enabled)
+        self.assertTrue(settings.external_writes_enabled)
         self.assertIsNone(settings.github_token)
         self.assertIsNone(settings.trello_token)
         self.assertIsNone(settings.manager_email)
@@ -34,7 +34,7 @@ class Phase2SettingsTests(unittest.TestCase):
             "SMTP_USE_TLS": "true",
         }
         with patch.dict(os.environ, env, clear=True):
-            settings = load_api_settings()
+            settings = load_api_settings(env_file=None)
         self.assertTrue(settings.external_writes_enabled)
         self.assertEqual(settings.github_repository, "owner/repository")
         self.assertEqual(settings.github_base_branch, "develop")
@@ -58,13 +58,13 @@ class Phase2SettingsTests(unittest.TestCase):
                 ApiSettings(**values)
         with patch.dict(os.environ, {"TRELLO_PRIORITY_LABELS": "not-json"}, clear=True):
             with self.assertRaises(ValueError):
-                load_api_settings()
+                load_api_settings(env_file=None)
 
-    def test_existing_defaults_remain_read_only_and_do_not_load_dotenv(self):
+    def test_explicit_dotenv_config_path_uses_yaml_defaults_without_external_write_override(self):
         with patch.dict(os.environ, {"AGENTE_CONFIG_PATH": ".env"}, clear=True):
-            settings = load_api_settings()
-        self.assertFalse(settings.governance_enabled)
-        self.assertFalse(settings.analysis_enabled)
-        self.assertFalse(settings.external_writes_enabled)
-        self.assertEqual(settings.projects, ())
+            settings = load_api_settings(env_file=None)
+        self.assertTrue(settings.governance_enabled)
+        self.assertTrue(settings.analysis_enabled)
+        self.assertTrue(settings.external_writes_enabled)
+        self.assertEqual(settings.projects[0].id, "HORMIGESTION")
         self.assertEqual(settings.allowed_origins[0], "http://localhost:5173")

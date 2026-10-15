@@ -31,7 +31,7 @@ class ReportAgent:
     """
     Explicit aprobador / report synthesis agent.
     Synthesizes findings, drafts, and policy results into an advisory final report.
-    Uses qwen3.5:2b-q4_K_M by default.
+    Uses gemini-3.5-flash-lite by default.
     Enforces that recommendation is strictly constrained by deterministic backend policy.
     Final metric counts are supplied authoritatively by backend, never recalculated by LLM.
     """
@@ -39,7 +39,7 @@ class ReportAgent:
     def __init__(
         self,
         provider: LLMProviderPort,
-        model: str = "qwen3.5:2b-q4_K_M",
+        model: str = "gemini-3.5-flash-lite",
         coordinator: Optional[StageInvocationCoordinator] = None,
     ):
         self.provider = provider

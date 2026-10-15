@@ -60,13 +60,13 @@ class CodeQualityAgent:
     Explicit revisor agent.
     Reviews monitoring draft, quality criteria, and bounded code diff snippets.
     Produces candidate findings only (candidate findings are never automatically confirmed).
-    Uses qwen3.5:4b-q4_K_M by default.
+    Uses llama-3.3-70b-versatile by default.
     """
 
     def __init__(
         self,
         provider: LLMProviderPort,
-        model: str = "qwen3.5:4b-q4_K_M",
+        model: str = "llama-3.3-70b-versatile",
         coordinator: Optional[StageInvocationCoordinator] = None,
         timeout_seconds: float = 120.0,
         context_builder: Optional[ContextBuilder] = None,

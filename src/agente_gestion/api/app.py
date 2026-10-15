@@ -108,6 +108,20 @@ def create_app(
 
     @app.exception_handler(ApiProblem)
     async def handle_api_problem(_request: Request, exc: ApiProblem) -> JSONResponse:
+        if exc.status_code == 401 and exc.code == "credenciales_invalidas":
+            # Preserve the existing client error extension inside RFC 7807 Problem Details.
+            body = ErrorEnvelope(error={"code": exc.code, "message": exc.message})
+            return JSONResponse(
+                status_code=exc.status_code,
+                media_type="application/problem+json",
+                content={
+                    "type": "about:blank",
+                    "title": "Unauthorized",
+                    "status": exc.status_code,
+                    "detail": exc.message,
+                    **body.model_dump(mode="json"),
+                },
+            )
         return _error(exc.status_code, exc.code, exc.message)
 
     @app.exception_handler(RequestValidationError)

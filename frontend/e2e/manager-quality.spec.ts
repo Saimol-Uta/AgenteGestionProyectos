@@ -70,7 +70,7 @@ test("la aprobación usa solo la sugerencia del backend y conserva el estado apr
   await approve.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
 
   await expect(dialog.locator(".quality-decision-result")).toContainText("Aprobada");
-  await expect(dialog.locator(".quality-decision-result")).toContainText("sandbox");
+  await expect(dialog.locator(".quality-decision-result")).toContainText("Local");
   await expect(dialog.locator(".quality-decision-result")).toContainText("quality/finding-candidate");
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({

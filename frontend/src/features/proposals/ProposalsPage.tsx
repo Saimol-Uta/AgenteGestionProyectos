@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowRight, ChevronLeft, ChevronRight, Fingerprint, LockKeyhole, ShieldCheck } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useExecuteProposalMutation, useProject, useProjects, useProposal, useProposals } from "../../api/queries";
-import { comparisonValue, fieldLabel, formatDate } from "../../api/formatters";
+import { analysisExecutionModeLabel, comparisonValue, fieldLabel, formatDate } from "../../api/formatters";
 import type { ExecuteProposalRequest, ExecuteProposalResponse, ProposalDetail, ProposalField } from "../../api/types";
 import { ConfirmActionDialog } from "../../components/ConfirmActionDialog";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
@@ -208,7 +208,7 @@ export function ProposalsPage() {
       notify(result.decision === "reject"
         ? "Rechazo registrado por el backend."
         : result.execution_mode === "sandbox"
-          ? `Resultado de sandbox: ${result.execution.status}; Trello no recibió cambios en vivo.`
+          ? `Resultado local: ${result.execution.status}; Trello no recibió cambios.`
           : `Trello reportó ${result.execution.status}; verificación ${result.execution.verification_status}.`, "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : "La ejecución de la propuesta no pudo completarse.";
@@ -279,7 +279,7 @@ export function ProposalsPage() {
                       return <div role="row" key={field}><span role="cell">{fieldLabel(field)}</span><span role="cell">{proposal.field === field ? comparisonValue(proposal.current_value, field) : "Sin dato"}</span><strong role="cell">{modifiedField === field && draft ? field === "priority" ? comparisonValue(draft, field) : draft : original}</strong></div>;
                     })}
                   </div>
-                  <p className="proposal-demo-banner"><strong>{executionResult ? "DECISIÓN · RESPUESTA DEL BACKEND" : canExecute ? "DECISIÓN PROTEGIDA · A LA ESPERA DEL GESTOR" : "VISTA DE CONSULTA · SIN DECISIONES LOCALES"}</strong><br />{executionResult ? "El estado de ejecución y el modo live o sandbox proceden de la respuesta del backend." : "El navegador no registra aprobaciones, rechazos ni simulaciones locales."}</p>
+                  <p className="proposal-demo-banner"><strong>{executionResult ? "DECISIÓN · RESULTADO REGISTRADO" : canExecute ? "DECISIÓN PROTEGIDA · A LA ESPERA DEL GESTOR" : "VISTA DE CONSULTA · SIN DECISIONES LOCALES"}</strong><br />{executionResult ? "El resultado indica si la acción se aplicó en la nube o se registró localmente." : "El navegador no registra aprobaciones, rechazos ni simulaciones locales."}</p>
                   {editing && proposal.field === "due_date" && <fieldset className="proposal-draft-editor" disabled={working || Boolean(executionResult)}><legend>Modificar la fecha propuesta</legend><label>Nueva fecha límite<input type="date" value={dueDate} onChange={(event) => changeDraft("due_date", event.target.value)} /></label></fieldset>}
                   {editing && proposal.field === "priority" && <fieldset className="proposal-draft-editor" disabled={working || Boolean(executionResult)}><legend>Modificar la prioridad propuesta</legend><label>Nueva prioridad<select value={priority} onChange={(event) => changeDraft("priority", event.target.value)}><option value="">Selecciona prioridad</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option></select></label></fieldset>}
                   {editing && proposal.field === "assignee_ids" && <fieldset className="proposal-draft-editor" disabled={working || Boolean(executionResult)}><legend>Modificar responsables propuestos</legend><label>Nuevo responsable<input maxLength={200} value={assignee} placeholder="Identificadores separados por coma" onChange={(event) => changeDraft("assignee_ids", event.target.value)} /></label></fieldset>}
@@ -298,7 +298,7 @@ export function ProposalsPage() {
                   {session?.authenticated && session.capabilities.includes("governance:proposal_execute") && !canExecute && <p className="unknown-note">El backend no informa una propuesta vigente, elegible y lista para ejecución.</p>}
                   {progress && <p role="status">{progress}</p>}
                   {failure && <p role="alert" className="inline-warning">{failure}</p>}
-                  {executionResult && <div className="proposal-demo-result"><strong>{executionResult.execution_mode === "sandbox" ? "Sandbox · Trello sin cambios" : "Modo live reportado por el backend"}</strong><p>Decisión: {executionResult.decision} · estado: {executionResult.execution.status} · Verificación: {executionResult.execution.verification_status}</p><p>La interfaz muestra el estado devuelto por el backend y no infiere éxito externo.</p></div>}
+                  {executionResult && <div className="proposal-demo-result"><strong>{analysisExecutionModeLabel(executionResult.execution_mode) ?? "Modo no informado"} · {executionResult.execution_mode === "sandbox" ? "Trello sin cambios" : "Resultado informado por Trello"}</strong><p>Decisión: {executionResult.decision} · estado: {executionResult.execution.status} · Verificación: {executionResult.execution.verification_status}</p><p>El resultado no implica que un servicio externo haya aplicado el cambio.</p></div>}
                 </div>
                 <div className="proposal-value-diff" aria-label="Comparación entre valor observado y propuesto">
                   <div><small>Antes</small><span>Valor observado</span><strong>{comparisonValue(proposal.current_value, proposal.field)}</strong></div>

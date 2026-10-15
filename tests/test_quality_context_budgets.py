@@ -13,9 +13,7 @@ from agente_gestion.domain.code import CodeDiffSnippet
 from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.report import MonitoringDraft
 from agente_gestion.domain.llm import GenerationResult, GenerationStatus
-from agente_gestion.adapters.llm.ollama import OllamaProvider
 from agente_gestion.adapters.llm.groq import GroqProvider
-from agente_gestion.adapters.llm.mistral import MistralProvider
 
 
 class QualityContextBudgetsTestCase(unittest.TestCase):
@@ -78,32 +76,7 @@ class QualityContextBudgetsTestCase(unittest.TestCase):
         )
         self.assertEqual(exhausted, 0)
 
-    def test_quality_agent_with_ollama_fails_closed_when_context_exceeds_local_budget(self):
-        mock_transport = MagicMock()
-        ollama_provider = OllamaProvider(
-            context_tokens=4096,
-            max_output_tokens=768,
-            transport=mock_transport,
-        )
-        agent = CodeQualityAgent(
-            provider=ollama_provider,
-            model="qwen3.5:4b-q4_K_M",
-        )
-
-        # Large snippet should exceed the ~2900 token safe budget of local Ollama
-        with self.assertRaises(ContextBudgetExceededError) as ctx:
-            agent.run(
-                project_id="test-proj",
-                draft=self.draft,
-                snippets=[self.large_snippet],
-                rules=[self.rule],
-            )
-
-        self.assertIn("Context budget exceeded for code", str(ctx.exception))
-        # Critical verification: network transport was never called
-        mock_transport.assert_not_called()
-
-    def test_quality_agent_with_groq_accepts_context_exceeding_ollama_limit(self):
+    def test_quality_agent_with_groq_accepts_large_configured_context(self):
         mock_transport = MagicMock(return_value={
             "status_code": 200,
             "body": {
@@ -150,7 +123,7 @@ class QualityContextBudgetsTestCase(unittest.TestCase):
             model="llama-3.3-70b-versatile",
         )
 
-        # Same large snippet that broke Ollama succeeds under Groq's 131k budget
+        # Groq's configured 131k budget accommodates this large snippet.
         findings = agent.run(
             project_id="test-proj",
             draft=self.draft,
@@ -169,48 +142,6 @@ class QualityContextBudgetsTestCase(unittest.TestCase):
         meta = user_message_content["context_metadata"]
         self.assertEqual(meta["context_window_tokens"], 131072)
         self.assertGreater(meta["budget_tokens"], 4096)
-
-    def test_quality_agent_with_mistral_accepts_context_and_executes_context_builder(self):
-        mock_transport = MagicMock(return_value={
-            "status_code": 200,
-            "body": {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": json.dumps({"findings": []}),
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            },
-        })
-        mistral_provider = MistralProvider(
-            api_key="mistral_key",
-            model="mistral-large-latest",
-            allow_remote_ai=True,
-            context_tokens=131072,
-            max_output_tokens=8192,
-            transport=mock_transport,
-        )
-        agent = CodeQualityAgent(
-            provider=mistral_provider,
-            model="mistral-large-latest",
-        )
-
-        findings = agent.run(
-            project_id="test-proj",
-            draft=self.draft,
-            snippets=[self.small_snippet],
-            rules=[self.rule],
-        )
-        self.assertEqual(findings, [])
-        mock_transport.assert_called_once()
-        sent_body = mock_transport.call_args[1]["json"]
-        user_payload = json.loads(sent_body["messages"][1]["content"])
-        self.assertIn("code_snippets", user_payload)
-        self.assertIn("context_metadata", user_payload)
 
     def test_quality_agent_fails_closed_when_context_exceeds_configured_remote_window(self):
         # Configure a small explicit window on GroqProvider

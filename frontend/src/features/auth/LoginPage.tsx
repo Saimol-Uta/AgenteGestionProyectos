@@ -7,13 +7,11 @@ import {
   Sun,
   Eye,
   EyeOff,
-  Sparkles,
 } from "lucide-react";
 import { ApiError } from "../../api/client";
 import { useSession } from "./SessionProvider";
 import { useTheme } from "../theme/ThemeProvider";
 import { useToast } from "../../components/ToastProvider";
-import { DEFAULT_OPERATOR_EMAIL, generateOperatorToken } from "./tokens";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -21,11 +19,9 @@ export function LoginPage() {
   const { theme, toggleTheme } = useTheme();
   const { notify } = useToast();
 
-  const [email, setEmail] = useState(DEFAULT_OPERATOR_EMAIL);
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [token, setToken] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [showAdvancedToken, setShowAdvancedToken] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -33,32 +29,18 @@ export function LoginPage() {
     event.preventDefault();
     if (submitting) return;
 
-    let tokenToSubmit = token.trim();
-    if (!tokenToSubmit) {
-      if (email.trim() && password.trim()) {
-        tokenToSubmit = generateOperatorToken(email.trim(), password.trim());
-      } else if (email.trim()) {
-        tokenToSubmit = generateOperatorToken(email.trim());
-      }
-    }
-
-    if (!tokenToSubmit) {
-      setError("Ingresa tu correo y contraseña o un token de operador válido.");
-      return;
-    }
-
     setSubmitting(true);
     setError(null);
     try {
-      await login(tokenToSubmit, email.trim() || undefined, false);
-      notify("Sesión de operador iniciada correctamente. Permisos completos habilitados.", "success");
+      await login(email, password, false);
+      notify("Sesión verificada por el backend.", "success");
       navigate("/");
     } catch (cause) {
-      setError(
-        cause instanceof ApiError
+      setError(cause instanceof ApiError && cause.status === 401
+        ? "Correo electrónico o contraseña incorrectos. Verifique sus credenciales de Gestor del Proyecto."
+        : cause instanceof ApiError
           ? cause.message
-          : "No se pudo iniciar sesión. Verifica las credenciales e inténtalo de nuevo."
-      );
+          : "No se pudo iniciar sesión. Verifica las credenciales e inténtalo de nuevo.");
     } finally {
       setSubmitting(false);
     }
@@ -160,7 +142,7 @@ export function LoginPage() {
                 lineHeight: "1.5",
                 color: "var(--text-muted)",
               }}>
-                Ingresa con tu correo y contraseña. Con estas credenciales se genera el token de operador para habilitar todos los permisos.
+                Ingresa con tu correo y contraseña de Gestor del Proyecto. El backend verifica tu identidad y concede las capacidades de esta sesión.
               </p>
             </div>
           </div>
@@ -176,7 +158,7 @@ export function LoginPage() {
                 type="email"
                 autoComplete="email"
                 required
-                placeholder="operador@gestionproyectos.com"
+                placeholder="gestor@ejemplo.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={submitting || session?.login_available === false}
@@ -223,56 +205,6 @@ export function LoginPage() {
               </div>
             </div>
 
-            {/* Token Generation Callout */}
-            <div style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: "8px",
-              padding: "10px 12px",
-              background: "var(--surface-soft)",
-              border: "1px solid var(--border)",
-              borderRadius: "8px",
-              marginBottom: "14px",
-              fontSize: "11px",
-              color: "var(--text-secondary)",
-              lineHeight: "1.45",
-            }}>
-              <Sparkles size={16} style={{ color: "var(--accent)", flexShrink: 0, marginTop: "2px" }} />
-              <div>
-                <strong>Aprovisionamiento automático:</strong> Al autenticarte se genera el token de sesión de operador que otorga control total (análisis, calidad, propuestas, ciclos semanales y gobernanza).
-              </div>
-            </div>
-
-            {/* Advanced / Direct Token Input */}
-            <div style={{ marginBottom: "14px" }}>
-              <button
-                type="button"
-                className="text-link"
-                style={{ fontSize: "11px", background: "none", border: "none", padding: 0, cursor: "pointer" }}
-                onClick={() => setShowAdvancedToken((prev) => !prev)}
-              >
-                {showAdvancedToken ? "Ocultar token de operador directo" : "Ingresar token de operador directamente"}
-              </button>
-
-              <div style={{ display: showAdvancedToken ? "block" : "none", marginTop: "10px" }}>
-                <label className="field-label" htmlFor="operator-token">
-                  Token de operador
-                </label>
-                <input
-                  id="operator-token"
-                  className="text-input"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="Token de al menos 32 caracteres"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  disabled={submitting || session?.login_available === false}
-                  aria-invalid={Boolean(error)}
-                />
-              </div>
-            </div>
-
             {error && (
               <p className="form-error" role="alert" style={{ marginBottom: "14px" }}>
                 {error}
@@ -311,7 +243,7 @@ export function LoginPage() {
               ) : (
                 <KeyRound aria-hidden="true" size={17} />
               )}
-              <span>Verificar y continuar</span>
+              <span>Iniciar Sesión como Gestor</span>
             </button>
 
             {/* Read-Only Guest Option */}
@@ -322,7 +254,7 @@ export function LoginPage() {
                 onClick={handleContinueAsGuest}
                 style={{ fontSize: "11px", color: "var(--text-muted)" }}
               >
-                Explorar en modo de consulta (solo lectura)
+                Ingresar en Modo Consulta (Solo lectura)
               </button>
             </div>
           </form>

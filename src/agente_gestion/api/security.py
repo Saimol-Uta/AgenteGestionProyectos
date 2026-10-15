@@ -36,6 +36,8 @@ class OperatorSession:
     project_ids: tuple[str, ...]
     csrf_token: str
     expires_at: float
+    email: str | None = None
+    role: str | None = None
 
 
 class OperatorSessionStore:
@@ -49,6 +51,19 @@ class OperatorSessionStore:
         self._operator_token = (
             settings.operator_token.get_secret_value() if settings.operator_token else None
         )
+        self._manager_login_email = settings.manager_login_email or ""
+        self._manager_login_password = (
+            settings.manager_login_password.get_secret_value()
+            if settings.manager_login_password is not None else ""
+        )
+        self._manager_login_available = bool(
+            self._manager_login_email and self._manager_login_password
+        )
+        self._manager_email_digest = self._text_digest(self._manager_login_email)
+        self._manager_password_digest = self._text_digest(self._manager_login_password)
+        self._operator_token_digest = (
+            self._text_digest(self._operator_token) if self._operator_token is not None else None
+        )
         configured_project_ids = tuple(project.id for project in settings.projects)
         configured_project_set = set(configured_project_ids)
         requested_project_ids = settings.operator_project_ids or configured_project_ids
@@ -59,21 +74,50 @@ class OperatorSessionStore:
 
     @property
     def login_available(self) -> bool:
-        return bool(self._operator_token)
+        return self._manager_login_available or bool(self._operator_token)
+
+    def verify_manager_credentials(self, email: str | None, password: str | None) -> bool:
+        supplied_email_digest = self._text_digest(email or "")
+        supplied_password_digest = self._text_digest(password or "")
+        email_matches = hmac.compare_digest(self._manager_email_digest, supplied_email_digest)
+        password_matches = hmac.compare_digest(self._manager_password_digest, supplied_password_digest)
+        return self._manager_login_available and email_matches and password_matches
 
     def verify_operator_token(self, supplied: str) -> bool:
-        return bool(self._operator_token) and hmac.compare_digest(
-            self._operator_token.encode("utf-8"), supplied.encode("utf-8"),
+        if self._operator_token_digest is None:
+            return False
+        return hmac.compare_digest(
+            self._operator_token_digest, self._text_digest(supplied),
         )
 
     def issue(self) -> tuple[str, OperatorSession]:
+        return self._issue(
+            actor=self._settings.operator_actor,
+            email=None,
+            role=None,
+        )
+
+    def issue_manager(self) -> tuple[str, OperatorSession]:
+        if not self._manager_login_available:
+            raise RuntimeError("manager_login_not_configured")
+        return self._issue(
+            actor=self._manager_login_email,
+            email=self._manager_login_email,
+            role="PROJECT_MANAGER",
+        )
+
+    def _issue(
+        self, *, actor: str, email: str | None, role: str | None,
+    ) -> tuple[str, OperatorSession]:
         cookie_value = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
         session = OperatorSession(
-            actor=self._settings.operator_actor,
+            actor=actor,
             project_ids=self._project_ids,
             csrf_token=csrf_token,
             expires_at=self._clock() + self._settings.session_ttl_seconds,
+            email=email,
+            role=role,
         )
         with self._lock:
             self._discard_expired()
@@ -107,6 +151,11 @@ class OperatorSessionStore:
         for key, session in tuple(self._sessions.items()):
             if session.expires_at <= now:
                 self._sessions.pop(key, None)
+
+    @staticmethod
+    def _text_digest(value: str) -> bytes:
+        """Hash UTF-8 bytes first so compare_digest always compares fixed-size values."""
+        return hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
 
     @staticmethod
     def _fingerprint(cookie_value: str) -> str:

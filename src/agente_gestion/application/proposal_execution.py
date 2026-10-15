@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 from agente_gestion.adapters.sources.sandbox_task_actions import SandboxTaskActions
+from agente_gestion.ports.source_errors import SourceError
 from agente_gestion.adapters.sources.trello_action_adapter import (
     TrelloActionAdapter,
     priority_key,
@@ -127,12 +128,9 @@ class ProposalExecutionService:
         *, source_mode: str, external_writes_enabled: bool,
         trello_api_key: str | None, trello_token: str | None,
     ) -> Literal["live", "sandbox"]:
-        if source_mode == "real" and external_writes_enabled:
-            if not trello_api_key or not trello_api_key.strip() or not trello_token or not trello_token.strip():
-                raise ProposalExecutionError(
-                    503, "credenciales_trello_requeridas",
-                    "Las escrituras externas requieren credenciales Trello configuradas.",
-                )
+        if (source_mode == "real" and external_writes_enabled
+                and trello_api_key and trello_api_key.strip()
+                and trello_token and trello_token.strip()):
             return "live"
         return "sandbox"
 
@@ -564,10 +562,7 @@ class ProposalExecutionService:
             trello_api_key=trello_api_key, trello_token=trello_token,
         )
         if mode == "live" and (trello_board_id is None or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", trello_board_id) is None):
-            raise ProposalExecutionError(
-                503, "tablero_trello_requerido",
-                "Configure el tablero Trello autorizado para este proyecto antes de ejecutar cambios.",
-            )
+            mode = "sandbox"
         proposal = original
         if body.decision == "modify_and_execute":
             proposal = self._modified_proposal(original, body, timezone_name, trello_priority_labels)
@@ -579,6 +574,22 @@ class ProposalExecutionService:
                 raise ProposalExecutionError(
                     422, "prioridad_no_configurada", "La prioridad actual o propuesta no tiene una etiqueta configurada.",
                 )
+
+        live_action_port = None
+        if mode == "live":
+            live_action_port = TrelloActionAdapter(
+                board_id=trello_board_id or "", api_key=trello_api_key or "",
+                token=trello_token or "",
+                priority_labels=trello_priority_labels if proposal.field == "priority" else None,
+            )
+            try:
+                if not live_action_port.has_write_permission():
+                    mode = "sandbox"
+            except (SourceError, KeyError):
+                raise ProposalExecutionError(
+                    503, "permiso_trello_no_verificado",
+                    "No se pudo verificar el permiso de Trello; no se intentó ninguna escritura.",
+                ) from None
 
         replay = self._reserve(
             project_id=project_id, proposal_id=selected_proposal_id,
@@ -672,12 +683,7 @@ class ProposalExecutionService:
                 result = self._deny_result(action_request, proposal, "human_review_not_approved")
             else:
                 if mode == "live":
-                    action_port = TrelloActionAdapter(
-                        board_id=trello_board_id or "",
-                        api_key=trello_api_key or "",
-                        token=trello_token or "",
-                        priority_labels=trello_priority_labels if proposal.field == "priority" else None,
-                    )
+                    action_port = live_action_port
                 else:
                     card = next((item for item in capture.snapshot.tasks if item.id == proposal.task_id), None)
                     if card is None:

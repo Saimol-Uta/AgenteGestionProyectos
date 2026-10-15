@@ -117,6 +117,54 @@ class TrelloActionAdapter(TaskActionPort):
     def __repr__(self) -> str:
         return f"TrelloActionAdapter(board_id={self._board_id!r})"
 
+    def has_write_permission(self) -> bool:
+        """Check board membership before mutation; denied access selects sandbox."""
+        def read(path: str, params: dict[str, str]):
+            try:
+                response = requests.get(
+                    "https://api.trello.com/1" + path,
+                    headers=self._auth_headers(), params=params,
+                    timeout=self._timeout_seconds, allow_redirects=False,
+                )
+            except requests.exceptions.Timeout:
+                raise SourceError(SourceProvider.trello, SourceErrorCategory.timeout) from None
+            except requests.RequestException:
+                raise SourceError(SourceProvider.trello, SourceErrorCategory.network) from None
+            if response.status_code in {401, 403, 404}:
+                return None
+            if response.status_code != 200:
+                raise SourceError(SourceProvider.trello, SourceErrorCategory.unexpected_status)
+            try:
+                return response.json()
+            except (TypeError, ValueError):
+                raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+
+        member = read("/members/me", {"fields": "id"})
+        if member is None:
+            return False
+        if not isinstance(member, dict) or not isinstance(member.get("id"), str):
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload)
+        board = read(f"/boards/{self._board_id}", {"fields": "id,closed"})
+        if board is None:
+            return False
+        if (not isinstance(board, dict) or board.get("id") != self._board_id
+                or not isinstance(board.get("closed"), bool)):
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload)
+        if board["closed"]:
+            return False
+        memberships = read(f"/boards/{self._board_id}/memberships", {})
+        if memberships is None:
+            return False
+        if (not isinstance(memberships, list)
+                or any(not isinstance(item, dict) for item in memberships)):
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload)
+        return any(
+            item.get("idMember") == member["id"]
+            and item.get("memberType") in {"admin", "normal"}
+            and item.get("deactivated") is False
+            for item in memberships
+        )
+
     def _request_card_data(self, clean_card_id: str, fields: str) -> dict[str, Any]:
         url = f"https://api.trello.com/1/cards/{clean_card_id}"
         try:

@@ -159,7 +159,7 @@ function SystemStatus() {
 
 
 function SessionControl() {
-  const { session, isLoading, isUnavailable, logout, isLoggingOut, operatorEmail } = useSession();
+  const { session, isLoading, isUnavailable, logout, isLoggingOut } = useSession();
   const { notify } = useToast();
 
   async function handleLogout() {
@@ -172,7 +172,7 @@ function SessionControl() {
   }
 
   if (session?.authenticated) {
-    const displayName = session.actor || operatorEmail || "Operador verificado";
+    const displayName = session.email || session.actor || "Gestor verificado";
     const initial = displayName.slice(0, 1).toLocaleUpperCase("es-EC");
     return (
       <div className="session-control">
@@ -299,7 +299,7 @@ export function AppShell() {
             <CircleHelp aria-hidden="true" size={16} />
             <span>Datos respaldados por capturas del backend.</span>
           </div>
-          <span className="sidebar-version">INTERFAZ DE CONSULTA · API V1</span>
+          <span className="sidebar-version">GESTIÓN Y SEGUIMIENTO DE PROYECTOS</span>
         </div>
       </aside>
 

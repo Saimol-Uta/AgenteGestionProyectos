@@ -43,6 +43,8 @@ from agente_gestion.api.schemas import (
     Page,
     PoliciesSummary,
     PrepareAnalysisRequest,
+    ProjectBoundConfirmAnalysisRequest,
+    ProjectBoundPrepareAnalysisRequest,
     ProjectView,
     QualitySummary,
     RunDetail,
@@ -76,6 +78,9 @@ def _session_view(
             csrf_token=None,
             capabilities=[],
             login_available=store.login_available,
+            email=None,
+            notification_email=None,
+            role=None,
         )
     capabilities = ["operator_session"]
     configured_project_ids = {project.id for project in settings.projects}
@@ -101,12 +106,21 @@ def _session_view(
         authenticated=True,
         actor=sanitize_text(
             session.actor,
-            secrets_to_redact=(settings.operator_token.get_secret_value(),) if settings.operator_token else (),
+            secrets_to_redact=tuple(
+                secret for secret in (
+                    settings.operator_token.get_secret_value() if settings.operator_token else None,
+                    settings.manager_login_password.get_secret_value()
+                    if settings.manager_login_password else None,
+                ) if secret is not None
+            ),
             limit=128,
         ),
         csrf_token=session.csrf_token,
         capabilities=capabilities,
         login_available=store.login_available,
+        email=session.email,
+        notification_email=(session.email or settings.manager_email or settings.manager_login_email),
+        role=session.role,
     )
 
 
@@ -177,8 +191,12 @@ def _require_analysis_access(
 
 
 @router.get("/system/health", response_model=SystemHealth, tags=["Sistema"])
-def system_health() -> SystemHealth:
-    return SystemHealth(status="ok", version="0.1.0", external_writes_enabled=False)
+def system_health(request: Request) -> SystemHealth:
+    settings: ApiSettings = request.app.state.settings
+    return SystemHealth(
+        status="ok", version="0.1.0",
+        external_writes_enabled=settings.external_writes_enabled,
+    )
 
 
 @router.get("/auth/session", response_model=AuthSessionView, tags=["Sesión"])
@@ -193,11 +211,20 @@ def auth_login(body: LoginRequest, request: Request, response: Response) -> Auth
     settings: ApiSettings = request.app.state.settings
     _require_exact_origin(request, settings)
     store: OperatorSessionStore = request.app.state.sessions
-    if not store.login_available:
-        raise ApiProblem(503, "inicio_no_configurado", "El acceso local de operador no está configurado.")
-    if not store.verify_operator_token(body.token):
-        raise ApiProblem(401, "credenciales_invalidas", "No se pudo verificar la credencial de operador.")
-    cookie_value, session = store.issue()
+    supplied_fields = body.model_fields_set
+    manager_credentials_supplied = bool(supplied_fields.intersection({"email", "password"}))
+
+    if manager_credentials_supplied:
+        if not store.verify_manager_credentials(body.email, body.password):
+            _reject_login(request)
+        cookie_value, session = store.issue_manager()
+    else:
+        if not store.login_available:
+            raise ApiProblem(503, "inicio_no_configurado", "El acceso local de operador no está configurado.")
+        if "token" not in supplied_fields or body.token is None or not store.verify_operator_token(body.token):
+            _reject_login(request)
+        cookie_value, session = store.issue()
+
     response.set_cookie(
         key=settings.session_cookie_name,
         value=cookie_value,
@@ -208,6 +235,11 @@ def auth_login(body: LoginRequest, request: Request, response: Response) -> Auth
         path="/api/v1",
     )
     return _session_view(store, session, settings)
+
+
+def _reject_login(request: Request) -> None:
+    request.app.state.control_plane.record_failed_login()
+    raise ApiProblem(401, "credenciales_invalidas", "Correo electrónico o contraseña incorrectos.")
 
 
 @router.post("/auth/logout", status_code=204, response_class=Response, tags=["Sesión"])
@@ -496,6 +528,55 @@ def confirm_project_analysis(
     _require_analysis_access(request, project_id, mutation=True)
     service = request.app.state.analysis_jobs
     job, reused = service.confirm(
+        project_id=project_id,
+        preparation_id=body.preparation_id,
+        configuration_fingerprint=body.configuration_fingerprint,
+        remote_consent=body.remote_consent,
+        session_cookie=request.cookies.get(request.app.state.settings.session_cookie_name),
+        idempotency_key=idempotency_key,
+    )
+    return ConfirmAnalysisResponse(
+        job=job,
+        reused=reused,
+        poll_url=f"/api/v1/analysis/jobs/{job.job_id}",
+        poll_after_ms=1000,
+    )
+
+
+@router.post(
+    "/analysis/prepare",
+    response_model=AnalysisPreparation,
+    tags=["Análisis"],
+)
+def prepare_unscoped_analysis(
+    request: Request,
+    body: ProjectBoundPrepareAnalysisRequest,
+) -> AnalysisPreparation:
+    project_id = body.project_id
+    _require_analysis_access(request, project_id, mutation=True)
+    return request.app.state.analysis_jobs.prepare(
+        project_id,
+        request.cookies.get(request.app.state.settings.session_cookie_name),
+    )
+
+
+@router.post(
+    "/analysis/confirm",
+    response_model=ConfirmAnalysisResponse,
+    status_code=202,
+    tags=["Análisis"],
+)
+def confirm_unscoped_analysis(
+    request: Request,
+    body: ProjectBoundConfirmAnalysisRequest,
+    idempotency_key: Annotated[str, Header(
+        alias="Idempotency-Key", min_length=8, max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
+    )],
+) -> ConfirmAnalysisResponse:
+    project_id = body.project_id
+    _require_analysis_access(request, project_id, mutation=True)
+    job, reused = request.app.state.analysis_jobs.confirm(
         project_id=project_id,
         preparation_id=body.preparation_id,
         configuration_fingerprint=body.configuration_fingerprint,

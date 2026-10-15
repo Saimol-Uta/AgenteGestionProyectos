@@ -1,190 +1,159 @@
-# Guía de Arquitectura, API REST y Persistencia del Backend
+# Backend: arquitectura, seguridad y API REST
 
-Este documento detalla la arquitectura en capas, puertos y adaptadores, catálogo completo de endpoints de la API, modelo de seguridad/RBAC y persistencia en base de datos SQLite del backend.
+La API de FastAPI presenta un contrato versionado bajo `/api/v1`. Lee el estado local, prepara análisis y registra decisiones protegidas. Las rutas de lectura no conceden autoridad; las mutaciones verifican sesión, origen, CSRF, alcance del proyecto, capability e idempotencia según la operación.
 
----
+## Capas y persistencia
 
-## 1. Resumen Ejecutivo y Principios de Diseño
+- `api/`: routers, esquemas Pydantic, sesión, configuración, preflight y errores.
+- `application/`: casos de uso, planificación de análisis, gobernanza, tareas, notificaciones y ciclo semanal.
+- `domain/`: estados, propuestas, métricas, políticas, evidencia y reglas de fechas.
+- `ports/`: interfaces para fuentes, acciones, proveedores y almacenamiento.
+- `adapters/`: Trello, GitHub, GitHub Actions, Gemini, Groq, SQLite, SMTP y sandbox local.
+- SQLite conserva capturas, ejecuciones, informes, propuestas, decisiones, recibos y eventos de auditoría. Los artefactos permanecen bajo los directorios configurados del servidor.
 
-El backend está desarrollado en **Python 3.14** utilizando **FastAPI** y **Pydantic v2**, operando sobre el servidor ASGI **Uvicorn**.
+La API de análisis utiliza una cola local acotada con un worker. La preparación no crea una ejecución ni prueba conectividad remota; confirmar vuelve a verificar la huella de configuración y crea un trabajo idempotente.
 
-Está estructurado bajo una **Arquitectura Hexagonal (Puertos y Adaptadores)** con separación estricta de responsabilidades:
-- **Cero llamadas no autorizadas a la nube**: No se invocan modelos LLM ni APIs externas (GitHub/Trello) de forma desatendida durante consultas habituales de lectura.
-- **Determinismo matemático y aislamiento**: Las métricas de planificación, plazos y dependencias se calculan mediante algoritmos deterministas en Python, no mediante interpretaciones probabilísticas de LLMs.
-- **Inmutabilidad y soberanía**: La persistencia utiliza SQLite directo con disparadores (*triggers*) `BEFORE UPDATE / BEFORE DELETE` que impiden la alteración o borrado de evidencias históricas.
+## Configuración, defaults y modos
 
----
+La precedencia de configuración es: argumentos/overrides → variables del proceso → `.env` local → YAML → defaults. API y CLI combinan YAML base (`config/config.yaml`), proyecto predeterminado (`config/hormigestion.yaml`) y configuración explícita (`AGENTE_CONFIG_PATH` o `--config`). Si la configuración explícita pertenece a otro proyecto, no hereda los bindings ni el SHA del proyecto predeterminado. Las claves `GITHUB_REPO`/`GITHUB_REPOSITORY` y `GITHUB_BRANCH`/`GITHUB_REF` son alias y se validan para evitar contradicciones. `TRELLO_BOARD_ID` o `board_id` en YAML asocia el tablero al proyecto `HORMIGESTION`; también existe el mapa explícito `TRELLO_BOARD_IDS`.
 
-## 2. Arquitectura en Capas del Backend
+| Control / componente | Valor predeterminado del producto | Comportamiento |
+|---|---|---|
+| Monitoring / Verifier / Report | Gemini | Si falta la clave de un componente, se usa el fallback local determinista y se registra el motivo. |
+| Quality | Groq | Si falta la clave, se usa un fallback local acotado; el resultado conserva el estado de evidencia real. |
+| `ALLOW_REMOTE_AI` | `true` | Habilita el uso remoto en servidor; cada transferencia de análisis requiere consentimiento explícito. `false` explícito se respeta. |
+| `EXTERNAL_WRITES_ENABLED` | `true` | Participa en la autorización de escrituras; no basta para habilitar una mutación live. `false` explícito se respeta. |
+| Capacidades `H5_*_ENABLED` | `true` | El servidor puede deshabilitar explícitamente análisis, gobernanza, decisión de informes o ciclo semanal. |
 
-```text
-src/agente_gestion/
-├── domain/                # Núcleo de dominio puro (sin I/O ni dependencias externas)
-│   ├── tasks.py           # TaskCard, DomainTaskState, TaskPlanSummary, reglas de plazos
-│   ├── action_proposals.py# ActionProposal, ProposalDecision, validaciones de mutación
-│   ├── quality.py         # CodeFinding, VerificationVerdict, reglas Q1–Q3
-│   ├── weekly_schedule.py # WeeklySchedule, cálculo determinista de ventanas temporales
-│   └── security.py        # SystemRole, Permission, ExecutionActor, reglas RBAC
-├── ports/                 # Interfaces abstractas (Protocolos / ABCs)
-│   ├── task_source.py     # TaskSourcePort (abstracción de lectura de tableros)
-│   ├── action_port.py     # TaskActionPort (abstracción de mutación segura de tareas)
-│   ├── llm_port.py        # LLMPort (abstracción de proveedores de lenguaje)
-│   ├── storage_port.py    # StoragePort (abstracción de persistencia histórica)
-│   └── outbox_port.py     # OutboxPort (abstracción de entrega de notificaciones)
-├── adapters/              # Implementaciones concretas de infraestructura
-│   ├── sources/           # TrelloSourceAdapter, GitHubSourceAdapter, Composite
-│   ├── storage/           # SQLiteStorageAdapter, consultas indexadas por proyecto
-│   ├── llm/               # Adaptadores para Groq, Gemini, Ollama y Mock local
-│   └── outbox/            # HybridNotificationOutboxAdapter (disco y SQLite)
-├── application/           # Servicios de aplicación y casos de uso
-│   ├── orchestrator.py    # ProjectOrchestrator: coordinación del pipeline
-│   ├── weekly_scheduler.py# WeeklySchedulerService: agregación semanal y outbox
-│   ├── tasks_query.py     # Servicio de filtrado, paginación y ordenamiento de tareas
-│   └── security.py        # enforce_rbac, assert_safe_remote_payload, hashing
-└── api/                   # Capa web y endpoints HTTP (FastAPI)
-    ├── app.py             # Creación de FastAPI app, middlewares CORS y TrustedHost
-    ├── settings.py        # ApiSettings, ProjectConfig, carga de variables de entorno
-    ├── routes.py          # Definición de todos los endpoints REST (/api/v1)
-    ├── schemas.py         # DTOs Pydantic de entrada y salida
-    └── sessions.py        # OperatorSessionStore, cookies HttpOnly y validación CSRF
-```
+`AnalysisPreparation` informa `ready`/`eligible`, comprobaciones, proveedores, estado de credenciales, `execution_mode` previsto y `fallback_reasons`. La ausencia de una clave remota opcional no deshabilita por sí sola la acción cuando el fallback local puede cubrir el componente. `AnalysisJob.execution_mode` identifica el modo realmente usado (`live`, `sandbox` o `mixed`); cada recibo de acción identifica el modo y resultado de esa operación.
 
----
+Antes de una escritura externa, el modo live exige proyecto real, recurso vinculado, credenciales, permiso efectivo del proveedor y aprobación humana. Si una condición falta en preflight, se elige sandbox y se informa; no se intenta la escritura. Si ya se intentó una operación live y falla, se conserva el fallo/estado incierto y no se rebautiza como éxito sandbox. La disponibilidad de claves no se presenta como prueba de conectividad.
 
-## 3. Catálogo de Endpoints de la API REST (`/api/v1`)
+## Seguridad y consentimiento
 
-Todos los endpoints retornan respuestas tipadas bajo `/api/v1` y manejan errores con el estándar RFC 7807 (`ApiProblem`).
+- Login humano mediante correo y contraseña; sesión respaldada por cookie `HttpOnly`, `SameSite=Strict` y CSRF del servidor.
+- Los endpoints de mutación validan el origen HTTP exacto, CSRF y una clave de idempotencia cuando corresponda.
+- El alcance de proyecto se deriva de configuración/sesión. El servidor fija actor y permisos; el cliente no los puede elevar.
+- El consentimiento del gestor para transferir datos a fuentes/proveedores remotos es separado del permiso `ALLOW_REMOTE_AI` del servidor.
+- `EXTERNAL_WRITES_ENABLED` no reemplaza autenticación, permiso del proveedor, alcance, consentimiento aplicable ni decisión humana.
+- Secretos se mantienen en backend y no se incluyen en esquemas de respuesta, logs de uso ni artefactos de análisis.
+- El destinatario inicial del correo es el `email` de la sesión verificada `PROJECT_MANAGER`; `MANAGER_EMAIL` es el fallback del servidor.
+- `smtp_email_sent` indica aceptación del relay. Outbox local y `smtp_email_failed` son resultados distintos; ninguno se presenta como correo recibido en bandeja.
 
-| Método | Ruta | Descripción | Nivel de Acceso |
+## Convenciones del contrato
+
+- Todas las rutas listadas son relativas al prefijo `/api/v1`.
+- Las listas paginadas usan `{items, total, page, page_size}`; `page_size` máximo 100.
+- Los campos no observados son `null`, `unknown` o una disponibilidad explícita, no cero sintético.
+- Los errores usan `{error: {code, message}}`; credenciales de login inválidas añaden RFC 7807 (`application/problem+json`).
+- Los análisis y mutaciones no se inician con GET.
+
+## Catálogo completo de endpoints
+
+### Sistema, sesión y proyectos
+
+| Método | Ruta | Uso | Acceso |
 |---|---|---|---|
-| `GET` | `/system/health` | Estado del servicio y versión de runtime | Público |
-| `GET` | `/auth/session` | Estado de la sesión actual y capabilities activas | Público / Sesión |
-| `POST` | `/auth/login` | Autenticación con token de operador; emite cookie `HttpOnly` | Público (con origen exacto) |
-| `POST` | `/auth/logout` | Revocación de sesión y limpieza de cookie | Requiere sesión + CSRF |
-| `GET` | `/projects` | Lista paginada de proyectos disponibles | Público |
-| `GET` | `/projects/{id}` | Metadatos y modo de origen de un proyecto | Público |
-| `GET` | `/projects/{id}/summary` | Resumen de planificación y conteo de estados | Público |
-| `GET` | `/projects/{id}/history` | Historial de capturas registradas para series temporales | Público |
-| `GET` | `/projects/{id}/compare` | Comparación determinista entre dos capturas | Público |
-| `GET` | `/projects/{id}/tasks` | Explorador de tareas con filtros (estado, responsable, etc.) | Público |
-| `GET` | `/projects/{id}/tasks/{task_id}` | Detalle completo de una tarea y su evidencia observada | Público |
-| `GET` | `/projects/{id}/proposals` | Listado de propuestas de acción generadas | Público |
-| `GET` | `/projects/{id}/proposals/{prop_id}` | Detalle de propuesta y su historial de decisiones | Público |
-| `POST` | `/projects/{id}/proposals/{prop_id}/execute` | Revisor técnico automático y decisión humana con ejecución protegida | Operador (`governance:proposal_execute`) |
-| `POST` | `/runs/{run_id}/findings/{finding_id}/decision` | Decidir sobre código validado contra fuente completa y crear rama separada | Operador (`quality:decide`) |
-| `POST` | `/projects/{id}/notifications/email` | Enviar resumen/reenviar recibo con destinatario confirmado | Operador (`notifications:email_send`) |
-| `GET` | `/runs` | Listado paginado de ejecuciones del pipeline | Público |
-| `GET` | `/runs/{run_id}` | Detalle de etapas de una ejecución y sus duraciones | Público |
-| `GET` | `/runs/{run_id}/findings` | Hallazgos de calidad candidatos de una ejecución | Público |
-| `GET` | `/runs/{run_id}/findings/{id}` | Detalle de hallazgo, veredicto y extracto de código | Público |
-| `POST` | `/analysis/prepare` | Preflight check para análisis con IA | Operador (`analysis:prepare`) |
-| `POST` | `/analysis/confirm` | Confirmación e inicio de trabajo asíncrono con IA | Operador (`analysis:confirm`) |
-| `GET` | `/analysis/jobs` | Cola de trabajos de análisis persistidos | Operador (`analysis:confirm`) |
-| `GET` | `/analysis/jobs/{job_id}` | Polling de estado de un trabajo de análisis | Operador (`analysis:confirm`) |
-| `GET` | `/projects/{id}/reports` | Lista de informes ejecutivos almacenados | Público |
-| `GET` | `/projects/{id}/reports/{report_id}` | Contenido en Markdown sanitizado del informe | Público |
-| `POST` | `/projects/{id}/reports/{report_id}/decision` | Registro de decisión humana sobre el informe | Operador (`reports:decide`) |
-| `GET` | `/projects/{id}/reports/{report_id}/download` | Descarga de informe en `.md` o `.json` | Público |
-| `GET` | `/projects/{id}/schedule` | Configuración y estado de la ventana semanal | Público |
-| `GET` | `/projects/{id}/schedule/outbox` | Historial de recibos de entrega semanal | Público |
-| `GET` | `/projects/{id}/schedule/outbox/{id}` | Detalle del recibo y mensaje emitido | Público |
-| `GET` | `/projects/{id}/schedule/outbox/{id}/download` | Descarga de entrega en `.md` o `.json` | Público |
-| `POST` | `/projects/{id}/schedule/manual-cycle/prepare` | Preflight check de ejecución manual del ciclo | Operador (`weekly_cycle:confirm`) |
-| `POST` | `/projects/{id}/schedule/manual-cycle/confirm` | Disparo forzado del ciclo semanal SQLite | Operador (`weekly_cycle:confirm`) |
-| `GET` | `/projects/{id}/audit` | Consulta de la tabla de auditoría inmutable | Operador (`audit:read`) |
-| `GET` | `/projects/{id}/configuration` | Configuración activa del proyecto (sin secretos) | Operador (`configuration:read`) |
+| `GET` | `/system/health` | Estado y versión de servicio. | Público |
+| `GET` | `/auth/session` | Estado de sesión, correo, rol, CSRF y capabilities. | Público / sesión actual |
+| `POST` | `/auth/login` | Iniciar sesión del gestor; emite cookie de sesión. | Público; requiere origen permitido |
+| `POST` | `/auth/logout` | Revocar sesión y limpiar cookie. | Sesión + origen + CSRF |
+| `GET` | `/projects` | Listar proyectos paginados y su último estado conocido. | Público |
+| `GET` | `/projects/{project_id}` | Consultar metadatos de un proyecto. | Público |
+| `GET` | `/projects/{project_id}/summary` | Resumen de tareas y señales; acepta `capture_id`. | Público |
+| `GET` | `/projects/{project_id}/executive-summary` | Resumen ejecutivo con series persistidas de capturas/corridas. | Público |
+| `GET` | `/projects/{project_id}/configuration` | Configuración segura y capabilities visibles; no expone secretos. | Sesión + `configuration:read` + alcance |
 
----
+### Tareas, capturas e historial
 
-## 4. Seguridad, RBAC y Control de Acceso
+| Método | Ruta | Uso | Acceso |
+|---|---|---|---|
+| `GET` | `/projects/{project_id}/tasks` | Lista paginada; filtros `capture_id`, `q`, `state`, `assignee_id`, `list_name`, `critical_only`, `overdue_only`, `due_soon_only`, `sort`, `direction`. | Público |
+| `GET` | `/projects/{project_id}/tasks/{task_id}` | Detalle de tarea, evidencia e historial disponible; acepta `capture_id`. | Público |
+| `GET` | `/projects/{project_id}/history` | Capturas paginadas con fecha y resumen. | Público |
+| `GET` | `/projects/{project_id}/compare` | Compara capturas mediante `before` y `after`. | Público |
 
-### 4.1. Roles y Permisos Granulares
-El backend define 7 roles formales (`SystemRole`):
-1. `DEVELOPER`: Consulta de código y tareas.
-2. `MONITORING`: Rol del agente ejecutor de seguimiento.
-3. `QUALITY`: Rol del agente revisor de código.
-4. `VERIFIER`: Rol del agente verificador independiente.
-5. `REPORT`: Rol del agente de síntesis y reportes.
-6. `PROJECT_MANAGER`: Gestor con capacidad de toma de decisiones humanas y autorización.
-7. `ADMIN`: Administración del sistema.
+### Corridas, etapas, hallazgos y evidencia
 
-La función `enforce_rbac(actor, permission)` evalúa en memoria si el actor posee el permiso antes de ejecutar cualquier mutación, rechazando llamadas no autorizadas con código `403 Forbidden`.
+| Método | Ruta | Uso | Acceso |
+|---|---|---|---|
+| `GET` | `/runs` | Lista paginada por `project_id`. | Público |
+| `GET` | `/runs/{run_id}` | Detalle persistido de una corrida. | Público |
+| `GET` | `/runs/{run_id}/stages` | Estados, duración y proveedores registrados por etapa. | Público |
+| `GET` | `/runs/{run_id}/findings` | Lista paginada de hallazgos candidatos y verificación registrada. | Público |
+| `GET` | `/runs/{run_id}/findings/{finding_id}` | Detalle de hallazgo, evidencia y excerpt disponible. | Público |
+| `GET` | `/runs/{run_id}/evidence` | Evidencia paginada en proyección segura. | Público |
+| `POST` | `/runs/{run_id}/findings/{finding_id}/decision` | Aprobar, rechazar o pedir cambios sobre un hallazgo; puede crear rama sandbox/live. | Sesión + `quality:decide` + origen + CSRF + idempotencia |
 
-### 4.2. Protección de Sesiones y Cookies
-- Las sesiones no se almacenan en `localStorage` ni exponen credenciales al navegador.
-- Se emite una cookie segura:
-  - `HttpOnly`: inaccesible desde JavaScript para mitigar ataques XSS.
-  - `SameSite=Strict`: prevención estricta de Cross-Site Request Forgery (CSRF).
-  - `Path=/api/v1`: alcance restringido exclusivamente a las rutas de la API.
-- Las mutaciones de estado exigen el encabezado `X-CSRF-Token` emitido por el servidor.
+### Análisis asíncrono
 
-### 4.3. Política de Soberanía Cloud y Fuga de Secretos
-- **Filtro Recursivo de Payloads (`assert_safe_remote_payload`)**: Antes de que cualquier cadena salga hacia un LLM (Gemini/Groq), se inspecciona para detectar y bloquear:
-  - Archivos `.env` o variables de entorno.
-  - Bloques de certificados o claves privadas (`BEGIN PRIVATE KEY`).
-  - Patrones de tokens de API de terceros.
-- **Política por Proyecto (`assert_cloud_transfer_policy`)**: Si un proyecto tiene configurado `allow_remote_ai: false`, cualquier intento de llamada a APIs externas falla inmediatamente (*fail-closed*).
+| Método | Ruta | Uso | Acceso |
+|---|---|---|---|
+| `POST` | `/analysis/prepare` | Preparar con `project_id` explícito en el cuerpo y los mismos controles de la ruta con proyecto. | Sesión + `analysis:prepare` + origen + CSRF |
+| `POST` | `/analysis/confirm` | Confirmar preparación ligada al proyecto/sesión; exige `project_id` en el cuerpo. | Sesión + `analysis:confirm` + origen + CSRF + idempotencia |
+| `POST` | `/projects/{project_id}/analysis/prepare` | Revisar configuración, elegibilidad, fuentes, modo y fallbacks sin ejecutar. | Sesión + `analysis:prepare` + origen + CSRF |
+| `POST` | `/projects/{project_id}/analysis/confirm` | Confirmar el análisis y crear un trabajo con `Idempotency-Key`; el cuerpo lleva consentimiento remoto separado. | Sesión + `analysis:confirm` + origen + CSRF + idempotencia |
+| `GET` | `/analysis/jobs` | Listar trabajos por `project_id`, paginados. | Sesión + alcance + `analysis:confirm` |
+| `GET` | `/analysis/jobs/{job_id}` | Consultar estado del trabajo y corrida asociada. | Sesión + alcance del proyecto |
 
-### 4.4. Control de Concurrencia, Idempotencia y Protección Anti-Ráfaga (`AnalysisJobService`)
-Para prevenir que solicitudes repetidas, dobles clics o peticiones concurrentes sobrecarguen el servidor o disparen ejecuciones redundantes de agentes:
-1. **Transacción Inmediata en Base de Datos**: Cada registro de trabajo en [`AnalysisJobLedger`](file:///home/saimoljimenez/Univercidad/GestionProyectos/AgenteGestionProyectos/src/agente_gestion/api/analysis_jobs.py#L367) se realiza bajo `BEGIN IMMEDIATE` en SQLite para evitar condiciones de carrera (*race conditions*).
-2. **Detección de Análisis Activo (HTTP 409 `analisis_en_curso`)**: Antes de crear un trabajo, se verifica si ya existe uno en estado `queued` o `running` para el proyecto. Si existe, la petición se rechaza de inmediato con código `409 Conflict`, impidiendo ráfagas de análisis concurrentes.
-3. **Clave de Idempotencia (`Idempotency-Key`)**: Si un cliente reenvía la misma petición con el mismo hash de idempotencia, el servidor retorna el trabajo previo sin encolar uno nuevo (`reused: true`).
-4. **Capacidad de Cola y Worker Único**: El servicio limita la cola mediante `queue_capacity` (HTTP 429 si se satura) y procesa las tareas secuencialmente en un worker dedicado (`ThreadPoolExecutor(max_workers=1)`).
+La preparación enlaza `preparation_id`, `configuration_fingerprint`, proyecto y sesión. La confirmación rechaza expiración, cambios de configuración, falta de consentimiento remoto cuando sea necesario o una capacidad deshabilitada. La respuesta de trabajo informa `queued`, `running`, `completed`, `failed` o `interrupted`; un estado completado no demuestra que cada componente usara un proveedor remoto.
 
----
+### Calidad, propuestas y decisiones humanas
 
-## 5. Esquema de Base de Datos SQLite (`.runtime/agente.db`)
+| Método | Ruta | Uso | Acceso |
+|---|---|---|---|
+| `GET` | `/projects/{project_id}/quality` | Estado de revisión, conteos de hallazgos y CI conocido. | Público |
+| `GET` | `/projects/{project_id}/policies` | Estados `pass`, `fail` o `unknown` de políticas persistidas. | Público |
+| `GET` | `/projects/{project_id}/proposals` | Lista paginada de propuestas y estado técnico/ejecución. | Público |
+| `GET` | `/projects/{project_id}/proposals/{proposal_id}` | Detalle de propuesta y decisiones registradas. | Público |
+| `POST` | `/projects/{project_id}/proposals/{proposal_id}/execute` | Decisión humana y ejecución protegida de propuesta de tarea. | Sesión + `governance:proposal_execute` + origen + CSRF + idempotencia |
+| `GET` | `/projects/{project_id}/reports` | Lista paginada de informes; filtro `decision` opcional. | Público |
+| `GET` | `/projects/{project_id}/reports/{report_id}` | Informe, recomendación y decisión registrada. | Público |
+| `GET` | `/projects/{project_id}/reports/{report_id}/download` | Descargar `markdown` o `json`. | Público |
+| `POST` | `/projects/{project_id}/reports/{report_id}/decision` | Registrar aprobación, rechazo, solicitud de cambios o aplazamiento humano. | Sesión + `reports:decide` + origen + CSRF + idempotencia |
 
-La persistencia histórica se asienta en SQLite local sin dependencias complejas. La integridad de auditoría se garantiza mediante disparadores inmutables:
+La recomendación de `ReportAgent` es consultiva. Una decisión de informe no concede por sí misma permiso para modificar Trello o GitHub.
 
-```mermaid
-erDiagram
-    PROJECTS ||--o{ SNAPSHOTS : registra
-    SNAPSHOTS ||--o{ EVIDENCE : referencia
-    RUNS ||--o{ STAGE_RESULTS : ejecuta
-    RUNS ||--o{ FINDINGS : detecta
-    FINDINGS ||--o{ VERIFICATIONS : valida
-    RUNS ||--o{ REPORTS : genera
-    REPORTS ||--o{ HUMAN_DECISIONS : recibe
-    PROJECTS ||--o{ ACTION_PROPOSALS : propone
-    ACTION_PROPOSALS ||--o{ PROPOSAL_DECISIONS : revisa
-    ACTION_PROPOSALS ||--o{ PROPOSAL_DRY_RUNS : simula
-    ACTION_PROPOSALS ||--o{ PROPOSAL_EXECUTIONS : ejecuta
-    PROJECTS ||--o{ NOTIFICATION_OUTBOX : entrega
-    PROJECTS ||--o{ SECURITY_AUDIT_LOG : audita
-```
+### Programación y outbox
 
-### Tablas Principales
+| Método | Ruta | Uso | Acceso |
+|---|---|---|---|
+| `GET` | `/projects/{project_id}/schedule` | Ver programación configurada y recibo conocido. | Público |
+| `GET` | `/projects/{project_id}/schedule/outbox` | Listar recibos paginados. | Público |
+| `GET` | `/projects/{project_id}/schedule/outbox/{delivery_id}` | Consultar recibo y mensaje permitido. | Público |
+| `GET` | `/projects/{project_id}/schedule/outbox/{delivery_id}/download` | Descargar `markdown` o `json` del recibo. | Público |
+| `POST` | `/projects/{project_id}/schedule/manual-cycle/prepare` | Preflight del ciclo manual local. | Sesión + `weekly_cycle:prepare` + origen + CSRF |
+| `POST` | `/projects/{project_id}/schedule/manual-cycle/confirm` | Confirmar ciclo; recibe `Idempotency-Key`. | Sesión + `weekly_cycle:confirm` + origen + CSRF + idempotencia |
+| `GET` | `/projects/{project_id}/schedule/manual-cycle/jobs` | Listar trabajos del ciclo manual. | Sesión + `weekly_cycle:confirm` + alcance |
+| `GET` | `/projects/{project_id}/schedule/manual-cycle/jobs/{job_id}` | Consultar un trabajo de ciclo manual. | Sesión + `weekly_cycle:confirm` + alcance |
 
-1. `snapshots`: Capturas completas del tablero Trello serializadas en JSON inmutable con hash SHA-256 (`content_hash`).
-2. `runs`: Registro de cada ejecución completa del pipeline (duración, estado, timestamp).
-3. `stage_results`: Tiempos y estados de cada etapa individual (`source_collection`, `monitoring`, `quality`, `verifier`, `report`).
-4. `findings`: Hallazgos de calidad de código detectados en diffs (severidad, regla Q1–Q3, archivo y línea).
-5. `verifications`: Veredicto emitido por el `VerifierAgent` (`confirmed`, `rejected`, `insufficient`).
-6. `reports`: Informes finales consolidados generados para el proyecto.
-7. `human_decisions`: Registro inmutable de la decisión tomada por el usuario humano sobre el informe.
-8. `action_proposals`: Catálogo de propuestas de acción con motivo, evidencia e impacto.
-9. `proposal_executions`: Historial de ejecuciones reales sobre proveedores externos (Trello) con verificación post-escritura.
-10. `notification_outbox`: Registro de recibos idempotentes despachados en cada ventana semanal.
-11. `security_audit_log`: Ledger inmutable protegido por disparadores `BEFORE UPDATE` y `BEFORE DELETE` donde se asientan todos los eventos de seguridad.
+El ciclo manual de la web es un trabajo local con resultado y recibo; no debe describirse como scheduler desatendido. Un recibo de outbox identifica su canal y estado reales.
 
----
+### Auditoría y notificaciones
 
-## 6. Modos de Ejecución del Servidor
+| Método | Ruta | Uso | Acceso |
+|---|---|---|---|
+| `GET` | `/projects/{project_id}/audit` | Consultar eventos filtrados por tipo y fecha. | Sesión + `audit:read` + alcance |
+| `GET` | `/projects/{project_id}/audit/{event_id}` | Detalle permitido de evento auditado. | Sesión + `audit:read` + alcance |
+| `POST` | `/projects/{project_id}/notifications/email` | Enviar informe al destinatario confirmado o reenviar recibo. | Sesión + `notifications:email_send` + origen + CSRF + idempotencia |
+| `GET` | `/projects/{project_id}/notifications/email/{delivery_id}/preview` | Ver HTML vinculado a un recibo del mismo proyecto. | Sesión + `audit:read` + alcance |
 
-El servidor puede iniciarse en dos modalidades desde la raíz del proyecto:
+## Contratos de mutación
 
-### Modo A: Base configurada (`.runtime/agente.db`)
-Carga exclusivamente el contenido de la base configurada. Tras la regeneración de demostración, son datos de prueba nuevos, no historial auténtico de HORMIGESTION. No uses una credencial pública de fixture en una base privada; aprovisioná `H5_OPERATOR_TOKEN` de forma segura:
+- **Análisis:** `POST .../prepare` recibe `request_analysis: true`. `POST .../confirm` recibe preparación, huella, confirmación y `remote_consent` booleano; la clave de idempotencia va en el header.
+- **Propuestas:** `POST .../execute` exige decisión, motivo y, para modificación, únicamente el campo asociado a la propuesta. La respuesta conserva ejecución, modo, verificación y recibo.
+- **Hallazgos:** `POST .../decision` recibe `approve`, `reject` o `request_changes`; para aprobar, el servidor exige fuente verificable y valida el archivo completo afectado.
+- **Correo:** el destinatario puede omitirse para usar el correo de sesión; el envío se confirma por acción del usuario. La API retorna `local_outbox_simulated_email`, `smtp_email_sent` o `smtp_email_failed` según el resultado real.
+- **Idempotencia:** una repetición idéntica devuelve el recibo existente; una clave reutilizada con otro cuerpo se rechaza. Un resultado live incierto no se convierte en una nueva acción automática.
 
-```bash
-PYTHONPATH=src .venv/bin/python -m uvicorn agente_gestion.api.app:app --host 127.0.0.1 --port 8000 --workers 1
-```
+## Fuentes de implementación
 
-### Modo B: Demostración Aislada con Base Temporal Desechable
-Crea una base efímera bajo `.runtime/`, precargada con datos controlados de prueba:
-```bash
-.venv/bin/python scripts/serve_web_demo.py --dataset fixture --port 8000
-```
+- [Composición y routers montados](../src/agente_gestion/api/app.py)
+- [Rutas principales](../src/agente_gestion/api/routes.py)
+- [Esquemas públicos](../src/agente_gestion/api/schemas.py)
+- [Preflight y trabajos de análisis](../src/agente_gestion/api/analysis_jobs.py)
+- [Configuración API](../src/agente_gestion/api/settings.py)
+- [Seguridad de sesión](../src/agente_gestion/api/security.py)
+- [Acciones de código](../src/agente_gestion/api/finding_actions.py) · [propuestas](../src/agente_gestion/api/proposal_execution.py) · [correo](../src/agente_gestion/api/email_notifications.py)
 
+La estructura completa de capas está en [ARCHITECTURA.md](../ARCHITECTURA.md); el mapa de responsabilidades académicas está en [docs03](03-motor-de-agentes-y-requisitos.md).

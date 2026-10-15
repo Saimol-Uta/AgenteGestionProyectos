@@ -1,6 +1,11 @@
 import { expect, type Page, type Route } from "@playwright/test";
 import type { ProposalDetail, ProposalSummary } from "../src/api/types";
 
+export const managerCredentials = {
+  email: "gestor@hormigestion.ec",
+  password: "HormiGestion2026!",
+} as const;
+
 export const summary = {
   project_id: "hormigestio",
   capture_id: "capture-current",
@@ -500,7 +505,18 @@ export async function installApi(page: Page, options: {
   criticalStatus?: number;
   authenticated?: boolean;
   capabilities?: string[];
+  sessionEmail?: string | null;
+  notificationEmail?: string | null;
   prepareStatus?: number;
+  preparePayload?: Partial<typeof analysisPreparation> & {
+    ready?: boolean;
+    execution_mode?: "live" | "sandbox" | "mixed";
+    fallback_reasons?: string[];
+  };
+  analysisJobPayload?: Partial<typeof analysisJob> & {
+    execution_mode?: "live" | "sandbox" | "mixed";
+    fallback_reasons?: string[];
+  };
   confirmStatuses?: number[];
   jobPollStatuses?: Array<"queued" | "running" | "completed" | "failed" | "interrupted">;
   proposalExecutionStatus?: number;
@@ -579,19 +595,38 @@ export async function installApi(page: Page, options: {
     if (path.endsWith("/auth/session")) {
       await json(route, {
         authenticated,
-        actor: authenticated ? "operadora" : null,
+        actor: authenticated ? "Gestor del Proyecto" : null,
         csrf_token: authenticated ? "csrf-fixture" : null,
         capabilities: authenticated ? sessionCapabilities : [],
         login_available: true,
+        email: authenticated ? options.sessionEmail === undefined ? managerCredentials.email : options.sessionEmail : null,
+        notification_email: authenticated ? options.notificationEmail ?? null : null,
+        role: authenticated ? "PROJECT_MANAGER" : null,
       });
       return;
     }
 
     if (path.endsWith("/auth/login")) {
-      if (loginStatus === 200) authenticated = true;
-      await json(route, loginStatus === 200
-        ? { token: "opaque-session-value" }
-        : { error: { code: "invalid_token", message: "El token de operador no es válido." } }, loginStatus);
+      let body: unknown = null;
+      try { body = request.postDataJSON(); } catch { /* Missing or malformed JSON is rejected below. */ }
+      const credentialsMatch = Boolean(body && typeof body === "object"
+        && Object.keys(body).length === 2
+        && (body as Record<string, unknown>).email === managerCredentials.email
+        && (body as Record<string, unknown>).password === managerCredentials.password);
+      const status = credentialsMatch ? loginStatus : 401;
+      authenticated = status === 200;
+      await json(route, status === 200
+        ? {
+          authenticated: true,
+          actor: "Gestor del Proyecto",
+          csrf_token: "csrf-fixture",
+          capabilities: sessionCapabilities,
+          login_available: true,
+          email: managerCredentials.email,
+          notification_email: null,
+          role: "PROJECT_MANAGER",
+        }
+        : { error: { code: "invalid_credentials", message: "Correo electrónico o contraseña incorrectos." } }, status);
       return;
     }
 
@@ -869,7 +904,7 @@ export async function installApi(page: Page, options: {
       if (options.prepareStatus && options.prepareStatus !== 200) {
         await json(route, { error: { code: "preparation_forbidden", message: "La preparación no está autorizada por el servidor." } }, options.prepareStatus);
       } else {
-        await json(route, analysisPreparation);
+        await json(route, { ...analysisPreparation, ...options.preparePayload });
       }
       return;
     }
@@ -882,13 +917,14 @@ export async function installApi(page: Page, options: {
         return;
       }
       confirmedJob = true;
-      await json(route, { job: analysisJob, reused: false, poll_url: "/api/v1/analysis/jobs/job-current", poll_after_ms: 250 }, 202);
+      await json(route, { job: { ...analysisJob, ...options.analysisJobPayload }, reused: false, poll_url: "/api/v1/analysis/jobs/job-current", poll_after_ms: 250 }, 202);
       return;
     }
 
     if (path.endsWith("/analysis/jobs") && request.method() === "GET") {
+      const currentAnalysisJob = { ...analysisJob, ...options.analysisJobPayload };
       await json(route, confirmedJob
-        ? { items: [analysisJob], total: 1, page: 1, page_size: 25 }
+        ? { items: [currentAnalysisJob], total: 1, page: 1, page_size: 25 }
         : { items: [], total: 0, page: 1, page_size: 25 });
       return;
     }
@@ -900,6 +936,7 @@ export async function installApi(page: Page, options: {
       jobPollCount += 1;
       await json(route, {
         ...analysisJob,
+        ...options.analysisJobPayload,
         status,
         updated_at: status === "queued" ? analysisJob.updated_at : "2026-01-12T10:11:00-05:00",
         run_id: status === "completed" ? "run-current" : null,

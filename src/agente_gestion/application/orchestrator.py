@@ -319,10 +319,10 @@ class ProjectOrchestrator:
                 verificador_model_name = "unavailable"
 
         models_used = {
-            "elaborador": _format_model_tag(self.elaborador_provider, "ollama"),
-            "revisor": _format_model_tag(self.revisor_provider, "ollama"),
+            "elaborador": _format_model_tag(self.elaborador_provider, "gemini"),
+            "revisor": _format_model_tag(self.revisor_provider, "groq"),
             "verificador": verificador_model_name,
-            "aprobador": _format_model_tag(self.aprobador_provider, "ollama"),
+            "aprobador": _format_model_tag(self.aprobador_provider, "gemini"),
         }
         provider_errors: list[str] = []
         escalation_map: dict[str, list[str]] = {}
@@ -368,7 +368,7 @@ class ProjectOrchestrator:
         try:
             monitoring_agent = ProjectMonitoringAgent(
                 provider=self.elaborador_provider,
-                model=getattr(self.elaborador_provider, "model", "qwen3.5:2b-q4_K_M"),
+                model=getattr(self.elaborador_provider, "model", "gemini-3.5-flash-lite"),
                 max_generation_tokens=self.config.monitoring_max_generation_tokens,
                 coordinator=coordinator,
             )
@@ -431,7 +431,7 @@ class ProjectOrchestrator:
             try:
                 quality_agent = CodeQualityAgent(
                     provider=self.revisor_provider,
-                    model=getattr(self.revisor_provider, "model", "qwen3.5:4b-q4_K_M"),
+                    model=getattr(self.revisor_provider, "model", "llama-3.3-70b-versatile"),
                     coordinator=coordinator,
                     timeout_seconds=getattr(self.config, "quality_timeout_seconds", 120.0),
                     max_output_tokens=getattr(self.config, "quality_max_output_tokens", None),
@@ -659,7 +659,7 @@ class ProjectOrchestrator:
         try:
             report_agent = ReportAgent(
                 provider=self.aprobador_provider,
-                model=getattr(self.aprobador_provider, "model", "qwen3.5:2b-q4_K_M"),
+                model=getattr(self.aprobador_provider, "model", "gemini-3.5-flash-lite"),
                 coordinator=coordinator,
             )
             final_report = report_agent.run(

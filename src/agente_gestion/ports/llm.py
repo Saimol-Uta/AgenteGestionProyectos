@@ -10,7 +10,7 @@ from agente_gestion.domain.llm import (
 
 
 class LLMProviderPort(ABC):
-    """Port for any model provider adapter (Ollama, OpenAI, Gemini, etc.)."""
+    """Port for Gemini, Groq, and deterministic sandbox model adapters."""
 
     @abstractmethod
     def generate(self, request: GenerationRequest) -> GenerationResult:

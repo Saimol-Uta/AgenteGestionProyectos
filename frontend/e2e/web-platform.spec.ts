@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { summary, project, secondProject, tasks, allTasks, history, runCurrent, runPrevious, runHistory, stageRecords, candidateFinding, findingDetail, quality, policies, executiveSummary, analysisPreparation, analysisJob, comparison, proposalSummary, proposalDetail, reportSummary, reportDetail, auditEvent, unknownAuditEvent, outboxReceipt, weeklySchedule, weeklyWindow, scheduleView, outboxMessage, outboxDetail, schedulePreparation, weeklyCycleJob, projectConfiguration, auditCollection, installApi } from "./fixtures";
+import { summary, project, secondProject, tasks, allTasks, history, runCurrent, runPrevious, runHistory, stageRecords, candidateFinding, findingDetail, quality, policies, executiveSummary, analysisPreparation, analysisJob, comparison, proposalSummary, proposalDetail, reportSummary, reportDetail, auditEvent, unknownAuditEvent, outboxReceipt, weeklySchedule, weeklyWindow, scheduleView, outboxMessage, outboxDetail, schedulePreparation, weeklyCycleJob, projectConfiguration, auditCollection, installApi, managerCredentials } from "./fixtures";
 
 test("el dashboard enlaza estados y señales desde conteos del backend sin sumar categorías solapadas", async ({ page }) => {
   await installApi(page);
@@ -98,10 +98,10 @@ test("el centro de IA consulta el historial sin iniciar trabajos al abrirlo", as
   await page.goto("/analysis");
 
   await expect(page.getByRole("heading", { name: "Centro de análisis de IA" })).toBeVisible();
-  await expect(page.getByText("Historial de ejecuciones", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Historial de análisis", exact: true })).toBeVisible();
   await expect(page.getByText("run-current", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Preparar análisis" })).toBeDisabled();
-  await expect(page.getByRole("heading", { name: "Historial de trabajos protegido" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Historial de análisis protegido" })).toBeVisible();
   expect(analysisWrites).toHaveLength(0);
   expect(apiObserver.analysisJobListReads).toBe(0);
 });
@@ -143,8 +143,8 @@ test("la preparación y la confirmación son pasos protegidos independientes con
   expect(analysisWrites).toHaveLength(0);
 
   await page.getByRole("button", { name: "Preparar análisis" }).click();
-  await expect(page.getByText("La disponibilidad remota no se comprueba durante la preparación.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /consentimiento explícito para usar proveedores remotos/i })).not.toBeChecked();
+  await expect(page.getByText("La revisión no contacta servicios en la nube.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /uso de servicios en la nube/i })).not.toBeChecked();
   const confirmButton = page.getByRole("button", { name: "Confirmar análisis" });
   await expect(confirmButton).toBeDisabled();
   expect(analysisWrites).toHaveLength(1);
@@ -152,7 +152,7 @@ test("la preparación y la confirmación son pasos protegidos independientes con
   expect(JSON.parse(analysisWrites[0].body ?? "{}")).toEqual({ request_analysis: true });
   expect(analysisWrites[0].csrfToken).toBe("csrf-fixture");
 
-  await page.getByRole("checkbox", { name: /consentimiento explícito para usar proveedores remotos/i }).check();
+  await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await expect(confirmButton).toBeEnabled();
   await confirmButton.click();
   await expect(page.getByText("Trabajo de análisis: completado", { exact: true })).toBeVisible();
@@ -171,12 +171,86 @@ test("la preparación y la confirmación son pasos protegidos independientes con
   expect(apiObserver.jobPollRequests).toBe(2);
 });
 
+test("la falta de una clave de IA permite confirmar el análisis mixto sin omitir consentimiento remoto", async ({ page }) => {
+  const fallbackReason = "Sin clave para el proveedor de IA; la revisión se realizará localmente.";
+  const apiObserver = await installApi(page, {
+    authenticated: true,
+    capabilities: ["analysis:prepare", "analysis:confirm"],
+    preparePayload: {
+      eligible: true,
+      ready: true,
+      execution_mode: "mixed",
+      fallback_reasons: [fallbackReason],
+      remote: {
+        required: true,
+        server_allowed: true,
+        availability: "not_checked",
+        providers: [
+          { stage: "source_collection", provider: "trello", model: "not_applicable", transport: "remote", credential_status: "configured" },
+          { stage: "quality", provider: "gemini", model: "gemini-2.5-flash", transport: "remote", credential_status: "missing" },
+          { stage: "quality", provider: "local", model: "fixture-quality", transport: "local", credential_status: "not_required" },
+        ],
+      },
+    },
+    analysisJobPayload: { execution_mode: "mixed", fallback_reasons: [fallbackReason] },
+    jobPollStatuses: ["running", "completed"],
+  });
+  const { analysisWrites } = apiObserver;
+  await page.goto("/analysis");
+  await page.getByRole("button", { name: "Preparar análisis" }).click();
+
+  await expect(page.getByText("Modo de ejecución: Mixto", { exact: true })).toBeVisible();
+  await expect(page.getByText(fallbackReason, { exact: true })).toBeVisible();
+  const preparationFacts = page.locator(".preparation-facts");
+  await expect(preparationFacts.getByText("Fuentes del proyecto", { exact: true })).toBeVisible();
+  await expect(preparationFacts.getByText("Trello", { exact: true })).toBeVisible();
+  await expect(page.locator(".remote-preflight").getByText("Recopilación de fuentes: Trello", { exact: true })).toBeVisible();
+  await expect(page.getByText(/not_applicable/)).toHaveCount(0);
+  await expect(page.getByText("Gemini · gemini-2.5-flash")).toBeVisible();
+  await expect(page.getByText("Acceso: No disponible")).toBeVisible();
+  const confirmButton = page.getByRole("button", { name: "Confirmar análisis" });
+  await expect(confirmButton).toBeDisabled();
+  const consent = page.getByRole("checkbox", { name: /uso de servicios en la nube/i });
+  await expect(consent).not.toBeChecked();
+  await consent.check();
+  await expect(confirmButton).toBeEnabled();
+  await confirmButton.click();
+
+  const activeJob = page.getByRole("region", { name: "Trabajo job-current" });
+  await expect(activeJob.getByText("Trabajo de análisis: completado", { exact: true })).toBeVisible();
+  await expect(activeJob.getByText("Modo de ejecución: Mixto", { exact: true })).toBeVisible();
+  await expect(activeJob).toContainText(`Alternativas aplicadas: ${fallbackReason}`);
+  expect(analysisWrites).toHaveLength(2);
+  expect(analysisWrites[0].path).toBe("/api/v1/projects/hormigestio/analysis/prepare");
+  expect(analysisWrites[0].csrfToken).toBe("csrf-fixture");
+  expect(JSON.parse(analysisWrites[0].body ?? "{}")).toEqual({ request_analysis: true });
+  expect(analysisWrites[1].path).toBe("/api/v1/projects/hormigestio/analysis/confirm");
+  expect(JSON.parse(analysisWrites[1].body ?? "{}")).toMatchObject({ confirm_analysis: true, remote_consent: true });
+  expect(analysisWrites[1].csrfToken).toBe("csrf-fixture");
+  expect(analysisWrites[1].idempotencyKey).toBeTruthy();
+  expect(apiObserver.jobPollRequests).toBe(2);
+});
+
+test("una preparación genuinamente no elegible nunca habilita la confirmación", async ({ page }) => {
+  const { analysisWrites } = await installApi(page, {
+    authenticated: true,
+    capabilities: ["analysis:prepare", "analysis:confirm"],
+    preparePayload: { eligible: false, ready: false, execution_mode: "sandbox" },
+  });
+  await page.goto("/analysis");
+  await page.getByRole("button", { name: "Preparar análisis" }).click();
+
+  await expect(page.getByRole("button", { name: "Confirmar análisis" })).toBeDisabled();
+  await expect(page.getByText(/La revisión aún no cumple las condiciones/)).toBeVisible();
+  expect(analysisWrites.map((write) => write.path)).toEqual(["/api/v1/projects/hormigestio/analysis/prepare"]);
+});
+
 test("la interfaz no inicia trabajo si la sesión carece de la capacidad de preparación", async ({ page }) => {
   const { analysisWrites } = await installApi(page, { authenticated: true, capabilities: ["operator_session"] });
   await page.goto("/analysis");
 
   await expect(page.getByRole("button", { name: "Preparar análisis" })).toBeDisabled();
-  await expect(page.getByText(/analysis:prepare/)).toBeVisible();
+  await expect(page.getByText(/no tiene permiso para revisar un nuevo análisis/)).toBeVisible();
   expect(analysisWrites).toHaveLength(0);
 });
 
@@ -184,10 +258,10 @@ test("la capacidad de preparación no sustituye la capacidad de confirmación", 
   const { analysisWrites } = await installApi(page, { authenticated: true, capabilities: ["analysis:prepare"] });
   await page.goto("/analysis");
   await page.getByRole("button", { name: "Preparar análisis" }).click();
-  await page.getByRole("checkbox", { name: /consentimiento explícito para usar proveedores remotos/i }).check();
+  await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
 
   await expect(page.getByRole("button", { name: "Confirmar análisis" })).toBeDisabled();
-  await expect(page.locator(".preparation-result").getByText(/La sesión no informa la capacidad analysis:confirm/)).toBeVisible();
+  await expect(page.locator(".preparation-result").getByText(/Tu sesión no tiene permiso para confirmar/)).toBeVisible();
   expect(analysisWrites.map((write) => write.path)).toEqual(["/api/v1/projects/hormigestio/analysis/prepare"]);
 });
 
@@ -214,10 +288,10 @@ test("un reintento de confirmación conserva la misma clave de idempotencia", as
   });
   await page.goto("/analysis");
   await page.getByRole("button", { name: "Preparar análisis" }).click();
-  await page.getByRole("checkbox", { name: /consentimiento explícito para usar proveedores remotos/i }).check();
+  await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
   await expect(page.getByRole("heading", { name: "No se pudo confirmar el análisis" })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /consentimiento explícito para usar proveedores remotos/i })).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: /uso de servicios en la nube/i })).toBeDisabled();
   await page.getByRole("button", { name: "Intentar de nuevo" }).click();
 
   await expect(page.getByText("Trabajo de análisis: en cola", { exact: true })).toBeVisible();
@@ -236,10 +310,10 @@ test("el polling de trabajos se detiene en el estado terminal fallido", async ({
   });
   await page.goto("/analysis");
   await page.getByRole("button", { name: "Preparar análisis" }).click();
-  await page.getByRole("checkbox", { name: /consentimiento explícito para usar proveedores remotos/i }).check();
+  await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
   await expect(page.getByText("Trabajo de análisis: fallido", { exact: true })).toBeVisible();
-  await expect(page.getByText("analysis_failed", { exact: true })).toBeVisible();
+  await expect(page.getByText("El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.", { exact: true })).toBeVisible();
   await page.waitForTimeout(350);
   expect(apiObserver.jobPollRequests).toBe(1);
 });
@@ -252,10 +326,10 @@ test("el polling de trabajos se detiene en el estado terminal interrumpido", asy
   });
   await page.goto("/analysis");
   await page.getByRole("button", { name: "Preparar análisis" }).click();
-  await page.getByRole("checkbox", { name: /consentimiento explícito para usar proveedores remotos/i }).check();
+  await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
   await expect(page.getByText("Trabajo de análisis: interrumpido", { exact: true })).toBeVisible();
-  await expect(page.getByText("worker_interrupted", { exact: true })).toBeVisible();
+  await expect(page.getByText("El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.", { exact: true })).toBeVisible();
   await page.waitForTimeout(350);
   expect(apiObserver.jobPollRequests).toBe(1);
 });
@@ -291,7 +365,7 @@ test("conecta dashboard, filtros URL y comparación basada en capturas", async (
   await expect(page.locator(".diff-after")).toHaveText("En curso");
 });
 
-test("el inicio de sesión informa errores y no persiste el token del operador", async ({ page }) => {
+test("el inicio de sesión informa errores de credenciales sin habilitar acciones de gestor", async ({ page }) => {
   await installApi(page, { loginStatus: 401 });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
@@ -300,12 +374,43 @@ test("el inicio de sesión informa errores y no persiste el token del operador",
   await expect(page.getByRole("link", { name: "Propuestas", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Cerrar navegación" }).click();
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
-  await page.getByLabel("Token de operador").fill("token-de-prueba");
-  await page.getByRole("button", { name: "Verificar y continuar" }).click();
+  await page.getByLabel("Correo electrónico").fill(managerCredentials.email);
+  await page.getByLabel("Contraseña").fill("incorrecta");
+  await page.getByRole("button", { name: "Iniciar Sesión como Gestor" }).click();
 
-  await expect(page.getByText("El token de operador no es válido.")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveText("Correo electrónico o contraseña incorrectos. Verifique sus credenciales de Gestor del Proyecto.");
+  await expect(page.getByRole("button", { name: "Iniciar sesión" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sincronizar y Analizar Proyecto" })).toHaveCount(0);
   const stored = await page.evaluate(() => Object.values(localStorage));
-  expect(stored).not.toContain("token-de-prueba");
+  expect(stored).not.toContain("incorrecta");
+});
+
+test("credenciales desconocidas o incorrectas no desbloquean el área de gestor", async ({ page }) => {
+  await installApi(page, { requireLogin: true });
+  await page.goto("/");
+
+  for (const credentials of [
+    { email: "cualquiera@test.com", password: "wrong-password" },
+    { email: managerCredentials.email, password: "wrong-password" },
+  ]) {
+    await page.getByLabel("Correo electrónico").fill(credentials.email);
+    await page.getByLabel("Contraseña").fill(credentials.password);
+    await page.getByRole("button", { name: "Iniciar Sesión como Gestor" }).click();
+    await expect(page.getByRole("alert")).toHaveText("Correo electrónico o contraseña incorrectos. Verifique sus credenciales de Gestor del Proyecto.");
+    await expect(page.getByRole("heading", { name: "Acceso de operador" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sincronizar y Analizar Proyecto" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Propuestas", exact: true })).toHaveCount(0);
+  }
+
+  const missingPasswordStatus = await page.evaluate(async (email) => {
+    const response = await fetch("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    return response.status;
+  }, managerCredentials.email);
+  expect(missingPasswordStatus).toBe(401);
 });
 
 test("explica una API no disponible en vez de inventar datos", async ({ page }) => {
@@ -316,20 +421,28 @@ test("explica una API no disponible en vez de inventar datos", async ({ page }) 
   await expect(page.getByText(/No hay datos|0 tareas/)).toHaveCount(0);
 });
 
-test("la sesión usa la identidad del servidor y cierra con protección CSRF", async ({ page }) => {
+test("la sesión usa la identidad verificada del servidor y cierra con protección CSRF", async ({ page }) => {
   await installApi(page);
+  await page.addInitScript(() => {
+    try { sessionStorage.setItem("gestionpro_operator_email", "falsified@example.org"); } catch {}
+  });
   await page.goto("/");
 
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
-  await page.getByLabel("Token de operador").fill("token-transitorio");
-  await page.getByRole("button", { name: "Verificar y continuar" }).click();
-  await expect(page.getByText("operadora", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Correo electrónico")).toHaveAttribute("type", "email");
+  await expect(page.getByLabel("Correo electrónico")).toHaveAttribute("required", "");
+  await expect(page.getByLabel("Contraseña")).toHaveAttribute("required", "");
+  await page.getByLabel("Correo electrónico").fill(managerCredentials.email);
+  await page.getByLabel("Contraseña").fill(managerCredentials.password);
+  await page.getByRole("button", { name: "Iniciar Sesión como Gestor" }).click();
+  await expect(page.getByRole("banner").getByText(managerCredentials.email, { exact: true })).toBeVisible();
+  await expect(page.getByText("falsified@example.org", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Cerrar sesión" }).click();
   await expect(page.getByRole("button", { name: "Iniciar sesión" })).toBeVisible();
   await expect(page.getByText("Consulta de solo lectura")).toBeVisible();
 
-  const stored = await page.evaluate(() => Object.values(localStorage));
-  expect(stored).not.toContain("token-transitorio");
+  const stored = await page.evaluate(() => Object.values(sessionStorage));
+  expect(stored).not.toContain(managerCredentials.email);
 });
 
 test("ordena y pagina tareas actualizando la consulta persistente", async ({ page }) => {
@@ -468,7 +581,7 @@ test("la propuesta usa revisión técnica automática y una sola decisión prote
   await page.getByRole("button", { name: "Aprobar y Aplicar en Trello", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Confirmar aprobación y ejecución" });
   await dialog.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
-  await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toBeVisible();
+  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
 
   expect(observer.governanceRequests).toHaveLength(1);
   expect(observer.governanceRequests[0].path).toBe("/api/v1/projects/hormigestio/proposals/proposal-date-001/execute");
@@ -502,7 +615,7 @@ test("un rechazo HTTP del servidor se muestra y no activa una decisión local", 
   const dialog = page.getByRole("dialog", { name: "Confirmar aprobación y ejecución" });
   await dialog.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("La ejecución no está disponible por el servidor.");
-  await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toHaveCount(0);
   expect(observer.governanceRequests).toHaveLength(1);
   expect(observer.governanceRequests[0].path).toBe("/api/v1/projects/hormigestio/proposals/proposal-date-001/execute");
   expect(observer.governanceRequests.some((item) => /\/review$|dry-run-authorization|\/dry-runs$/.test(item.path))).toBe(false);
@@ -674,20 +787,24 @@ test("la página principal es el login cuando no hay sesión activa", async ({ p
 
   await expect(page.getByRole("heading", { name: "Acceso de operador" })).toBeVisible();
   await expect(page.getByLabel("Correo electrónico")).toBeVisible();
+  await expect(page.getByLabel("Correo electrónico")).toHaveAttribute("type", "email");
+  await expect(page.getByLabel("Correo electrónico")).toHaveAttribute("required", "");
   await expect(page.getByLabel("Contraseña")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Verificar y continuar" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Explorar en modo de consulta (solo lectura)" })).toBeVisible();
+  await expect(page.getByLabel("Contraseña")).toHaveAttribute("required", "");
+  await expect(page.getByRole("button", { name: "Iniciar Sesión como Gestor" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Ingresar en Modo Consulta (Solo lectura)" })).toBeVisible();
 });
 
-test("inicia sesión desde la página principal con correo y contraseña generando el token", async ({ page }) => {
+test("inicia sesión desde la página principal con las credenciales verificadas del gestor", async ({ page }) => {
+  expect(managerCredentials).toEqual({ email: "gestor@hormigestion.ec", password: "HormiGestion2026!" });
   await installApi(page, { requireLogin: true });
   await page.goto("/");
 
-  await page.getByLabel("Correo electrónico").fill("operador@gestionproyectos.com");
-  await page.getByLabel("Contraseña").fill("Operador2026!");
-  await page.getByRole("button", { name: "Verificar y continuar" }).click();
+  await page.getByLabel("Correo electrónico").fill(managerCredentials.email);
+  await page.getByLabel("Contraseña").fill(managerCredentials.password);
+  await page.getByRole("button", { name: "Iniciar Sesión como Gestor" }).click();
 
-  await expect(page.getByText("operadora", { exact: true })).toBeVisible();
+  await expect(page.getByRole("banner").getByText(managerCredentials.email, { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Resumen del proyecto" })).toBeVisible();
 
   await page.getByRole("button", { name: "Cerrar sesión" }).click();
@@ -698,7 +815,7 @@ test("el modo consulta desde la página principal permite explorar en solo lectu
   await installApi(page, { requireLogin: true });
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Explorar en modo de consulta (solo lectura)" }).click();
+  await page.getByRole("button", { name: "Ingresar en Modo Consulta (Solo lectura)" }).click();
   await expect(page.getByRole("heading", { name: "Resumen del proyecto" })).toBeVisible();
   await expect(page.getByText("Consulta de solo lectura")).toBeVisible();
   await expect(page.getByRole("button", { name: "Iniciar sesión" })).toBeVisible();

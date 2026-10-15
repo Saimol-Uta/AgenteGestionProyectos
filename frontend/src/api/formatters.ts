@@ -1,4 +1,49 @@
-import type { DomainTaskState } from "./types";
+import type { AnalysisExecutionMode, AnalysisPreparation, DomainTaskState } from "./types";
+
+const sourceProviderLabels: Record<string, string> = {
+  trello: "Trello",
+  github: "GitHub",
+  github_actions: "GitHub Actions",
+  local_policy: "Políticas del proyecto",
+};
+
+const providerLabels: Record<string, string> = {
+  ...sourceProviderLabels,
+  gemini: "Gemini",
+  groq: "Groq",
+  local: "local",
+};
+
+export function analysisPreparationIsReady(preparation: Pick<AnalysisPreparation, "eligible" | "ready">): boolean {
+  return preparation.eligible && (preparation.ready ?? preparation.eligible);
+}
+
+export function analysisExecutionModeLabel(mode: AnalysisExecutionMode | undefined): string | null {
+  if (mode === "live") return "Nube";
+  if (mode === "sandbox") return "Local";
+  if (mode === "mixed") return "Mixto";
+  return null;
+}
+
+export function providerNameLabel(provider: string): string {
+  const normalizedProvider = provider.toLocaleLowerCase("es-EC");
+  return Object.prototype.hasOwnProperty.call(providerLabels, normalizedProvider)
+    ? providerLabels[normalizedProvider]
+    : provider;
+}
+
+export function providerModelLabel(provider: string, model: string | null | undefined): string | null {
+  const normalizedProvider = provider.toLocaleLowerCase("es-EC");
+  const normalizedModel = model?.trim();
+  if (Object.prototype.hasOwnProperty.call(sourceProviderLabels, normalizedProvider) || !normalizedModel || normalizedModel.toLocaleLowerCase("es-EC") === "not_applicable") return null;
+  return normalizedModel;
+}
+
+export function providerAttemptLabel(provider: string, model: string | null | undefined): string {
+  const name = providerNameLabel(provider);
+  const modelName = providerModelLabel(provider, model);
+  return modelName ? `${name} · ${modelName}` : name;
+}
 
 const stateLabels: Record<DomainTaskState, string> = {
   pending: "Pendiente",
@@ -72,10 +117,10 @@ export function stageStatusLabel(status: string): string {
 export function stageNameLabel(stage: string): string {
   const labels: Record<string, string> = {
     source_collection: "Recopilación de fuentes",
-    monitoring: "Monitoring",
-    quality: "Quality",
-    verifier: "Verifier",
-    report: "Report",
+    monitoring: "Seguimiento del proyecto",
+    quality: "Revisión de calidad",
+    verifier: "Verificación de hallazgos",
+    report: "Elaboración del informe",
   };
   return labels[stage] ?? `Etapa del dominio: ${stage}`;
 }

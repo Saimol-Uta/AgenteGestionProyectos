@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { installApi, outboxDetail, project, secondProject } from "./fixtures";
+import { installApi, managerCredentials, outboxDetail, project, secondProject } from "./fixtures";
 
 const panelName = "Configuración de Entrega por Correo Electrónico al Gestor";
 
@@ -16,7 +16,7 @@ test("recipient is validated, persisted across pages, and isolated by project", 
   await expect(recipient).toHaveAttribute("aria-invalid", "true");
   await recipient.fill("gestor@example.org");
   await panel.getByRole("button", { name: "Guardar correo local" }).click();
-  await expect(panel.getByText("Preferencia local guardada", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Cambio de correo local guardado", { exact: true })).toBeVisible();
   await page.goto("/reports");
   await expect(page.getByLabel("Correo del gestor")).toHaveValue("gestor@example.org");
   await page.goto("/calendar");
@@ -25,6 +25,68 @@ test("recipient is validated, persisted across pages, and isolated by project", 
   await expect(page.getByLabel("Correo del gestor")).toHaveValue("");
   await page.getByLabel("Proyecto activo", { exact: true }).first().selectOption("hormigestio");
   await expect(page.getByLabel("Correo del gestor")).toHaveValue("gestor@example.org");
+});
+
+test("verified manager email is the default protected notification recipient", async ({ page }) => {
+  const deliveries: Array<{ path: string; recipient: string; csrf: string | undefined; key: string | undefined }> = [];
+  await installApi(page, {
+    authenticated: true,
+    notificationEmail: "configured@hormigest.com",
+    capabilities: ["notifications:email_send"],
+  });
+  await page.route("**/api/v1/projects/hormigestio/notifications/email", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const body = route.request().postDataJSON() as { recipient_email: string };
+    deliveries.push({
+      path: new URL(route.request().url()).pathname,
+      recipient: body.recipient_email,
+      csrf: route.request().headers()["x-csrf-token"],
+      key: route.request().headers()["idempotency-key"],
+    });
+    await route.fulfill({ json: {
+      delivery_id: "delivery-manager-default-001",
+      delivery_channel: "local_outbox_simulated_email",
+      recipient_email: body.recipient_email,
+      html_preview_url: null,
+      status: "DELIVERED",
+    } });
+  });
+  await page.goto("/reports");
+  const panel = page.getByRole("region", { name: panelName });
+  const recipient = panel.getByLabel("Correo del gestor");
+  await expect(recipient).toHaveValue(managerCredentials.email);
+  await panel.getByRole("button", { name: "Enviar Alerta/Reporte al Correo Ahora" }).click();
+  await expect(panel).toContainText(`Confirma el envío a ${managerCredentials.email}`);
+  await panel.getByRole("button", { name: `Confirmar envío a ${managerCredentials.email}`, exact: true }).click();
+
+  await expect(panel.getByText("Guardado localmente · no enviado", { exact: true })).toBeVisible();
+  expect(deliveries).toEqual([{
+    path: "/api/v1/projects/hormigestio/notifications/email",
+    recipient: managerCredentials.email,
+    csrf: "csrf-fixture",
+    key: expect.any(String),
+  }]);
+});
+
+test("configured notification recipient is used when the verified session has no email", async ({ page }) => {
+  const configuredRecipient = "configured@hormigest.com";
+  await installApi(page, { authenticated: true, sessionEmail: null, notificationEmail: configuredRecipient });
+  await page.goto("/reports");
+  const panel = page.getByRole("region", { name: panelName });
+  await expect(panel.getByLabel("Correo del gestor")).toHaveValue(configuredRecipient);
+  await panel.getByRole("button", { name: "Enviar Notificación por Correo al Gestor" }).click();
+  await expect(page.getByRole("article", { name: "Vista previa de correo ejecutivo" })).toContainText(configuredRecipient);
+});
+
+test("a local email override takes precedence over both server-provided recipients", async ({ page }) => {
+  await installApi(page, { authenticated: true, notificationEmail: "configured@hormigest.com" });
+  await page.goto("/reports");
+  const panel = page.getByRole("region", { name: panelName });
+  await panel.getByLabel("Correo del gestor").fill("copia@example.org");
+  await panel.getByRole("button", { name: "Guardar correo local" }).click();
+  await expect(panel.getByLabel("Correo del gestor")).toHaveValue("copia@example.org");
+  await panel.getByRole("button", { name: "Enviar Notificación por Correo al Gestor" }).click();
+  await expect(page.getByRole("article", { name: "Vista previa de correo ejecutivo" })).toContainText("copia@example.org");
 });
 
 test("manual notification produces an executive preview without any delivery request", async ({ page }) => {
@@ -46,7 +108,7 @@ test("manual notification produces an executive preview without any delivery req
   await expect(preview).toContainText("Riesgos y retrasos");
   await expect(preview).toContainText("Acciones recomendadas");
   await expect(preview).toContainText("No enviado");
-  await expect(panel).toContainText("Para enviar se requiere sesión local y notifications:email_send; la vista previa local no entrega correo.");
+  await expect(panel).toContainText("Inicia sesión para enviar un correo; la vista previa local no realiza envíos.");
   expect(writes).toEqual([]);
 });
 

@@ -161,12 +161,11 @@ async function download(path: string, fallbackFilename: string): Promise<Downloa
 export const api = {
   getHealth: () => request<SystemHealth>("/system/health"),
   getSession: () => request<OperatorSession>("/auth/session"),
-  login: async (token: string): Promise<void> => {
-    await request<{ token: string }>("/auth/login", {
+  login: (email: string, password: string): Promise<OperatorSession> =>
+    request<OperatorSession>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ token }),
-    });
-  },
+      body: JSON.stringify({ email, password }),
+    }),
   logout: (csrfToken: string) =>
     request<void>("/auth/logout", { method: "POST", csrfToken }),
   getProjects: (page = 1, pageSize = 100) =>

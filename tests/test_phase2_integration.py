@@ -18,6 +18,7 @@ class Phase2ApplicationIntegrationTests(unittest.TestCase):
         helper = trello_fixture.ProposalExecutionApiTests()
         temp, client, csrf, storage = helper._client(**kwargs)
         self.addCleanup(temp.cleanup)
+        self.addCleanup(client.close)
         return helper, client, csrf, storage
 
     def test_technical_review_is_projected_without_claiming_human_approval(self):
@@ -36,13 +37,15 @@ class Phase2ApplicationIntegrationTests(unittest.TestCase):
         self.assertEqual(body["technical_review"]["dry_run"]["status"], "SIMULATED")
         self.assertFalse(body["technical_review"]["execution_authorized"])
 
-    def test_live_execution_requires_explicit_board_binding_before_adapter_calls(self):
+    def test_missing_board_binding_selects_sandbox_without_adapter_calls(self):
         helper, client, csrf, _storage = self._fixture(source_mode="real", external_writes_enabled=True)
         client.app.state.settings = client.app.state.settings.model_copy(update={"trello_board_ids": {}})
         with patch("agente_gestion.application.proposal_execution.TrelloActionAdapter") as adapter:
             response = helper._execute(client, csrf)
-        self.assertEqual(response.status_code, 503, response.text)
-        self.assertEqual(response.json()["error"]["code"], "tablero_trello_requerido")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["execution_mode"], "sandbox")
+        self.assertEqual(response.json()["execution"]["status"], "SIMULATED")
+        self.assertFalse(response.json()["execution"]["live_state_changed"])
         adapter.assert_not_called()
 
     def test_live_execution_uses_configured_board_not_logical_project_id(self):
@@ -52,8 +55,10 @@ class Phase2ApplicationIntegrationTests(unittest.TestCase):
         })
         proposal, _evidence = storage.get_action_proposal("proposal-1")
         port = SandboxTaskActions({"card-1": {"due_date": proposal.current_value}})
-        with patch("agente_gestion.application.proposal_execution.TrelloActionAdapter", return_value=port) as adapter:
+        with patch.object(port, "has_write_permission", return_value=True, create=True) as permission, \
+             patch("agente_gestion.application.proposal_execution.TrelloActionAdapter", return_value=port) as adapter:
             response = helper._execute(client, csrf)
+        permission.assert_called_once_with()
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["execution"]["status"], "EXECUTED")
         self.assertEqual(adapter.call_args.kwargs["board_id"], "actual-board-id")

@@ -134,6 +134,161 @@ class WebApiAnalysisJobTests(unittest.TestCase):
         self.assertFalse(self.fixture.job_ledger_path.exists())
         self.assertEqual(self.calls, [])
 
+    def _install_real_mode_client(self, config: str) -> None:
+        from fastapi.testclient import TestClient
+        from agente_gestion.api.app import create_app
+        from agente_gestion.api.settings import ProjectConfig
+
+        self.config_path.write_text(config, encoding="utf-8")
+        settings = self.fixture.client.app.state.settings.model_copy(update={
+            "projects": (ProjectConfig(
+                id=PROJECT_ID, name="Proyecto de prueba", source_mode="real",
+            ),),
+            "analysis_config_path": str(self.config_path),
+        })
+        self.fixture.client.close()
+        self.client = TestClient(create_app(settings))
+        self.addCleanup(self.client.close)
+        self.csrf = self._login()
+
+    def test_real_mode_missing_credentials_is_eligible_for_sandbox_prepare(self) -> None:
+        self._install_real_mode_client(
+            "source_mode: real\n"
+            "allow_remote_ai: true\n",
+        )
+
+        response = self._prepare()
+        self.assertEqual(response.status_code, 200, response.text)
+        prepared = response.json()
+        self.assertTrue(prepared["eligible"])
+        self.assertTrue(prepared["ready"])
+        self.assertEqual(prepared["execution_mode"], "sandbox")
+        self.assertTrue(prepared["fallback_reasons"])
+        self.assertTrue(prepared["remote"]["server_allowed"])
+
+    def test_partial_credentials_select_mixed_mode_and_remote_components_require_consent(self) -> None:
+        self._install_real_mode_client(
+            "source_mode: real\n"
+            "allow_remote_ai: true\n"
+            "quality_provider: groq\n"
+            "groq_api_key: synthetic-groq-key\n"
+            "sources:\n"
+            "  mode: real\n"
+            "  trello:\n"
+            "    board_id: board-1\n"
+            "    api_key: synthetic-trello-key\n"
+            "    token: synthetic-trello-token\n"
+            "  github:\n"
+            "    owner: synthetic-owner\n"
+            "    repo: synthetic-repository\n",
+        )
+        response = self._prepare()
+        self.assertEqual(response.status_code, 200, response.text)
+        prepared = response.json()
+        self.assertTrue(prepared["eligible"])
+        self.assertTrue(prepared["ready"])
+        self.assertEqual(prepared["execution_mode"], "mixed")
+        self.assertTrue(prepared["remote"]["required"])
+        providers = {(item["stage"], item["provider"], item["transport"])
+                     for item in prepared["remote"]["providers"]}
+        self.assertIn(("quality", "groq", "remote"), providers)
+        self.assertIn(("task_source", "trello", "remote"), providers)
+        self.assertTrue(prepared["fallback_reasons"])
+
+        rejected = self._confirm(prepared, remote_consent=False, key="partial-no-consent-001")
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(rejected.json()["error"]["code"], "consentimiento_remoto_requerido")
+        self.assertFalse(self.fixture.job_ledger_path.exists())
+
+    def test_unscoped_aliases_require_project_binding_and_keep_mutation_guards(self) -> None:
+        self.client.cookies.clear()
+        unauthenticated = self.client.post(
+            "/api/v1/analysis/prepare",
+            headers=self._mutation_headers(),
+            json={"project_id": PROJECT_ID, "request_analysis": True},
+        )
+        self.assertEqual(unauthenticated.status_code, 401)
+        self.assertFalse(self.fixture.job_ledger_path.exists())
+
+        self.csrf = self._login()
+        missing_origin = self.client.post(
+            "/api/v1/analysis/prepare",
+            headers={"X-CSRF-Token": self.csrf},
+            json={"project_id": PROJECT_ID, "request_analysis": True},
+        )
+        self.assertEqual(missing_origin.status_code, 403)
+        missing_csrf = self.client.post(
+            "/api/v1/analysis/prepare",
+            headers={"Origin": ORIGIN},
+            json={"project_id": PROJECT_ID, "request_analysis": True},
+        )
+        self.assertEqual(missing_csrf.status_code, 403)
+        no_project = self.client.post(
+            "/api/v1/analysis/prepare",
+            headers=self._mutation_headers(),
+            json={"request_analysis": True},
+        )
+        self.assertEqual(no_project.status_code, 422)
+
+        prepared = self.client.post(
+            "/api/v1/analysis/prepare",
+            headers=self._mutation_headers(),
+            json={"project_id": PROJECT_ID, "request_analysis": True},
+        )
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        payload = prepared.json()
+        rejected = self.client.post(
+            "/api/v1/analysis/confirm",
+            headers=self._mutation_headers() | {"Idempotency-Key": "alias-no-consent-01"},
+            json={
+                "project_id": PROJECT_ID,
+                "preparation_id": payload["preparation_id"],
+                "configuration_fingerprint": payload["configuration_fingerprint"],
+                "confirm_analysis": True,
+                "remote_consent": False,
+            },
+        )
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(rejected.json()["error"]["code"], "consentimiento_remoto_requerido")
+        self.assertFalse(self.fixture.job_ledger_path.exists())
+
+    def test_missing_credentials_execute_deterministic_pipeline_and_persist_run_and_report(self) -> None:
+        self._install_real_mode_client(
+            "source_mode: real\n"
+            "allow_remote_ai: true\n",
+        )
+        prepared_response = self._prepare()
+        self.assertEqual(prepared_response.status_code, 200, prepared_response.text)
+        prepared = prepared_response.json()
+        self.assertTrue(prepared["eligible"])
+        self.assertEqual(prepared["execution_mode"], "sandbox")
+        self.assertFalse(prepared["remote"]["required"])
+
+        accepted = self._confirm(prepared, remote_consent=False, key="sandbox-run-complete-01")
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        job_id = accepted.json()["job"]["job_id"]
+        deadline = time.monotonic() + 10
+        job = None
+        while time.monotonic() < deadline:
+            polled = self.client.get(f"/api/v1/analysis/jobs/{job_id}")
+            self.assertEqual(polled.status_code, 200, polled.text)
+            job = polled.json()
+            if job["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.01)
+        self.assertIsNotNone(job)
+        self.assertEqual(job["status"], "completed", job)
+        self.assertEqual(job["execution_mode"], "sandbox")
+        self.assertTrue(job["fallback_reasons"])
+        self.assertTrue(job["run_id"])
+
+        run = self.client.get(f"/api/v1/runs/{job['run_id']}")
+        self.assertEqual(run.status_code, 200, run.text)
+        self.assertEqual(run.json()["run_id"], job["run_id"])
+        reports = self.client.get(f"/api/v1/projects/{PROJECT_ID}/reports?page_size=100")
+        self.assertEqual(reports.status_code, 200, reports.text)
+        self.assertIn(job["run_id"], {item["run_id"] for item in reports.json()["items"]})
+
     def test_server_remote_permission_cannot_be_overridden_by_client_consent(self) -> None:
         self.config_path.write_text(
             "allow_remote_ai: false\n"
@@ -144,15 +299,13 @@ class WebApiAnalysisJobTests(unittest.TestCase):
         response = self._prepare()
         self.assertEqual(response.status_code, 200, response.text)
         prepared = response.json()
-        self.assertFalse(prepared["eligible"])
-        self.assertTrue(prepared["remote"]["required"])
+        self.assertTrue(prepared["eligible"])
+        self.assertTrue(prepared["ready"])
+        self.assertEqual(prepared["execution_mode"], "sandbox")
+        self.assertFalse(prepared["remote"]["required"])
         self.assertFalse(prepared["remote"]["server_allowed"])
+        self.assertTrue(prepared["fallback_reasons"])
         self.assertNotIn("test-groq-credential-not-for-logs", response.text)
-
-        rejected = self._confirm(prepared, remote_consent=True)
-        self.assertEqual(rejected.status_code, 403)
-        self.assertEqual(rejected.json()["error"]["code"], "remoto_no_autorizado")
-        self.assertFalse(self.fixture.job_ledger_path.exists())
         self.assertEqual(self.calls, [])
 
     def test_remote_consent_idempotency_and_polling(self) -> None:
@@ -242,6 +395,8 @@ class WebApiAnalysisJobTests(unittest.TestCase):
             preparation_id="preparation-fixture-001",
             configuration_fingerprint="c" * 64,
             remote_consent=False,
+            execution_mode="sandbox",
+            fallback_reasons=(),
             queue_capacity=3,
         )
         self.assertFalse(reused)

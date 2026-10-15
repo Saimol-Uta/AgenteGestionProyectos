@@ -1,134 +1,55 @@
-# Pruebas de modelos en tu laptop
+# Verificación del sistema
 
-Ejecución del 2 de octubre de 2026, hora de Guayaquil. La laptop pudo ejecutar
-los tres candidatos. **Qwen3.5 2B fue el más rápido y se cargó completamente en GPU;
-los dos modelos de 4B repartieron la carga entre CPU y GPU.** La elección de
-configuración afecta la precisión: ningún modelo superó todas las comprobaciones.
+La integración actual se verificó con estado temporal, fuentes deterministas y transportes simulados. No se acredita disponibilidad de proveedores, escrituras remotas reales ni recepción de correo por las pruebas locales.
 
-Se instalaron Ollama 0.35.1 y los modelos dentro del proyecto. El runtime se
-verificó con el SHA-256 publicado en su release oficial. El equipo detectado fue
-Ryzen 5 6600H, 14,8 GiB de RAM utilizable y RTX 3050 Laptop de 4096 MiB, con
-controlador NVIDIA 615.71.09 y backend CUDA. Las funciones cloud se desactivaron.
+## Resultados observados
 
-Se ejecutaron **83 solicitudes de prueba**, además de calentamientos: 72 para las
-dos comparaciones de casos cortos, 9 con más datos y 2 con razonamiento activado.
-81 produjeron JSON válido; las otras dos agotaron su presupuesto de salida.
-El comparador también pasó siete comprobaciones de validación y puntuación.
+| Área | Comando o comprobación | Resultado |
+|---|---|---|
+| Backend completo | `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'` | Código 0; 845 pruebas ejecutadas en 17,550 s: 844 aprobadas y 1 optativa omitida |
+| Tipos web | `cd frontend && npm run typecheck` | Aprobado, código 0 |
+| Compilación web | `cd frontend && npm run build` | Aprobado, código 0 |
+| Navegador completo | `cd frontend && npx playwright test` | Código 0; 92 pruebas aprobadas en 38,3 s |
+| Análisis/configuración | `.venv/bin/python -m unittest tests.test_web_api_jobs tests.test_unified_runtime_config -v` | 16 pruebas aprobadas al retomar la integración, incluido pipeline determinista con corrida e informe persistidos |
+| Configuración y consultas | Suite focalizada de configuración, aliases, precedencia y consultas de proyectos | 60 pruebas aprobadas |
+| Gobernanza Trello e integración | `.venv/bin/python -m unittest tests.test_phase2_integration tests.test_phase2_trello -v` | 27 pruebas aprobadas |
+| Defaults de agentes e informe | `.venv/bin/python -m unittest tests.test_agents tests.test_due_soon -q` | 28 pruebas aprobadas |
+| Verificación independiente | `.venv/bin/python -m unittest tests.test_web_api_jobs tests.test_unified_runtime_config tests.test_phase2_integration tests.test_phase2_trello -v` y probe HTTP sintético aislado | Código 0; 45 pruebas aprobadas en 5,784 s y probe aprobado. Dictamen sin bloqueos sobre configuración, fallback, consentimiento, destinatario, retirada de proveedores, interfaz, documentación y permisos |
 
-## Comparación inicial: temperatura cero
+La prueba optativa omitida es `tests.test_real_models.RealModelsTestCase.test_real_gemini_remote_smoke`: requiere `RUN_REAL_LLM_TESTS=1` y credencial de Gemini. No se activó esa llamada remota. No se presenta el resultado como 845 aprobadas ni como aceptación live.
 
-Cuatro casos simulados —seguimiento, revisión de código, rechazo justificado y
-aprobación justificada—, tres repeticiones, contexto 4096, máximo 768 tokens de
-salida, razonamiento desactivado, una petición a la vez y seis hilos de CPU.
+La prueba focalizada del modo mixto, el chequeo de tipos, la compilación y la suite completa de navegador terminaron con código 0 en 48 s. El contrato `AnalysisJob.execution_mode` se probó primero con una aserción fallida y luego con la misma aserción aprobada tras alinear consumidores y fixtures.
 
-| Modelo Q4_K_M | Mediana tok/s | Mediana de respuesta | VRAM máxima observada | Aciertos de campos |
-|---|---:|---:|---:|---:|
-| Qwen3.5 2B | 95,6 | 1,98 s | 2456 MiB | 45/54 (83,3%) |
-| Qwen3 4B Instruct 2507 | 33,8 | 6,59 s | 2736 MiB | 42/54 (77,8%) |
-| Qwen3.5 4B | 22,7 | 8,21 s | 3065 MiB | 48/54 (88,9%) |
+## Análisis sin claves externas
 
-La latencia excluye el calentamiento inicial. La VRAM indicada pertenece a toda
-la GPU; la asignación específica del modelo está en `/api/ps`, conservada con
-cada respuesta. RAM y swap también se midieron para todo el sistema. No son
-mediciones exclusivas del proceso de inferencia.
+La regresión `test_missing_credentials_execute_deterministic_pipeline_and_persist_run_and_report` utiliza el ejecutor del motor y consulta la corrida y el informe mediante HTTP. No sustituye ese ejecutor por una función vacía. La preparación de un proyecto real sin credenciales devuelve elegibilidad y modo sandbox explícito; confirmar no requiere consentimiento remoto cuando ningún componente va a usar servicios remotos. Los casos de claves parciales verifican modo mixto y mantienen el consentimiento para los componentes que sí salen del equipo.
 
-[Resumen y CSV iniciales](resultados/20261002-150741-270144/resumen.md).
+Los aliases `/api/v1/analysis/prepare` y `/api/v1/analysis/confirm` exigen `project_id` en el cuerpo y conservan sesión, origen, CSRF, idempotencia y vínculo de preparación. Las rutas con proyecto siguen disponibles.
 
-## Comparación con los parámetros de Qwen
+Las pruebas Playwright usan respuestas HTTP interceptadas. Cubren confirmación habilitada cuando corresponde, estados de finalización, modo y causas de alternativa local, destinatario de sesión y ausencia de aprobación local. Son evidencia del contrato de la interfaz; la ejecución persistida del motor se comprueba por separado en Python.
 
-Mismos cuatro casos y límites, con temperatura 0,7, top_p 0,8, top_k 20, min_p 0,
-repeat_penalty 1 y semillas 42, 43 y 44. Qwen3.5 usa presence_penalty 1,5;
-Qwen3 Instruct usa 0. Estos ajustes proceden de las fichas oficiales para el modo
-sin razonamiento y tareas generales. [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-4B#best-practices),
-[Qwen3 Instruct](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507#best-practices).
+## Permisos y acciones
 
-| Modelo Q4_K_M | Mediana tok/s | Mediana de respuesta | Aciertos de campos |
-|---|---:|---:|---:|
-| Qwen3.5 2B | 92,6 | 2,32 s | 38/54 (70,4%) |
-| Qwen3 4B Instruct 2507 | 33,9 | 6,75 s | 44/54 (81,5%) |
-| Qwen3.5 4B | 22,3 | 8,12 s | 43/54 (79,6%) |
+- Trello sin credenciales o tablero vinculado selecciona sandbox antes de construir una escritura live.
+- El preflight de membresía usa lecturas acotadas de usuario, tablero y membresías, sin redirecciones; observador o acceso denegado seleccionan sandbox.
+- Un fallo de red o respuesta no verificable al comprobar permiso no se presenta como éxito sandbox.
+- El error de una escritura live sigue siendo un error: no se reemplaza por un recibo local exitoso.
+- GitHub conserva la comprobación de permiso `push`, fuente completa y SHA de base antes de crear una rama separada.
+- Los tests de diagnósticos CLI bloquean HTTP externo y exigen SHA explícito para consultar Actions. Un diagnóstico no sustituye fuentes ausentes por un éxito simulado.
 
-En esta muestra, los ajustes mejoraron la puntuación de Qwen3 Instruct y
-redujeron la de Qwen3.5. No hay una configuración ganadora universal. Tres
-repeticiones y cuatro casos sirven para orientar el prototipo; no permiten
-generalizar un porcentaje de precisión a proyectos reales.
+## Documentación y limpieza
 
-[Resumen y CSV del perfil Qwen](resultados/20261002-152233-648943/resumen.md).
+Los siete documentos principales se reescribieron y cuatro guías redundantes se redujeron a índices. Se retiraron los ocho documentos obsoletos y las siete piezas de adaptadores/herramientas/datos que dependían de proveedores retirados. El catálogo coincide con las 47 rutas presentes en los routers; los enlaces locales de los 11 documentos actuales resuelven. El chequeo de whitespace terminó sin errores.
 
-## Entrada más larga
+Los defaults directos de agentes y de composición usan Gemini para seguimiento/síntesis y Groq para calidad, con configuración explícita por rol. Un informe sin metadatos de proveedor informa que no se registraron; no inventa un modelo utilizado. Se conserva la detección de formatos antiguos de secretos exclusivamente como protección de redacción, no como proveedor seleccionable.
 
-Contexto 8192 y 66 tarjetas: las seis originales más 60 pendientes futuras.
-Esta variante usó temperatura cero, tres repeticiones y el caso de seguimiento.
-Los prompts tenían 4186 tokens en Qwen3.5 y 4402 en Qwen3: superaron los 4096
-tokens de la primera ventana y cabían en la ventana de 8192 con la reserva de salida.
+## Advertencias y límites
 
-| Modelo | Mediana tok/s | Mediana de respuesta | Aciertos de campos |
-|---|---:|---:|---:|
-| Qwen3.5 2B | 98,2 | 2,20 s | 9/18 |
-| Qwen3 4B Instruct 2507 | 16,0 | 14,44 s | 9/18 |
-| Qwen3.5 4B | 15,1 | 48,17 s | 6/18 |
-
-Los tres completaron el JSON, pero calcularon mal totales, porcentajes y vencidas.
-El resultado correcto era 66 tarjetas, 2 completadas, 3,0% de avance y solo
-T2 y T3 vencidas. Poder cargar una ventana de contexto no garantiza interpretar
-correctamente todos sus datos. La mayor temperatura de GPU observada entre
-todas las pruebas fue de 68 °C; el muestreo de un segundo puede omitir picos breves.
-
-[Resumen de contexto](resultados/20261002-151306-939052/resumen.md).
-
-## Razonamiento activado
-
-Qwen3.5 4B se probó con los casos cortos de seguimiento y código, contexto 8192,
-temperatura cero y límite de 2048 tokens de salida. En ambos casos consumió los
-2048 tokens en razonamiento sin producir el JSON final, con tiempos de 108,76
-y 108,24 segundos. No fue útil con ese presupuesto y esa configuración. Esta
-prueba no evalúa su precisión con un presupuesto mayor o con muestreo distinto.
-
-[Resultados de razonamiento](resultados/20261002-151752-257375/resumen.md).
-
-## Qué reveló la revisión manual
-
-La puntuación automática comprueba campos y referencias de línea; no certifica
-que las explicaciones y correcciones sean correctas. Los modelos confundieron
-tarjetas completadas con vencidas o usaron IDs de reglas incorrectos. Qwen3.5
-2B llegó a afirmar que la división de una lista vacía devolvía cero.
-
-Qwen3.5 4B propuso un gestor de contexto de `sqlite3.Connection` para cerrar la
-conexión, pero ese gestor controla transacciones y no cierra la conexión. Se
-verificó localmente y en la [documentación de Python](https://docs.python.org/3/library/sqlite3.html#how-to-use-the-connection-context-manager).
-La corrección debe garantizar el cierre, por ejemplo mediante `try/finally`
-o `contextlib.closing`. Por eso un resultado de 4/4 en detección de defectos
-todavía necesita revisar sus soluciones.
-
-## Cómo usar estos resultados en el proyecto
-
-Para experimentar con respuestas rápidas, Qwen3.5 2B tiene el mejor rendimiento
-observado y deja más margen de GPU. Para investigar la revisión de código,
-Qwen3.5 4B detectó los tres defectos y sus líneas en todas las repeticiones
-cortas, con respuestas más lentas. Esto es una orientación limitada a esta muestra.
-
-El backend debería calcular totales, porcentajes y vencimientos, y validar las
-reglas objetivas usando los resultados de CI. El modelo puede redactar el reporte,
-explicar los hallazgos y sugerir acciones con esos hechos ya verificados. La
-decisión final sigue perteneciendo al gestor, como plantea la conversación.
-Las pruebas todavía no conectan Trello/GitHub ni ejecutan el flujo completo de agentes.
-
-## Repetir las pruebas
-
-Ollama se detuvo después de las pruebas; los modelos y los archivos se conservan.
-Desde esta carpeta, abre una terminal y ejecuta:
-
-```sh
-bash pruebas/ollama-local.sh serve
-```
-
-En otra terminal:
-
-```sh
-python3 pruebas/benchmark.py run --sampling greedy
-python3 pruebas/benchmark.py run --sampling qwen
-```
-
-La [guía del proyecto](README.md) incluye diagnóstico, descarga, contexto,
-razonamiento y el formato de resultados. Cada carpeta conserva respuestas
-completas, métricas, configuración, casos y detalles de los modelos.
+- Se observaron advertencias de deprecación de Starlette sobre `httpx`/`TestClient` y `ResourceWarning` por conexiones SQLite de pruebas sin cerrar. La suite terminó sin fallos; no se afirma que esté libre de advertencias.
+- Un modo sandbox identifica datos/efectos simulados, no una operación remota.
+- Credenciales presentes no prueban conectividad, permisos efectivos de cada token ni entrega.
+- `smtp_email_sent` acredita aceptación del relay, no llegada a la bandeja.
+- CI ausente, mediciones no observadas y hallazgos no corroborados conservan estados desconocidos o insuficientes.
+- La matriz REQ-01 a REQ-11 enlaza implementación y límites; no atribuye un porcentaje global ni aceptación productiva sin evidencia externa.
+- La evaluación nativa no estuvo disponible por el ámbito de archivos sin seguimiento; no se afirma aprobación nativa. La verificación independiente finalizó sin bloqueos, con 45 pruebas y un probe HTTP propios aprobados.
+- Como observación no bloqueante, falta un test específico a nivel de ruta que compruebe ausencia de reserva ante una respuesta Trello de preflight malformada o inesperada. El orden del código verifica permiso antes de reservar; no se presenta esa inspección como una prueba automatizada adicional.

@@ -4,9 +4,11 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from pydantic import SecretStr
+from agente_gestion.application import config as engine_config
 from agente_gestion.application.config import Settings, SystemConfig
 
 
@@ -15,6 +17,9 @@ class ConfigSettingsTestCase(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.env_file = os.path.join(self.temp_dir, ".env")
         self.yaml_file = os.path.join(self.temp_dir, "config.yaml")
+        project_root = patch.object(engine_config, "PROJECT_ROOT", Path(self.temp_dir))
+        project_root.start()
+        self.addCleanup(project_root.stop)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -36,7 +41,7 @@ class ConfigSettingsTestCase(unittest.TestCase):
     def test_dotenv_loading(self):
         """Values in .env are correctly loaded into Settings."""
         self._write_env(
-            "OLLAMA_BASE_URL=http://localhost:11435\n"
+            "GROQ_MODEL=dotenv-groq-model\n"
             "ALLOW_REMOTE_AI=true\n"
             "GEMINI_MODEL=gemini-2.5-pro\n"
             "QUALITY_TIMEOUT_SECONDS=45.0\n"
@@ -44,7 +49,7 @@ class ConfigSettingsTestCase(unittest.TestCase):
         )
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=self.env_file)
-            self.assertEqual(settings.ollama_base_url, "http://localhost:11435")
+            self.assertEqual(settings.groq_model, "dotenv-groq-model")
             self.assertTrue(settings.allow_remote_ai)
             self.assertEqual(settings.gemini_model, "gemini-2.5-pro")
             self.assertEqual(settings.quality_timeout_seconds, 45.0)
@@ -57,14 +62,14 @@ class ConfigSettingsTestCase(unittest.TestCase):
         including strict boolean false.
         """
         self._write_env(
-            "OLLAMA_BASE_URL=http://dotenv-host:11435\n"
+            "GROQ_MODEL=dotenv-groq-model\n"
             "ALLOW_REMOTE_AI=true\n"
             "GEMINI_MODEL=dotenv-gemini\n"
             "QUALITY_TIMEOUT_SECONDS=99.0\n"
             "GEMINI_API_KEY=dotenv-key\n"
         )
         os_env = {
-            "OLLAMA_BASE_URL": "http://os-host:11435",
+            "GROQ_MODEL": "os-groq-model",
             "ALLOW_REMOTE_AI": "false",
             "GEMINI_MODEL": "os-gemini",
             "QUALITY_TIMEOUT_SECONDS": "30.0",
@@ -72,7 +77,7 @@ class ConfigSettingsTestCase(unittest.TestCase):
         }
         with patch.dict(os.environ, os_env, clear=True):
             settings = Settings(_env_file=self.env_file)
-            self.assertEqual(settings.ollama_base_url, "http://os-host:11435")
+            self.assertEqual(settings.groq_model, "os-groq-model")
             self.assertFalse(settings.allow_remote_ai)
             self.assertEqual(settings.gemini_model, "os-gemini")
             self.assertEqual(settings.quality_timeout_seconds, 30.0)
@@ -94,12 +99,14 @@ class ConfigSettingsTestCase(unittest.TestCase):
             "execution:\n"
             "  quality_timeout_seconds: 200.0\n"
             "providers:\n"
-            "  local:\n"
-            "    base_url: http://yaml-host:11435\n"
-            "    model: yaml-model\n"
+            "  remote:\n"
+            "    model: yaml-gemini-model\n"
+            "  quality:\n"
+            "    provider: groq\n"
+            "    model: yaml-groq-model\n"
         )
         self._write_env(
-            "OLLAMA_BASE_URL=http://dotenv-host:11435\n"
+            "GROQ_MODEL=dotenv-groq-model\n"
             "ALLOW_REMOTE_AI=false\n"
         )
         with patch.dict(os.environ, {"PROJECT_ID": "os-project"}, clear=True):
@@ -110,11 +117,11 @@ class ConfigSettingsTestCase(unittest.TestCase):
             # OS beat YAML
             self.assertEqual(settings.project_id, "os-project")
             # Dotenv beat YAML
-            self.assertEqual(settings.ollama_base_url, "http://dotenv-host:11435")
+            self.assertEqual(settings.groq_model, "dotenv-groq-model")
             self.assertFalse(settings.allow_remote_ai)
             # Non-overridden YAML is preserved
             self.assertEqual(settings.quality_timeout_seconds, 200.0)
-            self.assertEqual(settings.ollama_monitoring_model, "yaml-model")
+            self.assertEqual(settings.gemini_model, "yaml-gemini-model")
 
     def test_cli_overrides_highest_priority(self):
         """Explicit overrides have the highest priority over OS, dotenv, YAML, and defaults."""
@@ -133,14 +140,14 @@ class ConfigSettingsTestCase(unittest.TestCase):
 
     def test_no_dotenv_opt_out(self):
         """Passing _env_file=None prevents loading .env values."""
-        self._write_env("OLLAMA_BASE_URL=http://dotenv-host:11435\n")
+        self._write_env("GROQ_MODEL=dotenv-groq-model\n")
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
             # Falls back to default, not dotenv
-            self.assertEqual(settings.ollama_base_url, "http://127.0.0.1:11435")
+            self.assertEqual(settings.groq_model, "llama-3.3-70b-versatile")
 
             settings_from_method = Settings.from_env_and_file(_env_file=None)
-            self.assertEqual(settings_from_method.ollama_base_url, "http://127.0.0.1:11435")
+            self.assertEqual(settings_from_method.groq_model, "llama-3.3-70b-versatile")
 
     def test_missing_or_empty_key_yields_none(self):
         """Empty or missing GEMINI_API_KEY must evaluate to None to prevent remote bypass."""
@@ -211,11 +218,13 @@ class ConfigSettingsTestCase(unittest.TestCase):
             "  max_llm_calls_per_run: 5\n"
             "  quality_timeout_seconds: 60.0\n"
             "providers:\n"
-            "  local:\n"
-            "    base_url: http://127.0.0.1:11435\n"
-            "    model: qwen-compat\n"
+            "  remote:\n"
+            "    model: gemini-compat\n"
+            "  quality:\n"
+            "    provider: groq\n"
+            "    model: groq-compat\n"
         )
-        with patch.dict(os.environ, {"OLLAMA_BASE_URL": "http://127.0.0.1:11436"}, clear=True):
+        with patch.dict(os.environ, {"GROQ_MODEL": "groq-process-model"}, clear=True):
             cfg = SystemConfig.from_env_and_file(
                 config_path=self.yaml_file,
                 overrides={"max_repair_attempts": 3},
@@ -227,8 +236,8 @@ class ConfigSettingsTestCase(unittest.TestCase):
             self.assertFalse(cfg.allow_remote_ai)
             self.assertEqual(cfg.max_llm_calls_per_run, 5)
             self.assertEqual(cfg.quality_timeout_seconds, 60.0)
-            self.assertEqual(cfg.ollama_monitoring_model, "qwen-compat")
-            self.assertEqual(cfg.ollama_base_url, "http://127.0.0.1:11436")
+            self.assertEqual(cfg.gemini_model, "gemini-compat")
+            self.assertEqual(cfg.groq_model, "groq-process-model")
             self.assertEqual(cfg.max_repair_attempts, 3)
 
     def test_verifier_timeout_seconds_default_is_120(self):
@@ -617,6 +626,12 @@ class ConfigSettingsTestCase(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_REPO": "repo1", "GITHUB_REPOSITORY": "repo2"}, clear=True):
             with self.assertRaises((ValidationError, ValueError)):
                 Settings(_env_file=None)
+
+        # Contradictory in dotenv
+        self._write_env("GITHUB_REPO=repo1\nGITHUB_REPOSITORY=repo2\n")
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises((ValidationError, ValueError)):
+                Settings.from_env_and_file(_env_file=self.env_file)
 
         # Contradictory in YAML
         self._write_yaml(

@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 
 FULL_SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 
-from agente_gestion.application.security import assert_remote_allowed
 from agente_gestion.application.config import Settings, SystemConfig
 from agente_gestion.application.orchestrator import ProjectOrchestrator, OrchestratorConfig
 from agente_gestion.adapters.sources.factory import (
@@ -17,7 +16,7 @@ from agente_gestion.adapters.sources.factory import (
     create_code_source,
     create_ci_source,
     create_policy_source,
-    create_composite_source,
+    create_analysis_composite_source,
 )
 from agente_gestion.adapters.sources.http_transport import HttpGetTransportPort
 from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
@@ -26,10 +25,8 @@ from agente_gestion.adapters.sources.local_monitoring_rules import (
 )
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
-from agente_gestion.adapters.llm.ollama import OllamaProvider
 from agente_gestion.adapters.llm.gemini import GeminiProvider
 from agente_gestion.adapters.llm.groq import GroqProvider
-from agente_gestion.adapters.llm.mistral import MistralProvider
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
@@ -73,104 +70,53 @@ def _build_orchestrator(
     Any,
 ]:
     """Factory helper creating orchestrator and storage/provider adapters for a run."""
-    if not config.is_fake and (config.monitoring_provider == "gemini" or config.report_provider == "gemini"):
-        assert_remote_allowed(config.allow_remote_ai)
-    monitoring_output = config.monitoring_max_generation_tokens or (
-        2048 if config.monitoring_provider == "gemini" and not config.is_fake else 512
-    )
+    remote_models_allowed = config.allow_remote_ai and not config.is_fake
+    gemini_key = config.gemini_api_key.get_secret_value() if config.gemini_api_key else ""
+    groq_key = config.groq_api_key.get_secret_value() if config.groq_api_key else ""
 
     if config.is_fake:
-        print("INFO: Mode '--fake' activated. Using clearly simulated deterministic provider.")
-        elaborador = FakeProvider(model="fake-qwen-2b")
-        revisor = FakeProvider(model="fake-qwen-4b")
-        verificador = FakeProvider(model="fake-gemini-flash")
-        aprobador = FakeProvider(model="fake-qwen-2b")
-    else:
-        if config.monitoring_provider == "gemini":
-            elaborador = GeminiProvider(
-                api_key=config.gemini_api_key.get_secret_value() if config.gemini_api_key else "",
-                model=config.gemini_monitoring_model,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=8192,
-            )
-        else:
-            elaborador = OllamaProvider(
-                base_url=config.ollama_base_url,
-                model=config.ollama_monitoring_model,
-            )
-        if config.quality_provider == "groq":
-            raw_groq_key = (
-                config.groq_api_key.get_secret_value()
-                if hasattr(config.groq_api_key, "get_secret_value")
-                else (str(config.groq_api_key) if config.groq_api_key is not None else "")
-            )
-            revisor = GroqProvider(
-                api_key=raw_groq_key,
-                model=config.groq_model,
-                base_url=config.groq_base_url,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=config.quality_context_window or 131072,
-                max_output_tokens=config.quality_max_output_tokens or 8192,
-            )
-        elif config.quality_provider == "mistral":
-            raw_mistral_key = (
-                config.mistral_api_key.get_secret_value()
-                if hasattr(config.mistral_api_key, "get_secret_value")
-                else (str(config.mistral_api_key) if config.mistral_api_key is not None else "")
-            )
-            revisor = MistralProvider(
-                api_key=raw_mistral_key,
-                model=config.mistral_model,
-                base_url=config.mistral_base_url,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=config.quality_context_window or 131072,
-                max_output_tokens=config.quality_max_output_tokens or 8192,
-            )
-        else:
-            revisor = OllamaProvider(
-                base_url=config.ollama_base_url,
-                model=config.ollama_quality_model,
-                context_tokens=config.quality_context_window or 4096,
-                max_output_tokens=config.quality_max_output_tokens or 768,
-            )
-        if config.report_provider == "gemini":
-            raw_report_key = (
-                config.gemini_api_key.get_secret_value()
-                if hasattr(config.gemini_api_key, "get_secret_value")
-                else str(config.gemini_api_key or "")
-            )
-            aprobador = GeminiProvider(
-                api_key=raw_report_key,
-                model=config.gemini_report_model,
-                allow_remote_ai=config.allow_remote_ai,
-                context_tokens=8192,
-                max_output_tokens=768,
-            )
-        else:
-            aprobador = OllamaProvider(
-                base_url=config.ollama_base_url,
-                model=config.ollama_report_model,
-            )
-
-        if config.allow_remote_ai and config.gemini_api_key:
-            raw_key = (
-                config.gemini_api_key.get_secret_value()
-                if hasattr(config.gemini_api_key, "get_secret_value")
-                else str(config.gemini_api_key)
-            )
-            verificador = GeminiProvider(
-                api_key=raw_key,
-                model=config.gemini_model,
-                allow_remote_ai=True,
-            )
-        elif config.allow_remote_ai and not config.gemini_api_key:
-            verificador = GeminiProvider(
-                api_key="",
-                model=config.gemini_model,
-                allow_remote_ai=True,
-            )
-        else:
-            verificador = None
+        print("INFO: Mode '--fake' activated. Using clearly simulated deterministic providers.")
+    elaborador = (
+        GeminiProvider(
+            api_key=gemini_key,
+            model=config.gemini_monitoring_model,
+            allow_remote_ai=True,
+            context_tokens=8192,
+        ) if remote_models_allowed and gemini_key
+        else FakeProvider(model="sandbox-monitoring")
+    )
+    revisor = (
+        GroqProvider(
+            api_key=groq_key,
+            model=config.groq_model,
+            base_url=config.groq_base_url,
+            allow_remote_ai=True,
+            context_tokens=config.quality_context_window or 131072,
+            max_output_tokens=config.quality_max_output_tokens or 8192,
+        ) if remote_models_allowed and groq_key
+        else FakeProvider(model="sandbox-quality")
+    )
+    aprobador = (
+        GeminiProvider(
+            api_key=gemini_key,
+            model=config.gemini_report_model,
+            allow_remote_ai=True,
+            context_tokens=8192,
+            max_output_tokens=768,
+        ) if remote_models_allowed and gemini_key
+        else FakeProvider(model="sandbox-report")
+    )
+    verificador = (
+        GeminiProvider(
+            api_key=gemini_key,
+            model=config.gemini_model,
+            allow_remote_ai=True,
+        ) if remote_models_allowed and gemini_key
+        else FakeProvider(model="sandbox-verifier")
+    )
+    monitoring_output = config.monitoring_max_generation_tokens or (
+        2048 if isinstance(elaborador, GeminiProvider) else 512
+    )
 
     capabilities = elaborador.get_capabilities()
     if (monitoring_output > capabilities.max_output_tokens
@@ -180,7 +126,7 @@ def _build_orchestrator(
     sqlite_storage = SQLiteStorageAdapter(db_path=config.db_path)
     artifact_storage = ArtifactStorageAdapter(base_dir=config.runs_dir)
     if effective_mode == "real":
-        source_adapter = create_composite_source(
+        source_adapter = create_analysis_composite_source(
             config, commit_sha=config.github_commit_sha, transport=transport,
         )
     else:
@@ -255,8 +201,6 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         overrides["project_id"] = args.project
     if args.allow_remote_ai:
         overrides["allow_remote_ai"] = True
-    if args.ollama_base_url:
-        overrides["ollama_base_url"] = args.ollama_base_url
     if args.db_path:
         overrides["db_path"] = args.db_path
     if args.output_dir:
@@ -358,7 +302,8 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         if (
             verificador is not None
             and (
-                config.is_fake
+                getattr(verificador, "is_simulated", False)
+                or config.is_fake
                 or (config.allow_remote_ai and bool(config.gemini_api_key))
             )
         )
@@ -371,10 +316,10 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
     print(f"Run ID:         {run.run_id}")
     print(f"Status:         {run.status.value}")
     print(f"Agents:         Elaborador, Revisor, Verificador, Aprobador")
-    print(f"Models:         Elaborador={_format_model_tag(elaborador, 'ollama')}, "
-          f"Revisor={_format_model_tag(revisor, 'ollama')}, "
+    print(f"Models:         Elaborador={_format_model_tag(elaborador, 'gemini')}, "
+          f"Revisor={_format_model_tag(revisor, 'groq')}, "
           f"Verificador={verificador_summary}, "
-          f"Aprobador={_format_model_tag(aprobador, 'ollama')}")
+          f"Aprobador={_format_model_tag(aprobador, 'gemini')}")
     print(f"Findings:       {len(findings_stored)} candidate finding(s)")
     print(f"Escalations:    {escalations_count} finding(s) escalated to verifier")
     print(f"Verifications:  {len(verifs_stored)} finding(s) independently verified")
@@ -510,8 +455,22 @@ def source_check_command(args: argparse.Namespace) -> int:
     # 3. GitHub Actions check
     if provider_arg in ("github-actions", "all"):
         t0 = time.perf_counter()
-        target_ci_sha = commit_override or resolved_github_sha
-        if target_ci_sha and not _is_safe_sha(target_ci_sha, known_secrets):
+        target_ci_sha = (
+            args.commit if provider_arg == "github-actions"
+            else commit_override or resolved_github_sha
+        )
+        if provider_arg == "github-actions" and not args.commit:
+            overall_success = False
+            results.append({
+                "provider": "github-actions",
+                "status": "failed",
+                "count": "unknown",
+                "target_or_actual_sha": "-",
+                "collection_complete": False,
+                "duration_seconds": "0.000",
+                "canonical_error": "configuration",
+            })
+        elif target_ci_sha and not _is_safe_sha(target_ci_sha, known_secrets):
             overall_success = False
             results.append({
                 "provider": "github-actions",
@@ -1044,14 +1003,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--branch", default=None, help="Target branch name")
     parser_run.add_argument("--fake", action="store_true", help="Clearly simulated deterministic execution without real LLMs")
     parser_run.add_argument("--allow-remote-ai", action="store_true", help="Explicitly permit remote AI providers (e.g. Gemini)")
-    parser_run.add_argument("--ollama-base-url", default=None, help="Ollama server URL (defaults to http://127.0.0.1:11435)")
     parser_run.add_argument("--db-path", default=None, help="Path to SQLite database file")
     parser_run.add_argument("--output-dir", default=None, help="Directory to save runs artifacts")
-    parser_run.add_argument("--monitoring-provider", choices=["ollama", "gemini"], default=None, help="LLM provider for ProjectMonitoringAgent ('ollama', 'gemini')")
-    parser_run.add_argument("--quality-provider", choices=["ollama", "groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent ('ollama', 'groq', 'mistral')")
+    parser_run.add_argument("--monitoring-provider", choices=["gemini"], default=None, help="LLM provider for ProjectMonitoringAgent")
+    parser_run.add_argument("--quality-provider", choices=["groq"], default=None, help="LLM provider for CodeQualityAgent")
     parser_run.add_argument("--groq-model", default=None, help="Model identifier for Groq quality reviewer")
     parser_run.add_argument("--gemini-model", default=None, help="Model identifier for Gemini verifier")
-    parser_run.add_argument("--report-provider", choices=["ollama", "gemini"], default=None, help="LLM provider for ReportAgent ('ollama', 'gemini')")
+    parser_run.add_argument("--report-provider", choices=["gemini"], default=None, help="LLM provider for ReportAgent")
     parser_run.add_argument("--env-file", default=None, help="Path to custom .env file (defaults to .env)")
     parser_run.add_argument("--due-soon-days", type=int, default=None, help="Inclusive near-due window in days (nonnegative; default 7)")
     parser_run.add_argument("--monitoring-rules", default=None, metavar="PATH",

@@ -40,7 +40,7 @@ test("quality approval uses the backend suggestion and reports its sandbox resul
   await dialog.getByRole("button", { name: "Aprobar y crear rama", exact: true }).click();
 
   await expect(dialog.locator(".quality-decision-result")).toContainText("Aprobada");
-  await expect(dialog.locator(".quality-decision-result")).toContainText("sandbox");
+  await expect(dialog.locator(".quality-decision-result")).toContainText("Local");
   await expect(dialog.getByText(new RegExp(`c{40}`))).toBeVisible();
   await expect(dialog.getByText("Valida el valor antes de usarlo.", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("link", { name: /GitHub|Pull Request/i })).toHaveCount(0);
@@ -98,7 +98,7 @@ for (const scenario of editableProposals) {
     const dialog = page.getByRole("dialog", { name: "Confirmar modificación y ejecución" });
     await dialog.getByRole("button", { name: "Modificar y ejecutar", exact: true }).click();
 
-    await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toBeVisible();
+    await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
     await expect(page.getByText(/Verificación: verified/)).toBeVisible();
     await expect(page.locator(".proposal-value-diff")).toContainText(scenario.originalValue);
     expect(requests).toHaveLength(1);
@@ -138,7 +138,7 @@ test("quality request-changes decision sends its required reason to the backend"
   await dialog.getByLabel("Cambios solicitados").fill("Agregar una validación para cadenas vacías.");
   await dialog.getByRole("button", { name: "Enviar solicitud de cambios", exact: true }).click();
   await expect(dialog.locator(".quality-decision-result")).toContainText("Cambios solicitados");
-  await expect(dialog.locator(".quality-decision-result")).toContainText("sandbox");
+  await expect(dialog.locator(".quality-decision-result")).toContainText("Local");
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ body: { decision: "request_changes", reason: "Agregar una validación para cadenas vacías." } });
   expect(requests[0].key).toBeTruthy();
@@ -161,13 +161,13 @@ test("proposal rejection sends the human reason to the execution endpoint", asyn
   await page.getByRole("button", { name: "Rechazar Propuesta", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Confirmar rechazo de propuesta" });
   await dialog.getByRole("button", { name: "Rechazar propuesta", exact: true }).click();
-  await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toBeVisible();
+  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ body: { decision: "reject", reason: "La evidencia del bloqueo no está vigente." } });
   expect(requests[0].key).toBeTruthy();
 });
 
-test("manager email confirms recipient, sends once, and loads the protected backend HTML preview", async ({ page }) => {
+test("manager email confirms the recipient, sends once, and shows the protected message preview", async ({ page }) => {
   const requests: Array<{ body: Record<string, unknown>; csrf: string | undefined; key: string | undefined }> = [];
   await installApi(page, { authenticated: true, capabilities });
   await page.route("**/api/v1/projects/hormigestio/notifications/email", async (route) => {
@@ -187,7 +187,7 @@ test("manager email confirms recipient, sends once, and loads the protected back
   });
   await page.route("**/api/v1/projects/hormigestio/notifications/email/delivery-email-001/preview", async (route) => {
     expect(route.request().method()).toBe("GET");
-    await route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body><h1>Reporte SMTP real</h1><p>Destinatario confirmado</p></body></html>" });
+    await route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body><h1>Reporte enviado por correo</h1><p>Destinatario confirmado</p></body></html>" });
   });
 
   await page.goto("/settings");
@@ -198,11 +198,11 @@ test("manager email confirms recipient, sends once, and loads the protected back
   await expect(panel.getByText("Confirma el envío a gestor@example.org", { exact: true })).toBeVisible();
   await panel.getByRole("button", { name: "Confirmar envío a gestor@example.org", exact: true }).click();
 
-  await expect(panel.getByText("smtp_email_sent", { exact: true })).toBeVisible();
-  await expect(panel.getByText("DELIVERED", { exact: true }).first()).toBeVisible();
-  const preview = panel.getByTitle("Vista previa HTML del correo");
+  await expect(panel.getByText("Aceptado por el servicio de correo", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Registrado", { exact: true })).toBeVisible();
+  const preview = panel.getByTitle("Vista previa del mensaje");
   await expect(preview).toBeVisible();
-  await expect(preview.contentFrame().getByRole("heading", { name: "Reporte SMTP real" })).toBeVisible();
+  await expect(preview.contentFrame().getByRole("heading", { name: "Reporte enviado por correo" })).toBeVisible();
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ csrf: "csrf-fixture", body: { recipient_email: "gestor@example.org" } });
   expect(requests[0].key).toBeTruthy();
@@ -217,7 +217,7 @@ test("global agent workflow opens the reusable delivery panel on demand", async 
   await expect(panel.getByRole("button", { name: "Enviar Notificación por Correo al Gestor", exact: true })).toBeDisabled();
 });
 
-test("local outbox email result is never labeled as SMTP inbox delivery", async ({ page }) => {
+test("a locally saved email is never presented as inbox delivery", async ({ page }) => {
   await installApi(page, { authenticated: true, capabilities });
   await page.route("**/api/v1/projects/hormigestio/notifications/email", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
@@ -235,12 +235,12 @@ test("local outbox email result is never labeled as SMTP inbox delivery", async 
   await panel.getByRole("button", { name: "Guardar correo local" }).click();
   await panel.getByRole("button", { name: "Enviar Alerta/Reporte al Correo Ahora" }).click();
   await panel.getByRole("button", { name: "Confirmar envío a gestor@example.org", exact: true }).click();
-  await expect(panel.getByText("local_outbox_simulated_email", { exact: true })).toBeVisible();
-  await expect(panel.getByText(/no se entregó a una bandeja SMTP/i)).toBeVisible();
+  await expect(panel.getByText("Guardado localmente · no enviado", { exact: true })).toBeVisible();
+  await expect(panel.getByText(/no se envió a una bandeja de correo/i)).toBeVisible();
 });
 
 
-test("SMTP failure is reported as failure, never local or successful email", async ({ page }) => {
+test("an unconfirmed email delivery is never presented as successful", async ({ page }) => {
   await installApi(page, { authenticated: true, capabilities });
   await page.route("**/api/v1/projects/hormigestio/notifications/email", route => route.fulfill({ json: {
     delivery_id: "delivery-failed-001", delivery_channel: "smtp_email_failed",
@@ -252,8 +252,8 @@ test("SMTP failure is reported as failure, never local or successful email", asy
   await panel.getByRole("button", { name: "Guardar correo local" }).click();
   await panel.getByRole("button", { name: "Enviar Alerta/Reporte al Correo Ahora" }).click();
   await panel.getByRole("button", { name: "Confirmar envío a gestor@example.org", exact: true }).click();
-  await expect(panel.getByRole("alert")).toContainText("SMTP no confirmó");
-  await expect(panel.getByText("smtp_email_failed", { exact: true })).toBeVisible();
-  await expect(panel.getByText("smtp_email_sent", { exact: true })).toHaveCount(0);
-  await expect(panel.getByText("local_outbox_simulated_email", { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("alert")).toContainText("No se confirmó el envío.");
+  await expect(panel.getByText("Entrega no confirmada", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Aceptado por el servicio de correo", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Guardado localmente · no enviado", { exact: true })).toHaveCount(0);
 });

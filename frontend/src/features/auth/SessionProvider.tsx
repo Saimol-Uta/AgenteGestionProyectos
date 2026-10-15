@@ -10,8 +10,7 @@ interface SessionContextValue {
   isUnavailable: boolean;
   isGuest: boolean;
   setGuestMode: (value: boolean) => void;
-  operatorEmail: string | null;
-  login: (token: string, email?: string, fromGuest?: boolean) => Promise<void>;
+  login: (email: string, password: string, fromGuest?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   isLoggingOut: boolean;
 }
@@ -19,7 +18,6 @@ interface SessionContextValue {
 const SessionContext = createContext<SessionContextValue | null>(null);
 
 const GUEST_STORAGE_KEY = "gestionpro_guest_mode";
-const OPERATOR_EMAIL_STORAGE_KEY = "gestionpro_operator_email";
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
@@ -31,14 +29,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return false;
     }
   });
-  const [operatorEmail, setOperatorEmail] = useState<string | null>(() => {
-    try {
-      return sessionStorage.getItem(OPERATOR_EMAIL_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  });
-
   const sessionQuery = useQuery({
     queryKey: queryKeys.session,
     queryFn: api.getSession,
@@ -61,19 +51,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const loggedFromGuestRef = useRef<boolean>(false);
 
-  const login = useCallback(async (token: string, email?: string, fromGuest?: boolean) => {
-    loggedFromGuestRef.current = fromGuest ?? isGuest;
-    await api.login(token);
-    if (email) {
-      setOperatorEmail(email);
-      try {
-        sessionStorage.setItem(OPERATOR_EMAIL_STORAGE_KEY, email);
-      } catch {
-        // Ignore storage restrictions
-      }
+  const login = useCallback(async (email: string, password: string, fromGuest?: boolean) => {
+    const authenticatedSession = await api.login(email, password);
+    if (!authenticatedSession.authenticated) {
+      throw new Error("El backend no confirmó una sesión autenticada.");
     }
+    loggedFromGuestRef.current = fromGuest ?? isGuest;
+    queryClient.setQueryData(queryKeys.session, authenticatedSession);
     setGuestMode(false);
-    await queryClient.invalidateQueries({ queryKey: queryKeys.session });
   }, [queryClient, isGuest, setGuestMode]);
 
   const logout = useCallback(async () => {
@@ -84,12 +69,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setIsLoggingOut(true);
     try {
       await api.logout(csrfToken);
-      setOperatorEmail(null);
-      try {
-        sessionStorage.removeItem(OPERATOR_EMAIL_STORAGE_KEY);
-      } catch {
-        // Ignore storage restrictions
-      }
       if (loggedFromGuestRef.current) {
         setGuestMode(true);
       } else {
@@ -107,7 +86,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     isUnavailable: sessionQuery.isError,
     isGuest,
     setGuestMode,
-    operatorEmail,
     login,
     logout,
     isLoggingOut,
@@ -117,7 +95,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     sessionQuery.isError,
     isGuest,
     setGuestMode,
-    operatorEmail,
     login,
     logout,
     isLoggingOut,

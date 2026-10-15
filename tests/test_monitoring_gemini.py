@@ -10,11 +10,11 @@ from pydantic import ValidationError as ConfigError
 
 from agente_gestion.application.config import Settings
 from agente_gestion.application.generation import GlobalBudgetTracker, StageInvocationCoordinator
-from agente_gestion.application.security import RemoteProviderNotAllowedError
 from agente_gestion.application.validation import ValidationError
 from agente_gestion.agents.context import ContextBudgetExceededError
 from agente_gestion.agents.monitoring import ProjectMonitoringAgent
 from agente_gestion.adapters.llm.gemini import GeminiProvider
+from agente_gestion.adapters.llm.groq import GroqProvider
 from agente_gestion.cli import _build_orchestrator
 from agente_gestion.domain.tasks import calculate_task_metrics
 
@@ -32,15 +32,17 @@ class MonitoringGeminiTests(unittest.TestCase):
     def compose(self, settings):
         with ExitStack() as stack:
             for name in ("SQLiteStorageAdapter", "ArtifactStorageAdapter", "FixtureSourcesAdapter",
-                         "create_composite_source"):
+                         "create_analysis_composite_source"):
                 stack.enter_context(patch("agente_gestion.cli." + name))
             return _build_orchestrator(settings)
 
     def test_defaults_and_environment_precedence_are_role_specific(self):
         defaults = self.settings()
-        self.assertEqual(defaults.monitoring_provider, "ollama")
+        self.assertEqual(defaults.monitoring_provider, "gemini")
+        self.assertEqual(defaults.quality_provider, "groq")
+        self.assertEqual(defaults.report_provider, "gemini")
         self.assertIsNone(defaults.monitoring_max_generation_tokens)
-        self.assertFalse(defaults.allow_remote_ai)
+        self.assertTrue(defaults.allow_remote_ai)
         with patch.dict(os.environ, {"MONITORING_PROVIDER": "gemini", "GEMINI_MODEL": "gemini-3.8-flash",
                                      "MONITORING_MAX_GENERATION_TOKENS": "4096"}):
             settings = self.settings()
@@ -48,66 +50,91 @@ class MonitoringGeminiTests(unittest.TestCase):
             self.assertEqual(settings.gemini_monitoring_model, "gemini-3.5-flash-lite")
             self.assertEqual(settings.gemini_model, "gemini-3.8-flash")
             self.assertEqual(settings.monitoring_max_generation_tokens, 4096)
-            self.assertEqual(settings.quality_provider, "ollama")
-            self.assertEqual(self.settings(monitoring_provider="ollama").monitoring_provider, "ollama")
+            self.assertEqual(settings.quality_provider, "groq")
+            self.assertEqual(self.settings(monitoring_provider="gemini").monitoring_provider, "gemini")
         for override in ({"monitoring_provider": "groq"}, {"monitoring_max_generation_tokens": 0},
                          {"monitoring_max_generation_tokens": 8193}):
             with self.assertRaises(ConfigError):
                 self.settings(**override)
 
     def test_mocked_yaml_dotenv_environment_and_init_precedence(self):
+        field = "monitoring_max_generation_tokens"
         with patch("agente_gestion.application.config.YamlConfigSettingsSource.__call__",
-                   return_value={"monitoring_provider": "gemini"}), patch(
+                   return_value={field: 512}), patch(
                    "pydantic_settings.sources.DotEnvSettingsSource.__call__", return_value={}):
-            self.assertEqual(self.settings().monitoring_provider, "gemini")
+            self.assertEqual(self.settings().monitoring_max_generation_tokens, 512)
             with patch("pydantic_settings.sources.DotEnvSettingsSource.__call__",
-                       return_value={"monitoring_provider": "ollama"}):
-                self.assertEqual(self.settings().monitoring_provider, "ollama")
-                with patch.dict(os.environ, {"MONITORING_PROVIDER": "gemini"}):
-                    self.assertEqual(self.settings().monitoring_provider, "gemini")
-                    self.assertEqual(self.settings(monitoring_provider="ollama").monitoring_provider, "ollama")
+                       return_value={field: 1024}):
+                self.assertEqual(self.settings().monitoring_max_generation_tokens, 1024)
+                with patch.dict(os.environ, {"MONITORING_MAX_GENERATION_TOKENS": "2048"}):
+                    self.assertEqual(self.settings().monitoring_max_generation_tokens, 2048)
+                    self.assertEqual(self.settings(monitoring_max_generation_tokens=4096)
+                                     .monitoring_max_generation_tokens, 4096)
 
-    def test_composed_ollama_rejects_unsupported_reservation_before_storage(self):
+    def test_invalid_monitoring_reservation_is_rejected_before_storage(self):
         with patch("agente_gestion.cli.SQLiteStorageAdapter") as storage:
-            with self.assertRaises(ValueError):
-                _build_orchestrator(self.settings(monitoring_max_generation_tokens=4096))
+            with self.assertRaises(ConfigError):
+                self.settings(monitoring_max_generation_tokens=8193)
             storage.assert_not_called()
 
-    def test_composition_models_and_budgets_leave_other_roles_unchanged(self):
-        for provider, explicit, expected in (("ollama", None, 512), ("gemini", None, 2048),
-                                              ("gemini", 4096, 4096)):
-            with self.subTest(provider=provider, output=explicit):
-                config = self.settings(monitoring_provider=provider, allow_remote_ai=True,
-                    gemini_api_key="dummy", gemini_model="gemini-3.8-flash",
-                    monitoring_max_generation_tokens=explicit)
+    def test_composition_models_and_budgets_are_role_specific(self):
+        for explicit, expected in ((None, 2048), (4096, 4096)):
+            with self.subTest(output=explicit):
+                config = self.settings(
+                    allow_remote_ai=True,
+                    gemini_api_key="dummy-gemini-key",
+                    groq_api_key="dummy-groq-key",
+                    gemini_model="gemini-3.8-flash",
+                    groq_model="qwen/qwen3.8-27b",
+                    quality_context_window=65536,
+                    quality_max_output_tokens=4096,
+                    monitoring_max_generation_tokens=explicit,
+                )
                 orchestrator, _, _, verifier, monitoring, quality, report = self.compose(config)
-                self.assertEqual(monitoring.provider_name, provider)
-                self.assertEqual(monitoring.model, config.gemini_monitoring_model if provider == "gemini"
-                                 else config.ollama_monitoring_model)
+                self.assertEqual(monitoring.provider_name, "gemini")
+                self.assertEqual(monitoring.model, config.gemini_monitoring_model)
                 self.assertEqual(orchestrator.config.monitoring_max_generation_tokens, expected)
                 self.assertGreaterEqual(monitoring.get_capabilities().max_output_tokens, expected)
                 self.assertEqual(verifier.model, "gemini-3.8-flash")
-                self.assertEqual(quality.model, config.ollama_quality_model)
-                self.assertEqual(report.model, config.ollama_report_model)
+                self.assertEqual(quality.provider_name, "groq")
+                self.assertEqual(quality.model, "qwen/qwen3.8-27b")
+                self.assertEqual(quality.get_capabilities().context_tokens, 65536)
+                self.assertEqual(quality.get_capabilities().max_output_tokens, 4096)
+                self.assertEqual(report.provider_name, "gemini")
+                self.assertEqual(report.model, config.gemini_report_model)
+                self.assertEqual(report.get_capabilities().max_output_tokens, 768)
 
-    def test_remote_off_preflight_has_no_constructors_or_fallback(self):
+    def test_remote_off_preflight_selects_honestly_labeled_sandbox_without_remote_constructors(self):
         with ExitStack() as stack:
-            mocks = [stack.enter_context(patch("agente_gestion.cli." + name)) for name in
-                     ("SQLiteStorageAdapter", "ArtifactStorageAdapter", "create_composite_source",
-                      "FixtureSourcesAdapter", "GeminiProvider", "OllamaProvider")]
-            with self.assertRaises(RemoteProviderNotAllowedError):
-                _build_orchestrator(self.settings(monitoring_provider="gemini"), "real")
-            for constructor in mocks:
+            remote_constructors = [
+                stack.enter_context(patch.object(provider, "__init__", autospec=True,
+                                                 side_effect=AssertionError("remote constructor called")))
+                for provider in (GeminiProvider, GroqProvider)
+            ]
+            orchestrator, _, _, verifier, monitoring, quality, report = self.compose(
+                self.settings(allow_remote_ai=False, gemini_api_key="dummy-gemini-key",
+                              groq_api_key="dummy-groq-key"))
+            for constructor in remote_constructors:
                 constructor.assert_not_called()
+            for role, provider in (("verifier", verifier), ("monitoring", monitoring),
+                                   ("quality", quality), ("report", report)):
+                self.assertEqual(provider.provider_name, "fake_simulated", role)
+                self.assertTrue(provider.is_simulated, role)
+                self.assertIn("sandbox", provider.model, role)
+            self.assertTrue(orchestrator.elaborador_provider.is_simulated)
 
     def test_fake_does_not_construct_any_real_llm_even_without_key_or_optin(self):
         with ExitStack() as stack:
-            mocks = [stack.enter_context(patch("agente_gestion.cli." + name)) for name in
-                     ("GeminiProvider", "OllamaProvider", "GroqProvider", "MistralProvider")]
+            mocks = [
+                stack.enter_context(patch.object(provider, "__init__", autospec=True,
+                                                 side_effect=AssertionError("remote constructor called")))
+                for provider in (GeminiProvider, GroqProvider)
+            ]
             result = self.compose(self.settings(is_fake=True, monitoring_provider="gemini"))
             for constructor in mocks:
                 constructor.assert_not_called()
             self.assertEqual(result[4].provider_name, "fake_simulated")
+            self.assertIn("sandbox", result[4].model)
 
     def run_monitoring(self, output=2048, data=None, finish="STOP", max_output=8192):
         response = {"summary": "Sin tareas.", "referenced_task_ids": [], "evidence_ids": []}

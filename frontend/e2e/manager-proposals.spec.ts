@@ -53,7 +53,7 @@ test("approve-and-execute envía motivo, sesión same-origin y refresca la propu
   await page.getByLabel("Motivo de la decisión").fill(decisionReason);
   await confirmDecision(page, "Aprobar y Aplicar en Trello", "Confirmar aprobación y ejecución", "Aprobar y ejecutar");
 
-  await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toBeVisible();
+  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
   await expect.poll(() => observer.moduleReads.filter((item) => item.endsWith("/proposals/proposal-date-001")).length).toBeGreaterThan(initialProposalReads);
   expect(observer.governanceRequests).toHaveLength(1);
   expect(observer.governanceRequests[0]).toMatchObject({
@@ -87,7 +87,7 @@ for (const scenario of [
     const dialog = page.getByRole("dialog", { name: "Confirmar modificación y ejecución" });
     await dialog.getByRole("button", { name: "Modificar y ejecutar", exact: true }).click();
 
-    await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toBeVisible();
+    await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
     expect(observer.governanceRequests).toHaveLength(1);
     expect(observer.governanceRequests[0].path).toBe("/api/v1/projects/hormigestio/proposals/proposal-date-001/execute");
     expect(JSON.parse(observer.governanceRequests[0].body!)).toEqual({
@@ -108,7 +108,7 @@ test("reject envía el motivo al mismo endpoint y no crea una decisión local", 
   const dialog = page.getByRole("dialog", { name: "Confirmar rechazo de propuesta" });
   await dialog.getByRole("button", { name: "Rechazar propuesta", exact: true }).click();
 
-  await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toBeVisible();
+  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
   expect(observer.governanceRequests).toHaveLength(1);
   expect(observer.governanceRequests[0].path).toBe("/api/v1/projects/hormigestio/proposals/proposal-date-001/execute");
   expect(JSON.parse(observer.governanceRequests[0].body!)).toEqual({ decision: "reject", reason: "La evidencia de este cambio no es suficiente." });
@@ -157,7 +157,7 @@ test("el reintento de /execute reutiliza clave y cuerpo sin duplicar la escritur
   await expect(dialog.getByRole("alert")).toContainText("Respuesta temporal no disponible.");
   await confirm.click();
 
-  await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toBeVisible();
+  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
   expect(requests).toHaveLength(2);
   expect(requests[0].key).toBeTruthy();
   expect(requests[1].key).toBe(requests[0].key);
@@ -178,7 +178,7 @@ test("el backend puede rechazar una ejecución sin activar revisión o simulaci�
   await dialog.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
 
   await expect(dialog.getByRole("alert")).toContainText("La ejecución no está disponible por el servidor.");
-  await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toHaveCount(0);
   expect(observer.governanceRequests).toHaveLength(1);
   expect(observer.governanceRequests[0].path).toBe("/api/v1/projects/hormigestio/proposals/proposal-date-001/execute");
   await expect(page.getByRole("button", { name: /Aprobar para revisión local|Autorizar simulación segura|Simular propuesta autorizada/ })).toHaveCount(0);
@@ -199,8 +199,8 @@ for (const outcome of ["DENIED", "FAILED"] as const) {
     await dialog.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
 
     await expect(dialog.getByRole("alert").filter({ hasText: outcome })).toBeVisible();
-    await expect(page.getByText("Sandbox · Trello sin cambios", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("Modo live reportado por el backend", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Nube · Resultado informado por Trello", { exact: true })).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "Aprobar y ejecutar", exact: true })).toBeEnabled();
   });
 }

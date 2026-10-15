@@ -92,10 +92,15 @@ class AuthSessionView(ApiModel):
     csrf_token: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     login_available: bool
+    email: str | None = None
+    notification_email: str | None = None
+    role: str | None = None
 
 
 class LoginRequest(ApiModel):
-    token: StrictStr = Field(min_length=1, max_length=512)
+    token: StrictStr | None = Field(default=None, max_length=512)
+    email: StrictStr | None = Field(default=None, max_length=254)
+    password: StrictStr | None = Field(default=None, max_length=512)
 
 
 class SystemHealth(ApiModel):
@@ -334,11 +339,19 @@ class PrepareAnalysisRequest(ApiModel):
     request_analysis: Literal[True]
 
 
+class ProjectBoundPrepareAnalysisRequest(PrepareAnalysisRequest):
+    project_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
 class ConfirmAnalysisRequest(ApiModel):
     preparation_id: str = Field(min_length=16, max_length=128)
     configuration_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     confirm_analysis: Literal[True]
     remote_consent: StrictBool
+
+
+class ProjectBoundConfirmAnalysisRequest(ConfirmAnalysisRequest):
+    project_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class PreflightCheck(ApiModel):
@@ -373,6 +386,9 @@ class AnalysisPreparation(ApiModel):
     expires_at: datetime
     configuration_fingerprint: str
     eligible: bool
+    ready: bool
+    execution_mode: Literal["live", "sandbox", "mixed"]
+    fallback_reasons: list[str]
     capabilities: list[str]
     preflight: AnalysisPreflight
     remote: RemotePreflight
@@ -387,6 +403,8 @@ class AnalysisJobView(ApiModel):
     run_id: str | None = None
     error_code: str | None = None
     remote_consent: bool
+    execution_mode: Literal["live", "sandbox", "mixed"]
+    fallback_reasons: list[str]
     stage_progress_available: bool = False
 
 

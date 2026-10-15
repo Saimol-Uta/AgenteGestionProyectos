@@ -3,7 +3,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Clock3, FilePlus2, ShieldCheck, Sparkles } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { analysisJobStatusLabel, formatDate, formatDurationSeconds, runStatusLabel } from "../../api/formatters";
+import {
+  analysisExecutionModeLabel,
+  analysisJobStatusLabel,
+  analysisPreparationIsReady,
+  formatDate,
+  formatDurationSeconds,
+  providerModelLabel,
+  providerNameLabel,
+  runStatusLabel,
+  stageNameLabel,
+} from "../../api/formatters";
 import {
   queryKeys, useAnalysisJobs, useProject, useProjects, useRuns,
 } from "../../api/queries";
@@ -31,17 +41,31 @@ function statusTone(status: RunStatus): "neutral" | "positive" | "warning" | "da
 }
 
 function preflightStatusLabel(status: string) {
-  if (status === "ready") return "Verificado como listo";
-  if (status === "incomplete") return "Configuración incompleta";
-  if (status === "unknown") return "Desconocido";
-  return `Estado del dominio: ${status}`;
+  if (status === "ready") return "Listo";
+  if (status === "incomplete") return "Requiere atención";
+  if (status === "unknown") return "Sin confirmar";
+  return "Estado sin detalle";
 }
 
 function credentialStatusLabel(status: string) {
-  if (status === "configured") return "Configurada (presencia informada)";
-  if (status === "missing") return "No configurada";
-  if (status === "not_required") return "No requerida";
-  return `Estado del dominio: ${status}`;
+  if (status === "configured") return "Disponible";
+  if (status === "missing") return "No disponible";
+  if (status === "not_required") return "No se necesita";
+  return "Disponibilidad sin confirmar";
+}
+
+function preflightCheckLabel(code: string) {
+  const labels: Record<string, string> = {
+    source_configured: "Fuentes del proyecto",
+    local_state: "Estado local del análisis",
+  };
+  return labels[code] ?? "Verificación adicional";
+}
+
+function transportLabel(transport: string) {
+  if (transport === "remote") return "Servicios en la nube";
+  if (transport === "local") return "Procesamiento local";
+  return "Ubicación sin confirmar";
 }
 
 export function AnalysisPage() {
@@ -84,6 +108,7 @@ export function AnalysisPage() {
     queryKey: queryKeys.analysisJob(trackedJobId ?? ""),
     queryFn: () => api.getAnalysisJob(trackedJobId!),
     enabled: Boolean(trackedJobId),
+    staleTime: 3_000,
     refetchInterval: (query) => query.state.data && activeJobStatuses.includes(query.state.data.status) ? pollAfterMs : false,
   });
 
@@ -103,7 +128,7 @@ export function AnalysisPage() {
 
   const prepareMutation = useMutation({
     mutationFn: async () => {
-      if (!project || !session?.csrf_token) throw new Error("Se requiere una sesión con credencial CSRF para preparar el análisis.");
+      if (!project || !session?.csrf_token) throw new Error("Inicia sesión para revisar las condiciones del análisis.");
       return api.prepareAnalysis(project.id, session.csrf_token);
     },
     onSuccess: (result) => {
@@ -138,7 +163,7 @@ export function AnalysisPage() {
         void queryClient.invalidateQueries({ queryKey: queryKeys.analysisJobs(project.id, jobsPage, 25) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.runs(project.id, 1, 25) });
       }
-      notify(result.reused ? "Se reutilizó el trabajo de análisis existente." : "El backend aceptó el trabajo de análisis.", "success");
+      notify(result.reused ? "Se retomó un análisis existente." : "El análisis fue confirmado.", "success");
     },
   });
 
@@ -157,11 +182,11 @@ export function AnalysisPage() {
     setSearchParams(next, { replace: true });
   }
 
-  if (projectsQuery.isPending) return <LoadingState label="Cargando proyectos del backend…" />;
+  if (projectsQuery.isPending) return <LoadingState label="Cargando proyectos…" />;
   if (projectsQuery.isError) return <ErrorState title="No se pudieron cargar los proyectos" message={projectsQuery.error.message} onRetry={() => void projectsQuery.refetch()} />;
   if (needsProjectLookup && selectedProjectQuery.isPending) return <LoadingState label="Consultando el proyecto activo…" />;
   if (needsProjectLookup && selectedProjectQuery.isError) return <ErrorState title="No se pudo consultar el proyecto activo" message={selectedProjectQuery.error.message} onRetry={() => void selectedProjectQuery.refetch()} />;
-  if (!project) return <EmptyState title="No hay un proyecto disponible" message="El backend no reportó proyectos configurados o almacenados para consultar." />;
+  if (!project) return <EmptyState title="No hay un proyecto disponible" message="No hay proyectos disponibles para consultar." />;
 
   const runPages = runsQuery.data ? Math.max(1, Math.ceil(runsQuery.data.total / Math.max(1, runsQuery.data.page_size))) : 1;
   const jobPages = jobsQuery.data ? Math.max(1, Math.ceil(jobsQuery.data.total / Math.max(1, jobsQuery.data.page_size))) : 1;
@@ -169,7 +194,7 @@ export function AnalysisPage() {
   const remoteConsentRequired = preparation?.remote.required ?? false;
   const confirmationAllowed = Boolean(
     preparation
-    && preparation.eligible
+    && analysisPreparationIsReady(preparation)
     && canConfirm
     && (!preparation.remote.required || preparation.remote.server_allowed)
     && (!preparation.remote.required || remoteConsent),
@@ -183,7 +208,7 @@ export function AnalysisPage() {
           <h1>Centro de análisis de IA</h1>
           <p className="page-subtitle">Consulta ejecuciones persistidas y prepara nuevos trabajos solo mediante confirmación explícita.</p>
         </div>
-        <Pill tone="neutral">GET de consulta · POST solo por acción</Pill>
+        <Pill tone="neutral">Consulta de ejecuciones · inicio solo con confirmación</Pill>
       </div>
 
       <section className="panel analysis-preparation-panel" aria-labelledby="preparation-heading">
@@ -191,7 +216,7 @@ export function AnalysisPage() {
           <div>
             <p className="eyebrow">CONTROL DE EJECUCIÓN</p>
             <h2 id="preparation-heading">Preparar un análisis</h2>
-            <p className="section-subtitle">Abrir esta página no inicia agentes, sondeos remotos ni trabajos.</p>
+            <p className="section-subtitle">Consultar esta página no inicia el análisis ni contacta servicios externos.</p>
           </div>
           <span className="preparation-icon"><Sparkles aria-hidden="true" size={18} /></span>
         </div>
@@ -199,10 +224,10 @@ export function AnalysisPage() {
         {!canPrepare && (
           <p className="capability-note" role="status">
             {sessionLoading
-              ? "Consultando la sesión y sus capacidades de servidor…"
+              ? "Verificando tus permisos de acceso…"
               : !session?.authenticated
                 ? "La consulta es pública y de solo lectura. Inicia sesión para solicitar una preparación protegida."
-                : "La sesión no informa la capacidad de servidor analysis:prepare; no se enviará la solicitud."}
+                : "Tu sesión no tiene permiso para revisar un nuevo análisis; no se enviará la solicitud."}
           </p>
         )}
         <button
@@ -219,7 +244,7 @@ export function AnalysisPage() {
           }}
         >
           <FilePlus2 aria-hidden="true" size={16} />
-          {prepareMutation.isPending ? "Consultando precondiciones…" : "Preparar análisis"}
+          {prepareMutation.isPending ? "Revisando condiciones…" : "Preparar análisis"}
         </button>
         {prepareMutation.isError && (
           <ErrorState
@@ -232,39 +257,39 @@ export function AnalysisPage() {
         {preparation && (
           <div className="preparation-result" aria-labelledby="preparation-result-heading">
             <div className="section-heading compact-heading">
-              <div><p className="eyebrow">PREFLIGHT DEL SERVIDOR</p><h3 id="preparation-result-heading">Revisión de configuración y fuentes</h3></div>
-              <Pill tone={preparation.eligible ? "positive" : "warning"}>{preparation.eligible ? "Elegible según preflight" : "No elegible"}</Pill>
+              <div><p className="eyebrow">ANTES DE INICIAR</p><h3 id="preparation-result-heading">Revisión de configuración y fuentes</h3></div>
+              <Pill tone={analysisPreparationIsReady(preparation) ? "positive" : "warning"}>{analysisPreparationIsReady(preparation) ? "Listo para confirmar" : "Requiere atención"}</Pill>
             </div>
             <dl className="preparation-facts">
               <div><dt>Proyecto</dt><dd>{preparation.project_id}</dd></div>
-              <div><dt>Modo de origen</dt><dd>{preparation.preflight.source_mode}</dd></div>
-              <div><dt>Configuración</dt><dd>{preflightStatusLabel(preparation.preflight.configuration_status)}</dd></div>
+              <div><dt>Fuentes del proyecto</dt><dd>{providerNameLabel(preparation.preflight.source_mode)}</dd></div>
+              <div><dt>Revisión de configuración</dt><dd>{preflightStatusLabel(preparation.preflight.configuration_status)}</dd></div>
               <div><dt>Preparación válida hasta</dt><dd>{formatDate(preparation.expires_at, true)}</dd></div>
-              <div><dt>Capacidades informadas por preflight</dt><dd>{preparation.capabilities.length ? preparation.capabilities.join(", ") : "Sin capacidades reportadas"}</dd></div>
             </dl>
+            {preparation.execution_mode && <p className="section-subtitle" role="status">Modo de ejecución: {analysisExecutionModeLabel(preparation.execution_mode)}</p>}
             <ul className="preflight-checks">
               {preparation.preflight.checks.map((check) => (
                 <li key={check.code}>
-                  <span>{check.code}</span>
+                  <span>{preflightCheckLabel(check.code)}</span>
                   <Pill tone={check.status === "ready" ? "positive" : check.status === "incomplete" ? "warning" : "unknown"}>{preflightStatusLabel(check.status)}</Pill>
                 </li>
               ))}
             </ul>
             <div className="remote-preflight">
-              <h4><ShieldCheck aria-hidden="true" size={15} /> Uso de proveedores remotos</h4>
-              <p>La disponibilidad remota no se comprueba durante la preparación.</p>
+              <h4><ShieldCheck aria-hidden="true" size={15} /> Servicios en la nube</h4>
+              <p>La revisión no contacta servicios en la nube.</p>
               <p>
-                Requerido: <strong>{preparation.remote.required ? "Sí" : "No"}</strong>
+                Se necesitan para este análisis: <strong>{preparation.remote.required ? "Sí" : "No"}</strong>
                 <span aria-hidden="true"> · </span>
-                Permitido por servidor: <strong>{preparation.remote.server_allowed ? "Sí" : "No"}</strong>
+                Autorizados para el proyecto: <strong>{preparation.remote.server_allowed ? "Sí" : "No"}</strong>
               </p>
               {preparation.remote.providers.length ? (
                 <ul className="provider-preflight-list">
                   {preparation.remote.providers.map((provider, index) => (
                     <li key={`${provider.stage}-${provider.provider}-${index}`}>
-                      <span>{provider.stage}: {provider.provider} · {provider.model}</span>
-                      <span>Transporte: {provider.transport}</span>
-                      <span>Credencial: {credentialStatusLabel(provider.credential_status)}</span>
+                      <span>{stageNameLabel(provider.stage)}: {providerNameLabel(provider.provider)}{providerModelLabel(provider.provider, provider.model) ? ` · ${providerModelLabel(provider.provider, provider.model)}` : ""}</span>
+                      <span>{transportLabel(provider.transport)}</span>
+                      <span>Acceso: {credentialStatusLabel(provider.credential_status)}</span>
                     </li>
                   ))}
                 </ul>
@@ -279,14 +304,15 @@ export function AnalysisPage() {
                   disabled={!preparation.remote.server_allowed || confirmMutation.isPending || confirmAttempted}
                   onChange={(event) => setRemoteConsent(event.target.checked)}
                 />
-                <span>Otorgo mi consentimiento explícito para usar proveedores remotos en este análisis.</span>
+                <span>Autorizo el uso de servicios en la nube para este análisis.</span>
               </label>
             )}
             {preparation.remote.required && !preparation.remote.server_allowed && (
-              <p className="capability-note" role="status">El servidor no permite el procesamiento remoto requerido; no se puede confirmar este análisis.</p>
+              <p className="capability-note" role="status">Este proyecto no tiene autorización para usar los servicios en la nube necesarios; no se puede confirmar este análisis.</p>
             )}
-            {!canConfirm && <p className="capability-note" role="status">La sesión no informa la capacidad analysis:confirm; la API rechazará cualquier intento no autorizado.</p>}
-            {!preparation.eligible && <p className="capability-note" role="status">El preflight no habilita la ejecución. No se ha creado ningún trabajo.</p>}
+            {!canConfirm && <p className="capability-note" role="status">Tu sesión no tiene permiso para confirmar este análisis.</p>}
+            {!analysisPreparationIsReady(preparation) && <p className="capability-note" role="status">La revisión aún no cumple las condiciones para ejecutar el análisis. No se ha creado ningún trabajo.</p>}
+            {preparation.fallback_reasons?.length ? <div className="capability-note"><strong>Alternativas aplicadas</strong><ul>{preparation.fallback_reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul></div> : null}
             {confirmMutation.isError && (
               <ErrorState title="No se pudo confirmar el análisis" message={confirmMutation.error.message} onRetry={() => confirmMutation.mutate()} />
             )}
@@ -317,8 +343,10 @@ export function AnalysisPage() {
           </div>
           <p role="status">Trabajo de análisis: {analysisJobStatusLabel(trackedJob.status).toLocaleLowerCase("es-EC")}</p>
           <p className="section-subtitle">Última actualización: {formatDate(trackedJob.updated_at, true)}. No se estima porcentaje de progreso.</p>
-          {trackedJob.error_code && <p className="stage-error">Código seguro del backend: <code>{trackedJob.error_code}</code></p>}
-          {trackedJob.run_id && <Link className="text-link" to={`/analysis?run_id=${encodeURIComponent(trackedJob.run_id)}`}>Abrir ejecución persistida <ArrowRight aria-hidden="true" size={14} /></Link>}
+          {trackedJob.error_code && <p className="stage-error">El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.</p>}
+          {trackedJob.execution_mode && <p>Modo de ejecución: {analysisExecutionModeLabel(trackedJob.execution_mode)}</p>}
+          {trackedJob.fallback_reasons?.length ? <p>Alternativas aplicadas: {trackedJob.fallback_reasons.join("; ")}</p> : null}
+          {trackedJob.run_id && <Link className="text-link" to={`/analysis?run_id=${encodeURIComponent(trackedJob.run_id)}`}>Abrir análisis <ArrowRight aria-hidden="true" size={14} /></Link>}
         </section>
       )}
       {trackedJobQuery.isError && <ErrorState title="No se pudo consultar el trabajo de análisis" message={trackedJobQuery.error.message} onRetry={() => void trackedJobQuery.refetch()} />}
@@ -326,13 +354,13 @@ export function AnalysisPage() {
       <section className="panel run-history-section" aria-labelledby="run-history-heading">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">REGISTROS DEL BACKEND</p>
-            <h2 id="run-history-heading">Historial de ejecuciones</h2>
-            <p className="section-subtitle">El listado está ordenado por el servidor; no se reconstruyen ejecuciones desde capturas.</p>
+            <p className="eyebrow">ACTIVIDAD DEL PROYECTO</p>
+            <h2 id="run-history-heading">Historial de análisis</h2>
+            <p className="section-subtitle">Consulta los análisis registrados y revisa sus evidencias antes de tomar decisiones.</p>
           </div>
-          <span className="history-source"><Clock3 aria-hidden="true" size={15} /> {runsQuery.data ? `${runsQuery.data.total} registros` : "Consulta API"}</span>
+          <span className="history-source"><Clock3 aria-hidden="true" size={15} /> {runsQuery.data ? `${runsQuery.data.total} registros` : "Historial"}</span>
         </div>
-        {runsQuery.isPending && <LoadingState label="Consultando ejecuciones persistidas…" />}
+        {runsQuery.isPending && <LoadingState label="Consultando el historial de análisis…" />}
         {runsQuery.isError && <ErrorState title="No se pudo cargar el historial" message={runsQuery.error.message} onRetry={() => void runsQuery.refetch()} />}
         {runsQuery.data && (runSeries.length ? (
           <>
@@ -340,7 +368,7 @@ export function AnalysisPage() {
               {runSeries.map((run) => (
                 <li key={run.run_id}>
                   <Link to={`/analysis?run_id=${encodeURIComponent(run.run_id)}`} aria-label={`Abrir ejecución ${run.run_id}`}>
-                    <span className="run-history-main"><strong>{run.run_id}</strong><code>{run.status}</code></span>
+                    <span className="run-history-main"><strong>{run.run_id}</strong></span>
                     <span>{formatDate(run.created_at, true)}</span>
                     <Pill tone={statusTone(run.status)}>{runStatusLabel(run.status)}</Pill>
                     <span>Duración: {formatDurationSeconds(run.duration_seconds)}</span>
@@ -359,28 +387,30 @@ export function AnalysisPage() {
               </div>
             )}
           </>
-        ) : <EmptyState title="Sin ejecuciones registradas" message="La API no encontró runs persistidos para este proyecto." />)}
+        ) : <EmptyState title="Sin análisis registrados" message="Aún no hay análisis guardados para este proyecto." />)}
       </section>
 
       <section className="panel job-history-section" aria-labelledby="job-history-heading">
         <div className="section-heading compact-heading">
-          <div><p className="eyebrow">COLA LOCAL ASÍNCRONA</p><h2 id="job-history-heading">Trabajos de análisis</h2></div>
-          <span className="caption">Estados terminales: completado, fallido o interrumpido.</span>
+          <div><p className="eyebrow">ANÁLISIS DEL PROYECTO</p><h2 id="job-history-heading">Trabajos recientes</h2></div>
+          <span className="caption">El historial refleja el estado informado para cada análisis.</span>
         </div>
-        {!canReadJobs && <EmptyState title="Historial de trabajos protegido" message="El servidor limita los trabajos a sesiones con capacidad de análisis habilitada para este proyecto." />}
-        {canReadJobs && jobsQuery.isPending && <LoadingState label="Consultando trabajos locales…" />}
+        {!canReadJobs && <EmptyState title="Historial de análisis protegido" message="Inicia sesión con permiso de gestión para consultar los análisis de este proyecto." />}
+        {canReadJobs && jobsQuery.isPending && <LoadingState label="Consultando análisis recientes…" />}
         {canReadJobs && jobsQuery.isError && <ErrorState title="No se pudieron consultar los trabajos" message={jobsQuery.error.message} onRetry={() => void jobsQuery.refetch()} />}
         {canReadJobs && jobsQuery.data && (jobsQuery.data.items.length ? (
           <>
             <ul className="job-history-list">
               {jobsQuery.data.items.map((job) => (
                 <li key={job.job_id}>
-                  <span><strong>{job.job_id}</strong><code>{job.status}</code></span>
+                  <span><strong>{job.job_id}</strong></span>
                   <span>{analysisJobStatusLabel(job.status)}</span>
                   <span>Actualizado: {formatDate(job.updated_at, true)}</span>
-                  <span>{job.remote_consent ? "Consentimiento remoto registrado" : "Sin consentimiento remoto"}</span>
-                  {job.run_id && <Link to={`/analysis?run_id=${encodeURIComponent(job.run_id)}`}>Abrir run <ArrowRight aria-hidden="true" size={13} /></Link>}
-                  {job.error_code && <code>{job.error_code}</code>}
+                  <span>{job.remote_consent ? "Autorización de servicios en la nube registrada" : "Sin autorización para servicios en la nube"}</span>
+                  {job.execution_mode && <span>Modo de ejecución: {analysisExecutionModeLabel(job.execution_mode)}</span>}
+                  {job.fallback_reasons?.length ? <span>Alternativas: {job.fallback_reasons.join("; ")}</span> : null}
+                  {job.run_id && <Link to={`/analysis?run_id=${encodeURIComponent(job.run_id)}`}>Abrir análisis <ArrowRight aria-hidden="true" size={13} /></Link>}
+                  {job.error_code && <span>El análisis no se completó correctamente.</span>}
                 </li>
               ))}
             </ul>
@@ -401,7 +431,7 @@ export function AnalysisPage() {
 
       <div className="analysis-security-note">
         <Pill tone="neutral">Sin escrituras externas</Pill>
-        <span>La sesión y las capacidades se consultan en el servidor. Toda confirmación exige CSRF, autorización y una clave de idempotencia.</span>
+        <span>Solo las sesiones autorizadas pueden iniciar un análisis. Cada trabajo requiere una confirmación explícita.</span>
       </div>
     </section>
   );

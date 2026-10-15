@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { installApi } from "./fixtures";
+import { installApi, managerCredentials } from "./fixtures";
 
 test("Phase 1: dashboard conserva diez KPI y presenta el centro y los tres agentes", async ({ page }) => {
   await installApi(page);
@@ -18,15 +18,32 @@ test("Phase 1: acción rápida exige consentimiento remoto y no confirma al prep
   await page.goto("/dashboard");
   const workflow = page.getByRole("region", { name: "Flujo de agentes" });
   await workflow.getByRole("button", { name: "Sincronizar y Analizar Proyecto" }).click();
-  await expect(workflow.getByLabel("Autorizo el análisis con proveedores remotos")).toBeVisible();
+  await expect(workflow.getByLabel("Autorizo el uso de servicios en la nube")).toBeVisible();
   expect(backend.analysisWrites).toHaveLength(1);
   await expect(workflow.getByRole("button", { name: "Confirmar análisis" })).toBeDisabled();
-  await workflow.getByLabel("Autorizo el análisis con proveedores remotos").check();
+  await workflow.getByLabel("Autorizo el uso de servicios en la nube").check();
   await workflow.getByRole("button", { name: "Confirmar análisis" }).click();
   await expect.poll(() => backend.analysisWrites.length).toBe(2);
   expect(JSON.parse(backend.analysisWrites[1].body!)).toMatchObject({ confirm_analysis: true, remote_consent: true });
   expect(backend.analysisWrites[1].csrfToken).toBeTruthy();
   expect(backend.analysisWrites[1].idempotencyKey).toBeTruthy();
+});
+
+test("el correo verificado aparece como destinatario y cambiarlo no condiciona el análisis", async ({ page }) => {
+  const backend = await installApi(page, {
+    authenticated: true,
+    capabilities: ["analysis:prepare", "analysis:confirm"],
+  });
+  await page.goto("/dashboard");
+  const workflow = page.getByRole("region", { name: "Flujo de agentes" });
+
+  await expect(workflow).toContainText(`Alertas y reportes dirigidos a: ${managerCredentials.email}`);
+  await expect(workflow.getByText("configurar correo del gestor", { exact: true })).toHaveCount(0);
+  await expect(workflow.getByRole("link", { name: "Cambiar correo" })).toBeVisible();
+  const analyze = workflow.getByRole("button", { name: "Sincronizar y Analizar Proyecto" });
+  await expect(analyze).toBeEnabled();
+  await analyze.click();
+  await expect.poll(() => backend.analysisWrites.length).toBe(1);
 });
 
 test("Phase 1: capacidad de preparar no autoriza confirmar", async ({ page }) => {

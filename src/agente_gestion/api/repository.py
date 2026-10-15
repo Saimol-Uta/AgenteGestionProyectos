@@ -676,7 +676,7 @@ class SQLiteQueryRepository:
                 (run_id,),
             ).fetchall()
         grouped: dict[tuple[str, str, str, str], list[float | None]] = {}
-        safe_providers = {"ollama", "gemini", "groq", "mistral", "fake_simulated"}
+        safe_providers = {"gemini", "groq", "fake_simulated"}
         safe_statuses = {"complete", "incomplete", "refused", "error"}
         for row in rows:
             stage = str(row["stage"] or "")

@@ -2,13 +2,26 @@ import { useId, useRef, useState, type FormEvent } from "react";
 import { Mail, Save } from "lucide-react";
 import { api } from "../../api/client";
 import { useProjects, useSendManagerEmailMutation } from "../../api/queries";
-import type { SendManagerEmailResponse } from "../../api/types";
+import type { ManagerEmailDeliveryChannel, SendManagerEmailResponse } from "../../api/types";
 import { useSession } from "../auth/SessionProvider";
 import { useToast } from "../../components/ToastProvider";
 import { Pill } from "../../components/States";
 import { ExecutiveEmailPreview, type ExecutiveEmail } from "./ExecutiveEmailPreview";
 import { isDeliveryRecipient, useDeliveryPreferences } from "./useDeliveryPreferences";
 import "./notifications-phase1.css";
+
+function deliveryChannelLabel(channel: ManagerEmailDeliveryChannel): string {
+  if (channel === "smtp_email_sent") return "Aceptado por el servicio de correo";
+  if (channel === "smtp_email_failed") return "Entrega no confirmada";
+  return "Guardado localmente · no enviado";
+}
+
+function deliveryStatusLabel(status: string): string {
+  if (status === "DELIVERED") return "Registrado";
+  if (status === "FAILED") return "No completado";
+  if (status === "QUEUED") return "Pendiente";
+  return "Estado sin confirmar";
+}
 
 export function EmailDeliveryPanel({ projectId }: { projectId: string }) {
   return <ProjectEmailDeliveryPanel key={projectId} projectId={projectId} />;
@@ -26,18 +39,21 @@ function RecipientEditor({ recipient, onSave }: { recipient: string; onSave: (va
     onSave(value);
   }
   return <form className="delivery-recipient-form" onSubmit={submit} noValidate>
-    <label htmlFor={inputId}>Correo del gestor<span>Preferencia local del proyecto</span></label>
+    <label htmlFor={inputId}>Correo del gestor<span>Cambio opcional para este proyecto</span></label>
     <div className="delivery-recipient-controls"><input id={inputId} type="email" autoComplete="email" maxLength={254} placeholder="Ejemplo: gestor@example.org" value={draft} aria-invalid={invalid} aria-describedby={`${inputId}-help`} onChange={(event) => { setDraft(event.target.value); setInvalid(false); }} /><button className="button button-secondary" type="submit"><Save size={15} aria-hidden="true" />Guardar correo local</button></div>
-    <p id={`${inputId}-help`} className={invalid ? "delivery-validation" : "caption"}>{invalid ? "Ingresa una dirección de correo válida, sin espacios; puedes dejarla vacía para borrar la preferencia." : "Se guarda solo en este navegador y proyecto. El envío protegido confirma el destinatario antes de contactar el backend."}</p>
+    <p id={`${inputId}-help`} className={invalid ? "delivery-validation" : "caption"}>{invalid ? "Ingresa una dirección de correo válida, sin espacios; puedes dejarla vacía para usar el correo verificado o configurado." : "Este cambio opcional se guarda solo en este navegador y proyecto. Si no indicas otro correo, se usará primero tu correo verificado y luego el destinatario configurado."}</p>
   </form>;
 }
 
 function ProjectEmailDeliveryPanel({ projectId }: { projectId: string }) {
   const titleId = useId();
-  const { recipient, setRecipient } = useDeliveryPreferences(projectId);
+  const { recipient: savedRecipient, setRecipient } = useDeliveryPreferences(projectId);
   const projects = useProjects();
   const project = projects.data?.items.find(item => item.id === projectId);
   const { session } = useSession();
+  const recipient = savedRecipient || (session?.authenticated
+    ? session.email?.trim() || session.notification_email?.trim() || ""
+    : "");
   const { notify } = useToast();
   const mutation = useSendManagerEmailMutation();
   const [saved, setSaved] = useState(false);
@@ -94,14 +110,14 @@ function ProjectEmailDeliveryPanel({ projectId }: { projectId: string }) {
       setConfirmationOpen(false);
       setLocalPreview(null);
       if (result.status === "FAILED" || result.delivery_channel === "smtp_email_failed") {
-        const failure = "SMTP no confirmó el envío. El recibo fallido quedó en Outbox; no se reenvía automáticamente.";
+        const failure = "No se confirmó el envío. El intento quedó registrado y no se repetirá automáticamente.";
         setPreviewError(failure);
         notify(failure, "error");
         return;
       }
       const message = result.delivery_channel === "smtp_email_sent"
-        ? `SMTP reportó ${result.status} para ${result.recipient_email}.`
-        : `Correo registrado en outbox local (${result.status}); no se entregó a una bandeja SMTP.`;
+        ? `El servicio de correo aceptó el mensaje para ${result.recipient_email}; la llegada a su bandeja no está confirmada.`
+        : `El mensaje quedó guardado localmente (${deliveryStatusLabel(result.status).toLocaleLowerCase("es-EC")}); no se envió a una bandeja de correo.`;
       notify(message, result.delivery_channel === "smtp_email_sent" ? "success" : "info");
       if (result.html_preview_url) {
         setPreviewLoading(true);
@@ -127,15 +143,15 @@ function ProjectEmailDeliveryPanel({ projectId }: { projectId: string }) {
   const busy = mutation.isPending || inFlight.current;
   return <section className="panel email-delivery-panel" aria-labelledby={titleId}>
     <div className="section-heading"><div><p className="eyebrow">ALERTAS DE RETRASOS · RIESGOS · REPORTES SEMANALES</p><h2 id={titleId}>Configuración de Entrega por Correo Electrónico al Gestor</h2></div><Mail size={21} aria-hidden="true" /></div>
-    <div className="delivery-status-row"><Pill tone={canSend ? "positive" : "warning"}>{canSend ? "Envío protegido disponible" : "Vista previa local · envío deshabilitado"}</Pill><span>{canSend ? "El servidor determina si se envía por SMTP o se registra en su outbox local." : session?.authenticated ? "El servidor no concedió notifications:email_send; la vista previa local no entrega correo." : "Para enviar se requiere sesión local y notifications:email_send; la vista previa local no entrega correo."}</span></div>
-    <RecipientEditor key={recipient} recipient={recipient} onSave={value => { setRecipient(value); setSaved(true); setLocalPreview(null); setDelivery(null); setHtmlPreview(null); setPreviewError(""); idempotencyKey.current = null; }} />
-    {saved && <p role="status" className="delivery-saved">Preferencia local guardada</p>}
+    <div className="delivery-status-row"><Pill tone={canSend ? "positive" : "warning"}>{canSend ? "Envío protegido disponible" : "Vista previa local · envío deshabilitado"}</Pill><span>{canSend ? "El sistema informará si el mensaje fue aceptado por el servicio de correo o quedó guardado localmente." : session?.authenticated ? "Tu sesión no tiene permiso para enviar correos; la vista previa local no realiza envíos." : "Inicia sesión para enviar un correo; la vista previa local no realiza envíos."}</span></div>
+    <RecipientEditor key={`${savedRecipient}:${recipient}`} recipient={recipient} onSave={value => { setRecipient(value); setSaved(true); setLocalPreview(null); setDelivery(null); setHtmlPreview(null); setPreviewError(""); idempotencyKey.current = null; }} />
+    {saved && <p role="status" className="delivery-saved">Cambio de correo local guardado</p>}
     <div className="delivery-preview-actions"><button className="button button-primary" type="button" disabled={!recipient || !isDeliveryRecipient(recipient) || busy} onClick={requestSend}>{canSend ? "Enviar Alerta/Reporte al Correo Ahora" : "Enviar Notificación por Correo al Gestor"}</button><span className="caption">{canSend ? "Requiere confirmar el destinatario antes de enviar." : "No se hace ninguna solicitud de entrega."}</span></div>
-    {confirmationOpen && <section className="delivery-confirmation" aria-label="Confirmar destinatario del correo"><p>Confirma el envío a <strong>{recipient}</strong></p><p>El backend devolverá el canal y estado reales; local_outbox_simulated_email no equivale a entrega SMTP.</p><div className="delivery-preview-actions"><button className="button button-primary" type="button" disabled={busy} onClick={() => void sendEmail()}>{busy ? "Enviando correo…" : `Confirmar envío a ${recipient}`}</button><button className="button button-secondary" type="button" disabled={busy} onClick={() => setConfirmationOpen(false)}>Cancelar</button></div></section>}
+    {confirmationOpen && <section className="delivery-confirmation" aria-label="Confirmar destinatario del correo"><p>Confirma el envío a <strong>{recipient}</strong></p><p>El resultado indicará si el servicio de correo aceptó el mensaje o si quedó guardado localmente; esto no confirma su llegada a una bandeja.</p><div className="delivery-preview-actions"><button className="button button-primary" type="button" disabled={busy} onClick={() => void sendEmail()}>{busy ? "Enviando correo…" : `Confirmar envío a ${recipient}`}</button><button className="button button-secondary" type="button" disabled={busy} onClick={() => setConfirmationOpen(false)}>Cancelar</button></div></section>}
     {previewError && <p role="alert" className="delivery-validation">{previewError}</p>}
-    {delivery && <section className="delivery-result" aria-live="polite"><div className="delivery-status-row"><Pill tone={delivery.delivery_channel === "smtp_email_sent" ? "positive" : "warning"}>{delivery.delivery_channel}</Pill><strong>{delivery.status}</strong><span>Para: {delivery.recipient_email}</span></div><p>Recibo de entrega: <code>{delivery.delivery_id}</code></p>{delivery.delivery_channel === "smtp_email_failed" ? <p>El envío SMTP falló o es incierto; no se confirmó entrega.</p> : delivery.delivery_channel === "smtp_email_sent" ? <p>El relay SMTP aceptó el mensaje con estado <strong>{delivery.status}</strong>; la llegada a la bandeja no está confirmada.</p> : <p>Registrado en outbox local; no se entregó a una bandeja SMTP.</p>}</section>}
-    {previewLoading && <p role="status">Cargando vista previa HTML protegida del backend…</p>}
-    {htmlPreview && <section className="backend-email-preview" aria-label="Vista previa HTML del backend"><h3>Vista previa HTML del backend</h3><iframe title="Vista previa HTML del correo" sandbox="" referrerPolicy="no-referrer" srcDoc={htmlPreview} style={{ width: "100%", minHeight: "360px", border: "1px solid var(--border-strong)", borderRadius: "8px", background: "white" }} /></section>}
+    {delivery && <section className="delivery-result" aria-live="polite"><div className="delivery-status-row"><Pill tone={delivery.delivery_channel === "smtp_email_sent" ? "positive" : "warning"}>{deliveryChannelLabel(delivery.delivery_channel)}</Pill><strong>{deliveryStatusLabel(delivery.status)}</strong><span>Para: {delivery.recipient_email}</span></div><p>Referencia del envío: <code>{delivery.delivery_id}</code></p>{delivery.delivery_channel === "smtp_email_failed" ? <p>No se confirmó la entrega por correo.</p> : delivery.delivery_channel === "smtp_email_sent" ? <p>El servicio de correo aceptó el mensaje; la llegada a la bandeja no está confirmada.</p> : <p>Guardado localmente; no se envió a una bandeja de correo.</p>}</section>}
+    {previewLoading && <p role="status">Cargando vista previa del mensaje…</p>}
+    {htmlPreview && <section className="backend-email-preview" aria-label="Vista previa del mensaje"><h3>Vista previa del mensaje</h3><iframe title="Vista previa del mensaje" sandbox="" referrerPolicy="no-referrer" srcDoc={htmlPreview} style={{ width: "100%", minHeight: "360px", border: "1px solid var(--border-strong)", borderRadius: "8px", background: "white" }} /></section>}
     {localPreview && <><p className="caption">Vista previa local · no enviada</p><ExecutiveEmailPreview email={localPreview} /></>}
   </section>;
 }

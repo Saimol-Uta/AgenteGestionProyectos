@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowRight, Code2, FileSearch, GitBranch, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
-import { formatDate, findingVerificationLabel, formatPercentage, stageStatusLabel } from "../../api/formatters";
+import { analysisExecutionModeLabel, formatDate, findingVerificationLabel, formatPercentage, stageStatusLabel } from "../../api/formatters";
 import {
   useDecideCodeFindingMutation, useFinding, usePolicies, useProject, useProjects, useQuality, useRunFindings, useRuns,
 } from "../../api/queries";
@@ -128,7 +128,7 @@ function QualityRecommendation({ detail, projectId }: { detail: FindingDetail; p
         </section>
       </div>
       <div className="quality-human-decision">
-        <h4><GitBranch aria-hidden="true" size={15} /> Decisión humana · backend</h4>
+        <h4><GitBranch aria-hidden="true" size={15} /> Decisión del gestor</h4>
         <p>Las decisiones se envían al servidor. La validación del archivo completo y cualquier creación de rama son responsabilidad del backend.</p>
         {!session?.authenticated && <p className="capability-note">Modo de consulta: inicia sesión para enviar una decisión protegida.</p>}
         {session?.authenticated && !canDecide && <p className="capability-note">El servidor no concedió quality:decide; las acciones de decisión están ocultas.</p>}
@@ -145,7 +145,7 @@ function QualityRecommendation({ detail, projectId }: { detail: FindingDetail; p
         </>}
         {mutation.isError && <p className="form-error" role="alert">{mutation.error.message}</p>}
         <div className="quality-decision-result" aria-live="polite" role="status">
-          {backendRecorded && <><Pill tone={status === "approved" ? "positive" : status === "rejected" ? "danger" : status === "changes_requested" ? "warning" : "neutral"}>{decisionLabel(status)} · {resultMode === "sandbox" ? "sandbox" : resultMode === "live" ? "live" : "modo no informado"}</Pill>{resultBranch && <strong>{resultBranch}</strong>}{resultCommit && <span>Commit informado por el backend: {resultCommit}</span>}{status === "approved" && <p>El backend registró la aprobación; no se infiere que exista una Pull Request.</p>}{liveBranchUrl && <a className="text-link" href={liveBranchUrl} target="_blank" rel="noopener noreferrer">Ver rama informada por GitHub</a>}{resultMode === "live" && resultBranchUrl && !liveBranchUrl && <p>Referencia de rama devuelta por el backend: <code>{resultBranchUrl}</code></p>}</>}
+          {backendRecorded && <><Pill tone={status === "approved" ? "positive" : status === "rejected" ? "danger" : status === "changes_requested" ? "warning" : "neutral"}>{decisionLabel(status)} · {analysisExecutionModeLabel(resultMode ?? undefined) ?? "Modo no informado"}</Pill>{resultBranch && <strong>{resultBranch}</strong>}{resultCommit && <span>Commit informado: {resultCommit}</span>}{status === "approved" && <p>La aprobación no confirma por sí sola que exista un cambio en el repositorio.</p>}{liveBranchUrl && <a className="text-link" href={liveBranchUrl} target="_blank" rel="noopener noreferrer">Ver rama informada por GitHub</a>}{resultMode === "live" && resultBranchUrl && !liveBranchUrl && <p>Referencia de la rama: <code>{resultBranchUrl}</code></p>}</>}
         </div>
       </div>
     </section>
@@ -407,7 +407,7 @@ export function QualityPage() {
         ) : <EmptyState title="Sin hallazgos para esta ejecución" message="La API no devolvió candidatos persistidos para la ejecución seleccionada." />)}
       </section>
 
-      <div className="quality-security-note"><Pill tone="neutral">Decisión humana explícita</Pill><span>La pantalla presenta hallazgos candidatos y evidencia acotada. Las decisiones protegidas las ejecuta el backend en modo live o sandbox; un artefacto sandbox no es una rama remota ni una Pull Request.</span></div>
+      <div className="quality-security-note"><Pill tone="neutral">Decisión del gestor</Pill><span>La pantalla presenta hallazgos candidatos y evidencia acotada. Las decisiones se aplican en la nube o localmente; un resultado local no crea cambios en el repositorio.</span></div>
       <FindingDetailDialog runId={findingDetails.runId} findingId={findingDetails.findingId} projectId={project.id} onClose={closeFinding} />
     </section>
   );

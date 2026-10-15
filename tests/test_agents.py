@@ -82,10 +82,10 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
 
     # --- Agent Implementations and Defaults ---
 
-    def test_project_monitoring_agent_uses_qwen_2b_default(self):
+    def test_project_monitoring_agent_uses_gemini_default(self):
         fake = FakeProvider()
         agent = ProjectMonitoringAgent(provider=fake)
-        self.assertEqual(agent.model, "qwen3.5:2b-q4_K_M")
+        self.assertEqual(agent.model, "gemini-3.5-flash-lite")
         draft = agent.run(
             project_id="proj-1",
             metrics=self.metrics,
@@ -96,10 +96,10 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
         # Priority order exposes active/blocked signals before completed tasks.
         self.assertIn("T2", draft.referenced_task_ids)
 
-    def test_code_quality_agent_uses_qwen_4b_default(self):
+    def test_code_quality_agent_uses_groq_default(self):
         fake = FakeProvider()
         agent = CodeQualityAgent(provider=fake)
-        self.assertEqual(agent.model, "qwen3.5:4b-q4_K_M")
+        self.assertEqual(agent.model, "llama-3.3-70b-versatile")
         draft = MonitoringDraft(
             summary="Progress steady",
             risks=[],
@@ -324,10 +324,10 @@ class AgentsAndGenerationTestCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             VerifierAgent(provider=fake, timeout_seconds=-5.0)
 
-    def test_report_agent_uses_2b_and_respects_deterministic_policy(self):
+    def test_report_agent_uses_gemini_and_respects_deterministic_policy(self):
         fake = FakeProvider()
         agent = ReportAgent(provider=fake)
-        self.assertEqual(agent.model, "qwen3.5:2b-q4_K_M")
+        self.assertEqual(agent.model, "gemini-3.5-flash-lite")
         draft = MonitoringDraft(
             summary="Progress 33.3%",
             risks=[],

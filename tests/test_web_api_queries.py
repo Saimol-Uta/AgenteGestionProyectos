@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from agente_gestion.api.app import ApiSettings, ProjectConfig, create_app
 from agente_gestion.api.settings import load_api_settings
+from agente_gestion.application import config as engine_config
 from tests.web_fixtures import (
     CODE_EVIDENCE_ID,
     EVIDENCE_SECRET,
@@ -33,6 +34,14 @@ def working_directory(path: Path):
         yield
     finally:
         os.chdir(original)
+
+
+@contextmanager
+def isolated_project_root(path: Path):
+    with patch.object(engine_config, "PROJECT_ROOT", path), patch(
+        "agente_gestion.api.settings.PROJECT_ROOT", path,
+    ):
+        yield
 
 
 class WebApiQueryTests(unittest.TestCase):
@@ -237,14 +246,15 @@ class WebApiQueryTests(unittest.TestCase):
     def test_missing_config_does_not_invent_public_projects(self):
         missing_db = Path(self.temp.name) / "missing-config.sqlite"
         missing_db_path = str(missing_db)
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_DB_PATH": missing_db_path,
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
         }, clear=True):
             self.assertNotIn("AGENTE_CONFIG_PATH", os.environ)
-            with working_directory(Path(self.temp.name)):
-                settings = load_api_settings()
+            with working_directory(Path(self.temp.name)), isolated_project_root(empty_root):
+                settings = load_api_settings(env_file=None)
             with TestClient(create_app(settings)) as client:
                 response = client.get("/api/v1/projects")
         self.assertEqual(response.status_code, 200)
@@ -256,13 +266,14 @@ class WebApiQueryTests(unittest.TestCase):
         malformed_config = Path(self.temp.name) / "malformed.yaml"
         malformed_config.write_text("project: [unterminated\n", encoding="utf-8")
         malformed_db = Path(self.temp.name) / "malformed-config.sqlite"
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_CONFIG_PATH": str(malformed_config),
             "AGENTE_DB_PATH": str(malformed_db),
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
-        }, clear=True):
-            settings = load_api_settings()
+        }, clear=True), isolated_project_root(empty_root):
+            settings = load_api_settings(env_file=None)
         with TestClient(create_app(settings)) as client:
             response = client.get("/api/v1/projects")
         self.assertEqual(response.status_code, 200)
@@ -271,14 +282,15 @@ class WebApiQueryTests(unittest.TestCase):
         self.assertFalse(malformed_db.exists())
 
     def test_missing_config_keeps_projects_discovered_from_existing_storage(self):
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_DB_PATH": str(self.fixture.database_path),
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
         }, clear=True):
             self.assertNotIn("AGENTE_CONFIG_PATH", os.environ)
-            with working_directory(Path(self.temp.name)):
-                settings = load_api_settings()
+            with working_directory(Path(self.temp.name)), isolated_project_root(empty_root):
+                settings = load_api_settings(env_file=None)
         with TestClient(create_app(settings)) as client:
             response = client.get("/api/v1/projects")
         self.assertEqual(response.status_code, 200)
@@ -297,14 +309,15 @@ class WebApiQueryTests(unittest.TestCase):
             f"db_path: {database_path}\nruns_dir: {self.temp.name}/runs\n",
             encoding="utf-8",
         )
+        empty_root = Path(self.temp.name) / "empty-config-root"
         with patch.dict(os.environ, {
             "AGENTE_CONFIG_PATH": str(config),
             "AGENTE_DB_PATH": "",
             "H5_OPERATOR_TOKEN": "",
             "H5_ALLOWED_ORIGINS": "http://testserver",
             "H5_ALLOWED_HOSTS": "testserver",
-        }, clear=True):
-            settings = load_api_settings()
+        }, clear=True), isolated_project_root(empty_root):
+            settings = load_api_settings(env_file=None)
         self.assertEqual(settings.projects[0].id, "HORMIGESTION")
         self.assertEqual(settings.projects[0].source_mode, "real")
         self.assertEqual(settings.db_path, str(database_path))

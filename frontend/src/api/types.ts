@@ -382,12 +382,17 @@ export interface ProviderPreflight {
   credential_status: "configured" | "missing" | "not_required";
 }
 
+export type AnalysisExecutionMode = "live" | "sandbox" | "mixed";
+
 export interface AnalysisPreparation {
   preparation_id: string;
   project_id: string;
   expires_at: string;
   configuration_fingerprint: string;
   eligible: boolean;
+  ready?: boolean;
+  execution_mode?: AnalysisExecutionMode;
+  fallback_reasons?: string[];
   capabilities: string[];
   preflight: {
     source_mode: string;
@@ -413,6 +418,8 @@ export interface AnalysisJob {
   run_id: string | null;
   error_code: string | null;
   remote_consent: boolean;
+  execution_mode?: AnalysisExecutionMode;
+  fallback_reasons?: string[];
 }
 
 export interface ConfirmAnalysisResponse {
@@ -428,6 +435,9 @@ export interface OperatorSession {
   csrf_token: string | null;
   capabilities: string[];
   login_available: boolean;
+  email?: string | null;
+  notification_email?: string | null;
+  role?: string | null;
 }
 
 export interface SystemHealth {

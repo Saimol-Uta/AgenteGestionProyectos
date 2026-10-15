@@ -83,6 +83,12 @@ def _lookup_outbox_message(request: Request, project_id: str, delivery_id: str):
     return None
 
 
+def _default_recipient(settings, session) -> str | None:
+    if session.role == "PROJECT_MANAGER" and session.email:
+        return session.email
+    return settings.manager_email
+
+
 def _response(
     project_id: str, receipt, recipient_email: str,
 ) -> ManagerEmailResponse:
@@ -121,6 +127,7 @@ def send_manager_email(
     )
     settings, _storage, outbox, service = _components(request)
     delivery_key = _api_key_material(request, project_id, idempotency_key)
+    default_recipient = _default_recipient(settings, session)
     fingerprint = service.request_fingerprint(
         project_id, body.recipient_email, body.outbox_delivery_id,
     )
@@ -131,7 +138,7 @@ def send_manager_email(
     if replay is not None:
         stored = _lookup_outbox_message(request, project_id, replay.delivery_id)
         stored_recipient = stored[1].recipient if stored is not None else None
-        replay_recipient = stored_recipient or body.recipient_email or settings.manager_email
+        replay_recipient = stored_recipient or body.recipient_email or default_recipient
         if replay_recipient is None:
             raise ApiProblem(503, "destinatario_recibo_no_disponible", "No se pudo recuperar el destinatario del recibo.")
         try:
@@ -147,7 +154,7 @@ def send_manager_email(
         if selected is None:
             raise ApiProblem(404, "recibo_outbox_no_encontrado", "No se encontró el recibo solicitado en este proyecto.")
         _source_receipt, source_message = selected
-        raw_recipient = body.recipient_email or settings.manager_email or source_message.recipient
+        raw_recipient = body.recipient_email or default_recipient or source_message.recipient
         if raw_recipient is None:
             raise ApiProblem(422, "destinatario_requerido", "Indique un correo destinatario configurado para el gestor.")
         try:
@@ -162,7 +169,7 @@ def send_manager_email(
             delivery_fingerprint=fingerprint,
         )
     else:
-        raw_recipient = body.recipient_email or settings.manager_email
+        raw_recipient = body.recipient_email or default_recipient
         if raw_recipient is None:
             raise ApiProblem(422, "destinatario_requerido", "Indique un correo destinatario configurado para el gestor.")
         try:

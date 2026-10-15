@@ -28,6 +28,7 @@ from agente_gestion.adapters.sources.github import (
 from agente_gestion.adapters.sources.actions import GitHubActionsSourceAdapter
 from agente_gestion.adapters.sources.local_policy import LocalYamlPolicyAdapter
 from agente_gestion.adapters.sources.composite import CompositeSourcesAdapter
+from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.sources.http_transport import (
     HttpGetTransportPort,
     HttpResponse,
@@ -208,6 +209,12 @@ class CLISourceCheckTestCase(unittest.TestCase):
     """Tests for CLI source-check and source mode flag handling."""
 
     def setUp(self):
+        network_guard = patch(
+            "requests.sessions.Session.send",
+            side_effect=AssertionError("External HTTP is forbidden in CLI source tests"),
+        )
+        self.http_send = network_guard.start()
+        self.addCleanup(network_guard.stop)
         self.temp_dir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.temp_dir, "test.db")
         self.runs_dir = os.path.join(self.temp_dir, "runs")
@@ -243,8 +250,8 @@ class CLISourceCheckTestCase(unittest.TestCase):
         self.assertIn("source-check", out)
         self.assertIn("run", out)
 
-    def test_cli_run_real_missing_config_fails_safely_exit_2(self):
-        """CLI run in real mode with missing Trello config fails early with exit 2 and safe error."""
+    def test_cli_real_missing_remote_sources_completes_with_persisted_sandbox_run(self):
+        """Missing source/model credentials use deterministic local adapters without HTTP."""
         cmd = [
             "run",
             "test-proj",
@@ -253,24 +260,29 @@ class CLISourceCheckTestCase(unittest.TestCase):
             "--db-path", self.db_path,
             "--output-dir", self.runs_dir,
         ]
-        fake_tr = FakeTransport()
+        stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
-        with patch("agente_gestion.adapters.sources.factory.BoundedGetTransport", return_value=fake_tr):
-            with patch.object(sys, "argv", ["agente_gestion"] + cmd), patch("sys.stderr", stderr_capture):
-                exit_code = main()
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("agente_gestion.adapters.sources.factory.BoundedGetTransport") as transport, \
+             patch.object(sys, "argv", ["agente_gestion"] + cmd), \
+             patch("sys.stdout", stdout_capture), patch("sys.stderr", stderr_capture):
+            exit_code = main()
 
-        self.assertEqual(exit_code, 2)
-        err = stderr_capture.getvalue()
-        self.assertIn("source configuration failed for 'trello'", err.lower())
-        self.assertIn("configuration", err.lower())
-        self.assertNotIn("traceback", err.lower())
-        self.assertNotIn("pydantic", err.lower())
-        self.assertEqual(len(fake_tr.calls), 0)
-        self.assertEqual(len(os.listdir(self.runs_dir)), 0)
-        import sqlite3
-        with sqlite3.connect(self.db_path) as conn:
-            run_count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
-        self.assertEqual(run_count, 0)
+        self.assertEqual(exit_code, 0, stderr_capture.getvalue())
+        self.assertEqual(stderr_capture.getvalue(), "")
+        transport.assert_not_called()
+        output = stdout_capture.getvalue()
+        self.assertIn("sandbox-monitoring", output)
+        self.assertIn("sandbox-quality", output)
+        self.assertIn("sandbox-verifier", output)
+        self.assertIn("sandbox-report", output)
+
+        persisted = SQLiteStorageAdapter(db_path=self.db_path)
+        runs = persisted.get_all_runs_for_project("test-proj")
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].is_simulated)
+        self.assertIn(runs[0].status.value, {"awaiting_human", "completed"})
+        self.assertIsNotNone(persisted.get_latest_report("test-proj"))
 
     def test_cli_explicit_real_and_fixture_contradiction_rejected(self):
         """Conflicting explicit --sources real and --fixture must be rejected early."""
@@ -367,13 +379,16 @@ class CLISourceCheckTestCase(unittest.TestCase):
             "--sources", "real",
             "--config", gh_config_path,
         ]
+        fake_tr = FakeTransport()
         stdout_capture = io.StringIO()
-        with patch.object(sys, "argv", ["agente_gestion"] + cmd), patch("sys.stdout", stdout_capture):
-            exit_code = main()
+        with patch("agente_gestion.adapters.sources.factory.BoundedGetTransport", return_value=fake_tr):
+            with patch.object(sys, "argv", ["agente_gestion"] + cmd), patch("sys.stdout", stdout_capture):
+                exit_code = main()
         self.assertNotEqual(exit_code, 0)
         out = stdout_capture.getvalue()
         self.assertIn("failed", out.lower())
         self.assertIn("configuration", out.lower())
+        self.assertEqual(fake_tr.calls, [], "Actions must be rejected before transport without explicit --commit")
 
     def test_cli_source_check_real_never_leaks_payload_or_secrets(self):
         """Ensures source-check output contains no card descriptions, patches, or secrets."""

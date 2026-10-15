@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { ArrowRight, Clock3, FileSearch, GitCommitHorizontal } from "lucide-react";
-import { formatDate, formatDurationSeconds, runStatusLabel, stageNameLabel, stageStatusLabel } from "../../api/formatters";
+import { formatDate, formatDurationSeconds, providerAttemptLabel, runStatusLabel, stageNameLabel, stageStatusLabel } from "../../api/formatters";
 import { useRun, useRunEvidence, useRunStages } from "../../api/queries";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 import type { StageView } from "../../api/types";
@@ -24,26 +24,25 @@ function StageCard({ stage }: { stage: StageView }) {
     <article className="stage-card">
       <div className="stage-card-heading">
         <div>
-          <p className="eyebrow">ETAPA PERSISTIDA</p>
+          <p className="eyebrow">PASO REGISTRADO</p>
           <h3>{stageNameLabel(stage.stage_name)}</h3>
-          <code>{stage.stage_name}</code>
         </div>
-        <div className="stage-status-stack"><Pill tone={tone}>{status}</Pill><code>{stage.status}</code></div>
+        <div className="stage-status-stack"><Pill tone={tone}>{status}</Pill></div>
       </div>
       <dl className="stage-facts">
         <div><dt>Duración</dt><dd>{formatDurationSeconds(stage.duration_seconds)}</dd></div>
         <div><dt>Finalizada</dt><dd>{stage.completed_at ? formatDate(stage.completed_at, true) : "Sin fecha registrada"}</dd></div>
       </dl>
       {stage.result_summary && <p className="stage-summary">{stage.result_summary}</p>}
-      {stage.error_code && <p className="stage-error">Código seguro del backend: <code>{stage.error_code}</code></p>}
+      {stage.error_code && <p className="stage-error">Esta etapa no se completó correctamente. Revisa las evidencias disponibles antes de continuar.</p>}
       <div className="provider-attempts">
-        <h4>Proveedor y modelo registrados</h4>
+        <h4>Servicios utilizados</h4>
         {stage.providers === null ? <p>Sin intentos de proveedor registrados.</p> : stage.providers.length === 0 ? <p>La etapa no reporta intentos de proveedor.</p> : (
           <ul>
             {stage.providers.map((attempt, index) => (
               <li key={`${attempt.provider}-${attempt.model}-${index}`}>
-                <span>{attempt.provider} · {attempt.model}</span>
-                <span>Estado: {attempt.status}</span>
+                <span>{providerAttemptLabel(attempt.provider, attempt.model)}</span>
+                <span>Resultado: {attempt.status === "succeeded" ? "Completado" : attempt.status === "failed" ? "No completado" : "Sin confirmar"}</span>
                 <span>Intentos: {attempt.attempt_count}</span>
                 <span>Duración: {formatDurationSeconds(attempt.duration_seconds)}</span>
               </li>
@@ -72,7 +71,7 @@ export function RunDetailPanel({ runId, onClose }: { runId: string; onClose: () 
         <div>
           <p className="eyebrow">DETALLE PERSISTIDO</p>
           <h2 id="run-detail-heading">Ejecución {run.run_id}</h2>
-          <p className="section-subtitle">Estado: {runStatusLabel(run.status)} · identificador de dominio: <code>{run.status}</code></p>
+          <p className="section-subtitle">Estado: {runStatusLabel(run.status)}</p>
         </div>
         <button className="button button-secondary" type="button" onClick={onClose}>Cerrar detalle</button>
       </div>
@@ -86,24 +85,24 @@ export function RunDetailPanel({ runId, onClose }: { runId: string; onClose: () 
         <div><dt>Simulación</dt><dd>{run.is_simulated === null ? "Sin dato" : run.is_simulated ? "Sí" : "No"}</dd></div>
         <div><dt>Informe asociado</dt><dd>{run.report_id ?? "Sin informe informado"}</dd></div>
       </dl>
-      {run.error_code && <p className="stage-error">Código seguro del backend: <code>{run.error_code}</code></p>}
+      {run.error_code && <p className="stage-error">El análisis registró un problema. Revisa las evidencias o solicita ayuda al administrador del proyecto.</p>}
 
       <section className="run-detail-section" aria-labelledby="stages-heading">
         <div className="section-heading compact-heading">
-          <div><p className="eyebrow">PIPELINE</p><h3 id="stages-heading">Etapas registradas</h3></div>
+          <div><p className="eyebrow">PASOS DEL ANÁLISIS</p><h3 id="stages-heading">Etapas registradas</h3></div>
           <span className="caption">Las ausencias no se interpretan como omisiones.</span>
         </div>
         {stagesQuery.isPending && <LoadingState label="Consultando registros de etapa…" />}
         {stagesQuery.isError && <ErrorState title="No se pudieron cargar las etapas" message={stagesQuery.error.message} onRetry={() => void stagesQuery.refetch()} />}
         {stagesQuery.data && (stagesQuery.data.items.length ? (
           <div className="stage-grid">{stagesQuery.data.items.map((stage) => <StageCard key={stage.stage_name} stage={stage} />)}</div>
-        ) : <EmptyState title="Sin registros de etapas" message="La API no devolvió etapas persistidas para esta ejecución." />)}
+        ) : <EmptyState title="Sin pasos registrados" message="Aún no hay pasos guardados para este análisis." />)}
       </section>
 
       <section className="run-detail-section" aria-labelledby="evidence-heading">
         <div className="section-heading compact-heading">
           <div><p className="eyebrow">EVIDENCIA SEGURA</p><h3 id="evidence-heading">Evidencias vinculadas</h3></div>
-          <span className="caption">Resumen redactado por el backend; no se descargan artefactos.</span>
+          <span className="caption">Se muestran resúmenes seguros; no se exponen archivos del proyecto.</span>
         </div>
         {evidenceQuery.isPending && <LoadingState label="Consultando referencias de evidencia…" />}
         {evidenceQuery.isError && <ErrorState title="No se pudieron cargar las referencias" message={evidenceQuery.error.message} onRetry={() => void evidenceQuery.refetch()} />}
@@ -123,7 +122,7 @@ export function RunDetailPanel({ runId, onClose }: { runId: string; onClose: () 
               </li>
             ))}
           </ul>
-        ) : <EmptyState title="Sin evidencias reportadas" message="La consulta no encontró referencias persistidas para esta ejecución." />)}
+        ) : <EmptyState title="Sin evidencias registradas" message="Este análisis no contiene evidencias disponibles para consultar." />)}
       </section>
 
       <div className="run-detail-footer">

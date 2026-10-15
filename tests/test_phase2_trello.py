@@ -65,6 +65,27 @@ class TrelloPriorityAdapterTests(unittest.TestCase):
                 )
         mock_put.assert_not_called()
 
+    def test_write_permission_is_read_only_and_rejects_observers_or_denied_access(self):
+        adapter = TrelloActionAdapter(board_id="board-1", api_key="fixture-key", token="fixture-token")
+        for role, expected in (("normal", True), ("admin", True), ("observer", False)):
+            with self.subTest(role=role):
+                payloads = [
+                    {"id": "member-1"}, {"id": "board-1", "closed": False},
+                    [{"idMember": "member-1", "memberType": role, "deactivated": False}],
+                ]
+                responses = [MagicMock(status_code=200) for _ in payloads]
+                for response, payload in zip(responses, payloads):
+                    response.json.return_value = payload
+                with patch("requests.get", side_effect=responses) as read, patch("requests.put") as write:
+                    self.assertEqual(adapter.has_write_permission(), expected)
+                self.assertEqual(read.call_count, 3)
+                self.assertTrue(all(call.kwargs["allow_redirects"] is False for call in read.call_args_list))
+                write.assert_not_called()
+        with patch("requests.get", return_value=MagicMock(status_code=403)) as read, patch("requests.put") as write:
+            self.assertFalse(adapter.has_write_permission())
+        self.assertEqual(read.call_count, 1)
+        write.assert_not_called()
+
     def test_existing_direct_execution_contract_still_rejects_unmapped_priority(self):
         adapter = TrelloActionAdapter(board_id="board-1", api_key="fixture-key", token="fixture-token")
         self.assertNotIn("priority", adapter.supported_fields())
@@ -80,17 +101,21 @@ class ProposalExecutionServiceTests(unittest.TestCase):
             source_mode="fixtures", external_writes_enabled=True,
             trello_api_key=None, trello_token=None,
         ), "sandbox")
-        with self.assertRaises(ProposalExecutionError):
-            ProposalExecutionService.execution_mode_for(
-                source_mode="real", external_writes_enabled=True,
-                trello_api_key="fixture-key", trello_token=None,
-            )
+        self.assertEqual(ProposalExecutionService.execution_mode_for(
+            source_mode="real", external_writes_enabled=True,
+            trello_api_key="fixture-key", trello_token=None,
+        ), "sandbox")
 
 
 class ProposalExecutionApiTests(unittest.TestCase):
     PROJECT = "board-1"
     OPERATOR_TOKEN = "fixture-operator-token-with-more-than-32-characters"
     LABELS = {"alta": "label-high", "media": "label-medium", "baja": "label-low"}
+
+    def setUp(self):
+        permission = patch.object(TrelloActionAdapter, "has_write_permission", return_value=True)
+        permission.start()
+        self.addCleanup(permission.stop)
 
     def _client(self, *, source_mode="fixtures", external_writes_enabled=False,
                 priority_labels=None, field="due_date", operator_project_ids=None,
@@ -293,6 +318,40 @@ class ProposalExecutionApiTests(unittest.TestCase):
                     self._assert_human_reason_is_auditable(storage, client, response, reason)
                 finally:
                     client.close()
+
+    def test_real_project_without_credentials_uses_sandbox_without_provider_requests(self):
+        temporary, client, csrf, _storage = self._client(source_mode="real", external_writes_enabled=True)
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(client.close)
+        client.app.state.settings = client.app.state.settings.model_copy(update={
+            "trello_api_key": None, "trello_token": None,
+        })
+        with patch("requests.get") as read, patch("requests.put") as write:
+            response = self._execute(client, csrf)
+            replay = self._execute(client, csrf)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["execution_mode"], "sandbox")
+        self.assertEqual(response.json()["execution"]["status"], "SIMULATED")
+        self.assertFalse(response.json()["execution"]["live_state_changed"])
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["replayed"])
+        read.assert_not_called()
+        write.assert_not_called()
+
+    def test_real_project_without_write_permission_uses_sandbox_before_mutation(self):
+        temporary, client, csrf, _storage = self._client(source_mode="real", external_writes_enabled=True)
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(client.close)
+        with patch.object(TrelloActionAdapter, "has_write_permission", return_value=False, create=True) as permission, \
+             patch("requests.get") as read, patch("requests.put") as write:
+            response = self._execute(client, csrf)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["execution_mode"], "sandbox")
+        self.assertEqual(response.json()["execution"]["status"], "SIMULATED")
+        self.assertFalse(response.json()["execution"]["live_state_changed"])
+        permission.assert_called_once_with()
+        read.assert_not_called()
+        write.assert_not_called()
 
     def test_fixture_execute_is_explicitly_simulated_and_replay_is_durable(self):
         temporary, client, csrf, storage = self._client()

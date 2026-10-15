@@ -1,18 +1,23 @@
-"""Explicit API settings; this module never loads dotenv files or starts services."""
+"""API configuration with project-root dotenv defaults and explicit environment overrides."""
 
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
+from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 from agente_gestion.domain.tasks import validate_due_soon_days
 from agente_gestion.domain.weekly_schedule import WeeklySchedule
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -44,19 +49,20 @@ class ApiSettings(BaseModel):
     projects: tuple[ProjectConfig, ...] = ()
     timezone: str = "America/Guayaquil"
     due_soon_days: int = Field(default=7, ge=0)
-    analysis_enabled: bool = False
+    analysis_enabled: bool = True
     analysis_config_path: str | None = Field(default=None, repr=False)
+    analysis_env_file: str | None = Field(default=None, repr=False, exclude=True)
     job_ledger_path: str = Field(default=".runtime/h5-web-jobs.sqlite", repr=False)
     analysis_queue_capacity: int = Field(default=3, ge=1, le=10)
     analysis_prepare_ttl_seconds: int = Field(default=300, ge=30, le=900)
-    governance_enabled: bool = False
-    report_decisions_enabled: bool = False
-    weekly_cycle_enabled: bool = False
+    governance_enabled: bool = True
+    report_decisions_enabled: bool = True
+    weekly_cycle_enabled: bool = True
     weekly_schedule: WeeklySchedule | None = Field(default=None, repr=False)
     weekly_schedule_status: Literal["configured", "not_configured", "incomplete", "invalid"] = "not_configured"
 
-    # External mutations remain opt-in, independent of local governance permissions.
-    external_writes_enabled: bool = False
+    # External mutation permission is a server default; adapters still require live credentials and binding.
+    external_writes_enabled: bool = True
     github_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
     github_repository: str | None = None
     github_base_branch: str = "main"
@@ -65,7 +71,12 @@ class ApiSettings(BaseModel):
     trello_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
     trello_priority_labels: dict[str, dict[str, str]] = Field(default_factory=dict)
     trello_board_ids: dict[str, str] = Field(default_factory=dict)
+    trello_board_bindings_explicit: bool = Field(default=False, repr=False, exclude=True)
     manager_email: str | None = None
+    manager_login_email: str | None = "gestor@hormigestion.ec"
+    manager_login_password: SecretStr | None = Field(
+        default=SecretStr("HormiGestion2026!"), repr=False, exclude=True,
+    )
     smtp_host: str | None = None
     smtp_port: int = Field(default=587, ge=1, le=65535)
     smtp_user: SecretStr | None = Field(default=None, repr=False, exclude=True)
@@ -77,6 +88,13 @@ class ApiSettings(BaseModel):
     def valid_manager_email(cls, value: str | None) -> str | None:
         if value is not None and not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+", value):
             raise ValueError("El correo del gestor no es válido.")
+        return value
+
+    @field_validator("manager_login_email")
+    @classmethod
+    def valid_manager_login_email(cls, value: str | None) -> str | None:
+        if value not in {None, ""} and not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+", value):
+            raise ValueError("El correo de acceso del gestor no es válido.")
         return value
 
     @field_validator("github_repository")
@@ -197,8 +215,8 @@ class ApiSettings(BaseModel):
         return cleaned
 
 
-def _bool_setting(name: str, fallback: bool = False) -> bool:
-    supplied = os.environ.get(name)
+def _bool_setting(name: str, fallback: bool = False, *, environ: Mapping[str, str]) -> bool:
+    supplied = environ.get(name)
     if supplied is None:
         return fallback
     normalized = supplied.strip().lower()
@@ -209,25 +227,75 @@ def _bool_setting(name: str, fallback: bool = False) -> bool:
     raise ValueError(f"{name} debe ser true o false.")
 
 
-def _csv_setting(name: str, fallback: list[str]) -> tuple[str, ...]:
-    supplied = os.environ.get(name)
+def _csv_setting(name: str, fallback: list[str], *, environ: Mapping[str, str]) -> tuple[str, ...]:
+    supplied = environ.get(name)
     if supplied is None:
         return tuple(fallback)
     return tuple(part.strip() for part in supplied.split(",") if part.strip())
 
 
+class _ConfigurationAliasError(ValueError):
+    pass
+
+
+def _validate_alias_pair(
+    values: Mapping[str, object], first: str, second: str, description: str,
+) -> None:
+    first_value, second_value = values.get(first), values.get(second)
+    if (first_value not in (None, "") and second_value not in (None, "")
+            and first_value != second_value):
+        raise _ConfigurationAliasError(f"Contradictory {description} aliases: {first} and {second} do not match.")
+
+
+def _validate_environment_aliases(values: Mapping[str, str]) -> None:
+    normalized = {key.upper(): value for key, value in values.items()}
+    _validate_alias_pair(normalized, "GITHUB_REPO", "GITHUB_REPOSITORY", "GitHub repository")
+    _validate_alias_pair(normalized, "GITHUB_BRANCH", "GITHUB_REF", "GitHub branch")
+
+
+def _validate_yaml_aliases(document: Mapping[str, object]) -> None:
+    _validate_alias_pair(document, "github_repo", "github_repository", "GitHub repository")
+    _validate_alias_pair(document, "github_branch", "github_ref", "GitHub branch")
+    sources = document.get("sources")
+    github = sources.get("github") if isinstance(sources, Mapping) else None
+    if isinstance(github, Mapping):
+        _validate_alias_pair(github, "repo", "repository", "GitHub repository")
+        _validate_alias_pair(github, "branch", "ref", "GitHub branch")
+
+
+def _merge_yaml_documents(config_paths: tuple[Path, ...]) -> dict[str, object]:
+    """Merge project YAML layers without ever treating dotenv files as YAML."""
+    def merge(left: dict[str, object], right: Mapping[str, object]) -> dict[str, object]:
+        result = dict(left)
+        for key, value in right.items():
+            previous = result.get(key)
+            if isinstance(previous, dict) and isinstance(value, Mapping):
+                result[key] = merge(previous, value)
+            else:
+                result[key] = value
+        return result
+
+    document: dict[str, object] = {}
+    for config_path in config_paths:
+        resolved_name = config_path.resolve(strict=False).name
+        if config_path.name.startswith(".env") or resolved_name.startswith(".env"):
+            continue
+        if not config_path.is_file():
+            continue
+        with config_path.open("r", encoding="utf-8") as stream:
+            file_data = yaml.safe_load(stream)
+        if isinstance(file_data, dict):
+            _validate_yaml_aliases(file_data)
+            document = merge(document, file_data)
+    return document
+
+
 def _configured_project(
-    config_path: Path,
+    config_paths: tuple[Path, ...],
 ) -> tuple[str | None, str | None, str, int, str, str, str] | None:
-    """Read only the project/storage values needed by the web query layer."""
-    resolved_name = config_path.resolve(strict=False).name
-    if config_path.name.startswith(".env") or resolved_name.startswith(".env"):
-        return None
-    if not config_path.is_file():
-        return None
-    with config_path.open("r", encoding="utf-8") as stream:
-        document = yaml.safe_load(stream)
-    if not isinstance(document, dict):
+    """Read layered project/storage values needed by the web query layer."""
+    document = _merge_yaml_documents(config_paths)
+    if not document:
         return None
     project = document.get("project") if isinstance(document.get("project"), dict) else {}
     sources = document.get("sources") if isinstance(document.get("sources"), dict) else {}
@@ -258,7 +326,7 @@ def _configured_project(
     return project_id, name, source_mode, due_soon_days, timezone_name, db_path, runs_dir
 
 
-def _configured_weekly_schedule() -> tuple[WeeklySchedule | None, str]:
+def _configured_weekly_schedule(environ: Mapping[str, str]) -> tuple[WeeklySchedule | None, str]:
     names = {
         "project_id": "H5_WEEKLY_SCHEDULE_PROJECT_ID",
         "weekday": "H5_WEEKLY_SCHEDULE_WEEKDAY",
@@ -266,7 +334,7 @@ def _configured_weekly_schedule() -> tuple[WeeklySchedule | None, str]:
         "timezone": "H5_WEEKLY_SCHEDULE_TIMEZONE",
         "window_rule": "H5_WEEKLY_SCHEDULE_WINDOW_RULE",
     }
-    supplied = {field: os.environ.get(name) for field, name in names.items()}
+    supplied = {field: environ.get(name) for field, name in names.items()}
     if not any(value is not None for value in supplied.values()):
         return None, "not_configured"
     if any(value is None or not value.strip() for value in supplied.values()):
@@ -280,72 +348,174 @@ def _configured_weekly_schedule() -> tuple[WeeklySchedule | None, str]:
     return schedule, "configured"
 
 
-def load_api_settings() -> ApiSettings:
-    """Build production settings without dotenv, provider calls, or DB access."""
-    config_path = Path(os.environ.get("AGENTE_CONFIG_PATH", "config/hormigestion.yaml"))
+def load_api_settings(*, env_file: str | Path | None = ".env") -> ApiSettings:
+    """Load the project's YAML layers, root dotenv defaults, then process overrides."""
+    dotenv_path: Path | None = None
+    file_values: dict[str, str] = {}
+    if env_file is not None:
+        dotenv_path = Path(env_file)
+        if not dotenv_path.is_absolute():
+            dotenv_path = PROJECT_ROOT / dotenv_path
+        if dotenv_path.is_file():
+            file_values = {
+                key: value for key, value in dotenv_values(dotenv_path).items()
+                if value is not None
+            }
+    _validate_environment_aliases(file_values)
+    _validate_environment_aliases(os.environ)
+    environ = {**file_values, **os.environ}
+
+    selected_config = environ.get("AGENTE_CONFIG_PATH")
+    selected_path = Path(selected_config) if selected_config else None
+    if selected_path is not None and not selected_path.is_absolute():
+        selected_path = PROJECT_ROOT / selected_path
+    project_path = PROJECT_ROOT / "config" / "hormigestion.yaml"
+
     try:
-        configured = _configured_project(config_path)
-    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        from agente_gestion.application.config import (
+            Settings as EngineSettings,
+            _yaml_configuration_paths,
+        )
+
+        layered_paths = _yaml_configuration_paths(PROJECT_ROOT, selected_path)
+        document = _merge_yaml_documents(layered_paths)
+        configured = _configured_project(layered_paths)
+        engine = EngineSettings.from_env_and_file(
+            config_path=str(selected_path) if selected_path is not None else None,
+            _env_file=str(dotenv_path) if env_file is not None and dotenv_path is not None else None,
+        )
+    except _ConfigurationAliasError:
+        raise
+    except (OSError, TypeError, ValueError, ValidationError, yaml.YAMLError):
+        document = {}
         configured = None
-    if configured is None:
+        engine = None
+
+    if configured is None or engine is None:
         project_id = project_name = None
         source_mode, due_soon_days, timezone_name = "fixtures", 7, "America/Guayaquil"
         configured_db_path, runs_dir = ".runtime/agente.db", "runs"
     else:
-        (project_id, project_name, source_mode, due_soon_days, timezone_name,
-         configured_db_path, runs_dir) = configured
-    configured_path = os.environ.get("AGENTE_DB_PATH")
-    db_path = configured_path or configured_db_path
+        (_yaml_project_id, yaml_project_name, _yaml_source_mode, _yaml_due_days,
+         _yaml_timezone, _yaml_db_path, _yaml_runs_dir) = configured
+        project_id = engine.project_id
+        project = document.get("project") if isinstance(document.get("project"), dict) else {}
+        project_name = str(project.get("name", yaml_project_name or project_id))
+        if project.get("id") not in (None, project_id):
+            project_name = project_id
+        source_mode = engine.source_mode
+        due_soon_days = engine.due_soon_days
+        timezone_name = engine.timezone
+        configured_db_path, runs_dir = engine.db_path, engine.runs_dir
 
     configured_project = None
     if project_id is not None and IDENTIFIER_PATTERN.fullmatch(project_id) and project_name is not None:
         try:
-            configured_project = ProjectConfig(
-                id=project_id, name=project_name, source_mode=source_mode,
-            )
+            configured_project = ProjectConfig(id=project_id, name=project_name, source_mode=source_mode)
         except ValidationError:
-            pass
-    operator_token = os.environ.get("H5_OPERATOR_TOKEN")
-    weekly_schedule, weekly_schedule_status = _configured_weekly_schedule()
+            configured_project = None
+
+    if engine is not None:
+        github_token = engine.github_token
+        repository = (
+            f"{engine.github_owner}/{engine.github_repo}"
+            if engine.github_owner and engine.github_repo else None
+        )
+        trello_api_key, trello_token = engine.trello_api_key, engine.trello_token
+        board_id = engine.trello_board_id
+    else:
+        github_token = SecretStr(environ["GITHUB_TOKEN"]) if environ.get("GITHUB_TOKEN") else None
+        repository = environ.get("GITHUB_REPOSITORY") or environ.get("GITHUB_REPO") or None
+        trello_api_key = SecretStr(environ["TRELLO_API_KEY"]) if environ.get("TRELLO_API_KEY") else None
+        trello_token = SecretStr(environ["TRELLO_TOKEN"]) if environ.get("TRELLO_TOKEN") else None
+        board_id = None
+
+    mapping_explicit = "TRELLO_BOARD_IDS" in environ or "trello_board_ids" in document
+    if "TRELLO_BOARD_IDS" in environ:
+        trello_board_ids = json.loads(environ["TRELLO_BOARD_IDS"])
+    else:
+        raw_mapping = document.get("trello_board_ids", {})
+        if not isinstance(raw_mapping, dict):
+            raise ValueError("TRELLO_BOARD_IDS debe ser un objeto JSON o mapa YAML.")
+        trello_board_ids = dict(raw_mapping)
+    if not mapping_explicit and board_id and project_id:
+        trello_board_ids = {project_id: board_id}
+
+    if "TRELLO_PRIORITY_LABELS" in environ:
+        trello_priority_labels = json.loads(environ["TRELLO_PRIORITY_LABELS"])
+    else:
+        raw_labels = document.get("trello_priority_labels", {})
+        if not isinstance(raw_labels, dict):
+            raise ValueError("TRELLO_PRIORITY_LABELS debe ser un objeto JSON o mapa YAML.")
+        trello_priority_labels = dict(raw_labels)
+
+    external_writes_default = document.get("external_writes_enabled", True)
+    if isinstance(external_writes_default, str):
+        normalized_external_writes = external_writes_default.strip().lower()
+        if normalized_external_writes in {"true", "1", "yes", "on"}:
+            external_writes_default = True
+        elif normalized_external_writes in {"false", "0", "no", "off"}:
+            external_writes_default = False
+        else:
+            raise ValueError("external_writes_enabled debe ser true o false.")
+    if not isinstance(external_writes_default, bool):
+        raise ValueError("external_writes_enabled debe ser true o false.")
+
+    operator_token = environ.get("H5_OPERATOR_TOKEN")
+    weekly_schedule, weekly_schedule_status = _configured_weekly_schedule(environ)
     if weekly_schedule is not None and (
         configured_project is None or weekly_schedule.project_id != configured_project.id
     ):
         weekly_schedule, weekly_schedule_status = None, "invalid"
+
+    selected_analysis_config = selected_path or project_path
+    configured_db_override = environ.get("AGENTE_DB_PATH")
+    db_path = configured_db_override.strip() if configured_db_override and configured_db_override.strip() else configured_db_path
     return ApiSettings(
         db_path=db_path,
-        runs_dir=os.environ.get("AGENTE_RUNS_DIR", runs_dir),
-        outbox_dir=os.environ.get("H5_OUTBOX_DIR", ".runtime/outbox"),
+        runs_dir=environ.get("AGENTE_RUNS_DIR", runs_dir),
+        outbox_dir=environ.get("H5_OUTBOX_DIR", ".runtime/outbox"),
         projects=(configured_project,) if configured_project is not None else (),
         timezone=timezone_name,
         due_soon_days=due_soon_days,
-        analysis_enabled=_bool_setting("H5_ANALYSIS_ENABLED", False),
-        governance_enabled=_bool_setting("H5_GOVERNANCE_ENABLED", False),
-        report_decisions_enabled=_bool_setting("H5_REPORT_DECISIONS_ENABLED", False),
-        weekly_cycle_enabled=_bool_setting("H5_WEEKLY_CYCLE_ENABLED", False),
+        analysis_enabled=_bool_setting("H5_ANALYSIS_ENABLED", True, environ=environ),
+        governance_enabled=_bool_setting("H5_GOVERNANCE_ENABLED", True, environ=environ),
+        report_decisions_enabled=_bool_setting("H5_REPORT_DECISIONS_ENABLED", True, environ=environ),
+        weekly_cycle_enabled=_bool_setting("H5_WEEKLY_CYCLE_ENABLED", True, environ=environ),
         weekly_schedule=weekly_schedule,
         weekly_schedule_status=weekly_schedule_status,
-        external_writes_enabled=_bool_setting("EXTERNAL_WRITES_ENABLED", False),
-        github_token=SecretStr(os.environ["GITHUB_TOKEN"]) if os.environ.get("GITHUB_TOKEN") else None,
-        github_repository=os.environ.get("GITHUB_REPOSITORY") or None,
-        github_base_branch=os.environ.get("GITHUB_BASE_BRANCH", "main"),
-        branches_dir=os.environ.get("BRANCHES_DIR", ".runtime/branches"),
-        trello_api_key=SecretStr(os.environ["TRELLO_API_KEY"]) if os.environ.get("TRELLO_API_KEY") else None,
-        trello_token=SecretStr(os.environ["TRELLO_TOKEN"]) if os.environ.get("TRELLO_TOKEN") else None,
-        trello_priority_labels=json.loads(os.environ.get("TRELLO_PRIORITY_LABELS", "{}")),
-        trello_board_ids=json.loads(os.environ.get("TRELLO_BOARD_IDS", "{}")),
-        manager_email=os.environ.get("MANAGER_EMAIL") or None,
-        smtp_host=os.environ.get("SMTP_HOST") or None,
-        smtp_port=int(os.environ.get("SMTP_PORT", "587")),
-        smtp_user=SecretStr(os.environ["SMTP_USER"]) if os.environ.get("SMTP_USER") else None,
-        smtp_password=SecretStr(os.environ["SMTP_PASSWORD"]) if os.environ.get("SMTP_PASSWORD") else None,
-        smtp_use_tls=_bool_setting("SMTP_USE_TLS", True),
-        analysis_config_path=str(config_path),
-        job_ledger_path=os.environ.get("H5_WEB_JOBS_DB_PATH", ".runtime/h5-web-jobs.sqlite"),
+        external_writes_enabled=_bool_setting(
+            "EXTERNAL_WRITES_ENABLED", external_writes_default, environ=environ,
+        ),
+        github_token=github_token,
+        github_repository=repository,
+        github_base_branch=environ.get("GITHUB_BASE_BRANCH", "main"),
+        branches_dir=environ.get("BRANCHES_DIR", ".runtime/branches"),
+        trello_api_key=trello_api_key,
+        trello_token=trello_token,
+        trello_priority_labels=trello_priority_labels,
+        trello_board_ids=trello_board_ids,
+        trello_board_bindings_explicit=mapping_explicit,
+        manager_email=environ.get("MANAGER_EMAIL") or document.get("manager_email") or None,
+        manager_login_email=environ.get(
+            "MANAGER_LOGIN_EMAIL", str(document.get("manager_login_email", "gestor@hormigestion.ec")),
+        ),
+        manager_login_password=SecretStr(
+            environ.get("MANAGER_LOGIN_PASSWORD", str(document.get("manager_login_password", "HormiGestion2026!")))
+        ),
+        smtp_host=environ.get("SMTP_HOST") or None,
+        smtp_port=int(environ.get("SMTP_PORT", "587")),
+        smtp_user=SecretStr(environ["SMTP_USER"]) if environ.get("SMTP_USER") else None,
+        smtp_password=SecretStr(environ["SMTP_PASSWORD"]) if environ.get("SMTP_PASSWORD") else None,
+        smtp_use_tls=_bool_setting("SMTP_USE_TLS", True, environ=environ),
+        analysis_config_path=str(selected_analysis_config),
+        analysis_env_file=str(dotenv_path) if env_file is not None and dotenv_path is not None else None,
+        job_ledger_path=environ.get("H5_WEB_JOBS_DB_PATH", ".runtime/h5-web-jobs.sqlite"),
         operator_token=SecretStr(operator_token) if operator_token else None,
-        operator_actor=os.environ.get("H5_OPERATOR_ACTOR", "operador-local"),
+        operator_actor=environ.get("H5_OPERATOR_ACTOR", "operador-local"),
         operator_project_ids=(configured_project.id,) if configured_project is not None else (),
-        allowed_origins=_csv_setting("H5_ALLOWED_ORIGINS", DEFAULT_ORIGINS),
-        allowed_hosts=_csv_setting("H5_ALLOWED_HOSTS", DEFAULT_HOSTS),
-        session_ttl_seconds=int(os.environ.get("H5_SESSION_TTL_SECONDS", "3600")),
-        session_cookie_secure=os.environ.get("H5_SESSION_COOKIE_SECURE", "false").lower() == "true",
+        allowed_origins=_csv_setting("H5_ALLOWED_ORIGINS", DEFAULT_ORIGINS, environ=environ),
+        allowed_hosts=_csv_setting("H5_ALLOWED_HOSTS", DEFAULT_HOSTS, environ=environ),
+        session_ttl_seconds=int(environ.get("H5_SESSION_TTL_SECONDS", "3600")),
+        session_cookie_secure=environ.get("H5_SESSION_COOKIE_SECURE", "false").lower() == "true",
     )

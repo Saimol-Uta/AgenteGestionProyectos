@@ -485,7 +485,7 @@ class WebApiGovernanceTests(unittest.TestCase):
             "H5_ALLOWED_HOSTS": "testserver",
         }
         with patch.dict(os.environ, environment, clear=True):
-            incomplete = load_api_settings()
+            incomplete = load_api_settings(env_file=None)
         self.assertTrue(incomplete.weekly_cycle_enabled)
         self.assertIsNone(incomplete.weekly_schedule)
         self.assertEqual(incomplete.weekly_schedule_status, "incomplete")
@@ -494,7 +494,7 @@ class WebApiGovernanceTests(unittest.TestCase):
             **environment,
             "H5_WEEKLY_SCHEDULE_WINDOW_RULE": "previous_scheduled_week",
         }, clear=True):
-            configured = load_api_settings()
+            configured = load_api_settings(env_file=None)
         self.assertEqual(configured.weekly_schedule_status, "configured")
         self.assertEqual(configured.weekly_schedule.project_id, PROJECT_ID)
         self.assertEqual(configured.weekly_schedule.weekday, 3)
@@ -504,7 +504,7 @@ class WebApiGovernanceTests(unittest.TestCase):
             "H5_WEEKLY_SCHEDULE_WEEKDAY": "7",
             "H5_WEEKLY_SCHEDULE_WINDOW_RULE": "previous_scheduled_week",
         }, clear=True):
-            invalid = load_api_settings()
+            invalid = load_api_settings(env_file=None)
         self.assertIsNone(invalid.weekly_schedule)
         self.assertEqual(invalid.weekly_schedule_status, "invalid")
 

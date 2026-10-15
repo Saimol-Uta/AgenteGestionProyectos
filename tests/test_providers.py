@@ -1,4 +1,4 @@
-"""Tests for LLM provider adapters: Ollama, Gemini, and Fake."""
+"""Tests for the active Gemini and deterministic fake LLM adapters."""
 
 import json
 import os
@@ -10,7 +10,6 @@ from agente_gestion.domain.llm import (
     GenerationResult,
     GenerationStatus,
 )
-from agente_gestion.adapters.llm.ollama import OllamaProvider
 from agente_gestion.adapters.llm.gemini import GeminiProvider
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.application.security import (
@@ -37,114 +36,6 @@ class LLMProvidersTestCase(unittest.TestCase):
             model="qwen3.5:2b-q4_K_M",
             max_generation_tokens=256,
         )
-
-    # --- Ollama Adapter Tests ---
-
-    def test_ollama_successful_structured_generation(self):
-        # Mock transport returning successful Ollama response
-        mock_transport = MagicMock()
-        mock_transport.return_value = {
-            "status_code": 200,
-            "body": {
-                "model": "qwen3.5:2b-q4_K_M",
-                "message": {
-                    "role": "assistant",
-                    "content": json.dumps({"summary": "Progress is steady", "risks": ["Auth delay"]}),
-                },
-                "done": True,
-                "done_reason": "stop",
-                "prompt_eval_count": 42,
-                "eval_count": 18,
-                "total_duration": 1500000000,  # 1.5s
-            },
-        }
-
-        provider = OllamaProvider(
-            base_url="http://127.0.0.1:11435",
-            model="qwen3.5:2b-q4_K_M",
-            transport=mock_transport,
-            unload_after_request=True,
-        )
-        result = provider.generate(self.sample_request)
-
-        self.assertEqual(result.status, GenerationStatus.complete)
-        self.assertEqual(result.structured_data, {"summary": "Progress is steady", "risks": ["Auth delay"]})
-        self.assertEqual(result.prompt_tokens, 42)
-        self.assertEqual(result.completion_tokens, 18)
-        self.assertEqual(result.finish_reason, "stop")
-        self.assertAlmostEqual(result.duration_seconds, 1.5)
-
-        # Verify Ollama request arguments: think=False, keep_alive=0, format=schema
-        call_args = mock_transport.call_args
-        sent_body = call_args[1]["json"]
-        self.assertFalse(sent_body["think"])
-        self.assertEqual(sent_body["keep_alive"], 0)
-        self.assertEqual(sent_body["format"], self.sample_request.json_schema)
-
-    def test_ollama_truncation_reports_incomplete_status(self):
-        mock_transport = MagicMock()
-        mock_transport.return_value = {
-            "status_code": 200,
-            "body": {
-                "model": "qwen3.5:2b-q4_K_M",
-                "message": {"role": "assistant", "content": '{"summary": "Incomplete text'},
-                "done": True,
-                "done_reason": "length",
-                "prompt_eval_count": 50,
-                "eval_count": 256,
-            },
-        }
-        provider = OllamaProvider(transport=mock_transport)
-        result = provider.generate(self.sample_request)
-
-        self.assertEqual(result.status, GenerationStatus.incomplete)
-        self.assertEqual(result.finish_reason, "length")
-
-    def test_ollama_invalid_json_reports_error_status(self):
-        mock_transport = MagicMock()
-        mock_transport.return_value = {
-            "status_code": 200,
-            "body": {
-                "model": "qwen3.5:2b-q4_K_M",
-                "message": {"role": "assistant", "content": "NOT JSON AT ALL"},
-                "done": True,
-                "done_reason": "stop",
-            },
-        }
-        provider = OllamaProvider(transport=mock_transport)
-        result = provider.generate(self.sample_request)
-
-        self.assertEqual(result.status, GenerationStatus.error)
-        self.assertIn("JSON", result.error_message)
-
-    def test_ollama_http_failure_reports_error_status(self):
-        mock_transport = MagicMock()
-        mock_transport.side_effect = ConnectionError("Failed to connect to 127.0.0.1:11435")
-
-        provider = OllamaProvider(transport=mock_transport)
-        result = provider.generate(self.sample_request)
-
-        self.assertEqual(result.status, GenerationStatus.error)
-        self.assertIn("Failed to connect", result.error_message)
-
-    def test_ollama_nullable_tokens_when_unreported(self):
-        mock_transport = MagicMock()
-        mock_transport.return_value = {
-            "status_code": 200,
-            "body": {
-                "model": "qwen3.5:2b-q4_K_M",
-                "message": {"role": "assistant", "content": '{"summary": "ok", "risks": []}'},
-                "done": True,
-                "done_reason": "stop",
-                # prompt_eval_count and eval_count omitted
-            },
-        }
-        provider = OllamaProvider(transport=mock_transport)
-        result = provider.generate(self.sample_request)
-
-        self.assertEqual(result.status, GenerationStatus.complete)
-        self.assertIsNone(result.prompt_tokens)
-        self.assertIsNone(result.completion_tokens)
 
     # --- Gemini Adapter Tests ---
 
@@ -259,32 +150,6 @@ class LLMProvidersTestCase(unittest.TestCase):
     # --- Real Default Transport & Packaging Regression Tests ---
 
     @patch("requests.post")
-    def test_ollama_real_default_transport_signature_and_call(self, mock_post):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = json.dumps({
-            "message": {"content": json.dumps({"summary": "Ok", "risks": []})},
-            "done": True,
-            "done_reason": "stop",
-        })
-        mock_resp.json.return_value = {
-            "message": {"content": json.dumps({"summary": "Ok", "risks": []})},
-            "done": True,
-            "done_reason": "stop",
-        }
-        mock_post.return_value = mock_resp
-
-        # Instantiated with REAL default transport (no transport passed)
-        provider = OllamaProvider()
-        result = provider.generate(self.sample_request)
-
-        self.assertEqual(result.status, GenerationStatus.complete)
-        self.assertTrue(mock_post.called)
-        call_kwargs = mock_post.call_args[1]
-        self.assertIn("json", call_kwargs)
-        self.assertEqual(call_kwargs["json"]["model"], "qwen3.5:2b-q4_K_M")
-
-    @patch("requests.post")
     def test_gemini_real_default_transport_signature_and_call(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -314,13 +179,6 @@ class LLMProvidersTestCase(unittest.TestCase):
         self.assertTrue(mock_post.called)
         call_kwargs = mock_post.call_args[1]
         self.assertIn("json", call_kwargs)
-
-    def test_bounded_no_credential_local_behavior(self):
-        # Local ollama execution does not need or leak remote credentials
-        provider = OllamaProvider()
-        caps = provider.get_capabilities()
-        self.assertTrue(caps.supports_json_schema)
-        self.assertEqual(provider.model, "qwen3.5:2b-q4_K_M")
 
     def test_packaging_dependencies_declared(self):
         pyproject_path = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
