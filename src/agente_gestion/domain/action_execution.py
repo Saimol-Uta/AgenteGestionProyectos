@@ -5,8 +5,8 @@ Enforces domain security invariants:
 2. Verifies proposal integrity, version, capture, and ledger review approval.
 3. Detects stale captures and concurrent external modifications.
 4. Restricts execution exclusively to natively supported provider fields:
-   - For Trello: 'due_date', 'start_date', 'assignee_ids'
-   - Rejects 'priority' (Trello has no native card priority field)
+   - For Trello: 'due_date', 'start_date', 'assignee_ids', and configured priority labels
+   - Rejects 'priority' unless the project supplies a complete label-ID mapping
    - Rejects 'state' (Trello lists represent phases, not lifecycle states)
 5. Read-before-write concurrency check:
    - If provider value already matches proposed value -> ALREADY_APPLIED (idempotent, no write).
@@ -46,7 +46,7 @@ class ExecutionActor(_Frozen):
     """Authenticated actor holding verified administrative or managerial authority."""
     actor_id: StrictStr
     role: Literal["project_manager", "lead_architect", "admin"]
-    auth_mechanism: Literal["hmac_token", "pki_signature", "test_authority"]
+    auth_mechanism: Literal["hmac_token", "pki_signature", "test_authority", "server_session"]
     auth_token: StrictStr
 
     @field_validator("actor_id", "auth_token")
@@ -113,6 +113,7 @@ class ExecutionResult(_Frozen):
     value_observed_after: Any = None
     verification_status: ExecutionVerificationStatus = "unknown"
     actor_id: Optional[StrictStr] = None
+    execution_mode: Literal["live", "sandbox"] | None = None
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -133,6 +134,16 @@ def _denied(
     )
 
 
+def _priority_key(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    return {
+        "alta": "high", "high": "high", "critical": "high", "critica": "high",
+        "media": "medium", "medium": "medium",
+        "baja": "low", "low": "low",
+    }.get(value.strip().lower(), value)
+
+
 def _values_match(field: ProposalField, left: Any, right: Any) -> bool:
     """Semantic equality check respecting timezone awareness and set membership."""
     if left is None and right is None:
@@ -151,6 +162,9 @@ def _values_match(field: ProposalField, left: Any, right: Any) -> bool:
         if isinstance(left, (list, tuple, set)) and isinstance(right, (list, tuple, set)):
             return set(left) == set(right)
         return left == right
+
+    if field == "priority":
+        return _priority_key(left) == _priority_key(right)
 
     return left == right
 

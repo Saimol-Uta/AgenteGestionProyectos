@@ -35,6 +35,14 @@ from agente_gestion.domain.notification_outbox import OutboxMessage, OutboxRecei
 from agente_gestion.domain.security_rbac import SecurityAuditEntry
 
 
+class FindingDecisionStorageError(RuntimeError):
+    """Stable storage-level reason for a rejected or conflicting decision request."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
 class SQLiteStorageAdapter(StoragePort):
     """
     Robust SQLite persistence adapter with explicit connection management.
@@ -193,6 +201,21 @@ class SQLiteStorageAdapter(StoragePort):
                     );
                     """
                 )
+            # Additive findings migration preserves legacy rows and leaves read-only
+            # browser queries able to continue using the original table shape.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                finding_columns = {row["name"] for row in conn.execute("PRAGMA table_info(findings)")}
+                for column, declaration in (
+                    ("suggested_code", "TEXT NOT NULL DEFAULT ''"),
+                    ("improvement_summary", "TEXT NOT NULL DEFAULT ''"),
+                    ("decision_status", "TEXT NOT NULL DEFAULT 'pending'"),
+                    ("branch_name", "TEXT"),
+                    ("branch_url", "TEXT"),
+                    ("commit_sha_applied", "TEXT"),
+                ):
+                    if column not in finding_columns:
+                        conn.execute(f"ALTER TABLE findings ADD COLUMN {column} {declaration}")
             # executescript above may commit implicitly. Keep all history DDL,
             # indexes and backfill in a separate explicit transaction, never a script.
             with conn:
@@ -276,8 +299,14 @@ class SQLiteStorageAdapter(StoragePort):
                     field TEXT,
                     recorded_at TEXT NOT NULL,
                     request_json TEXT NOT NULL,
-                    result_json TEXT NOT NULL
+                    result_json TEXT NOT NULL,
+                    human_reason TEXT
                 )""")
+                execution_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(proposal_executions)")
+                }
+                if "human_reason" not in execution_columns:
+                    conn.execute("ALTER TABLE proposal_executions ADD COLUMN human_reason TEXT")
                 conn.execute("""CREATE INDEX IF NOT EXISTS idx_proposal_executions_lookup
                     ON proposal_executions(project_id, proposal_id, recorded_at)""")
                 for operation in ('UPDATE', 'DELETE'):
@@ -315,14 +344,71 @@ class SQLiteStorageAdapter(StoragePort):
                     decision TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     token_fingerprint TEXT NOT NULL,
-                    recorded_at TEXT NOT NULL
+                    recorded_at TEXT NOT NULL,
+                    human_reason TEXT
                 )""")
+                audit_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(security_audit_log)")
+                }
+                if "human_reason" not in audit_columns:
+                    conn.execute("ALTER TABLE security_audit_log ADD COLUMN human_reason TEXT")
                 conn.execute("""CREATE INDEX IF NOT EXISTS idx_security_audit_project
                     ON security_audit_log(project_id, recorded_at)""")
                 for operation in ('UPDATE', 'DELETE'):
                     conn.execute(f"""CREATE TRIGGER IF NOT EXISTS security_audit_log_no_{operation}
                         BEFORE {operation} ON security_audit_log
                         BEGIN SELECT RAISE(ABORT, 'Security audit log is append-only'); END""")
+            # Request receipts are mutable only while an action is in flight; the
+            # decision ledger itself is permanently append-only.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS finding_decision_requests (
+                    request_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    finding_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    request_sha256 TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('processing', 'completed', 'failed')),
+                    result_json TEXT,
+                    error_status INTEGER,
+                    error_code TEXT,
+                    error_message TEXT,
+                    event_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(project_id, run_id, finding_id, idempotency_key)
+                )""")
+                conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_decisions_one_active
+                    ON finding_decision_requests(project_id, run_id, finding_id)
+                    WHERE state='processing'""")
+                conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_decisions_one_approval
+                    ON finding_decision_requests(project_id, run_id, finding_id)
+                    WHERE decision='approve'""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS finding_decisions (
+                    event_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL UNIQUE,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    finding_id TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    decision_status TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    request_sha256 TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                )""")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_finding_decisions_lookup
+                    ON finding_decisions(project_id, run_id, finding_id, recorded_at)""")
+                for operation in ('UPDATE', 'DELETE'):
+                    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS finding_decisions_no_{operation}
+                        BEFORE {operation} ON finding_decisions
+                        BEGIN SELECT RAISE(ABORT, 'Finding decision ledger is append-only'); END""")
         finally:
             conn.close()
 
@@ -747,7 +833,7 @@ class SQLiteStorageAdapter(StoragePort):
             conn.close()
 
     def append_proposal_execution(
-        self, request: ExecutionRequest, result: ExecutionResult
+        self, request: ExecutionRequest, result: ExecutionResult, *, human_reason: str | None = None,
     ) -> None:
         """Atomically append an execution attempt and result to the append-only ledger."""
         if self.read_only:
@@ -759,8 +845,8 @@ class SQLiteStorageAdapter(StoragePort):
                 conn.execute(
                     """INSERT INTO proposal_executions
                     (execution_id, request_id, project_id, proposal_id, status,
-                     verification_status, actor_id, field, recorded_at, request_json, result_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     verification_status, actor_id, field, recorded_at, request_json, result_json, human_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         result.execution_id,
                         request.request_id,
@@ -773,6 +859,7 @@ class SQLiteStorageAdapter(StoragePort):
                         result.recorded_at.isoformat(),
                         request.model_dump_json(),
                         result.model_dump_json(),
+                        human_reason,
                     ),
                 )
         finally:
@@ -1147,11 +1234,24 @@ class SQLiteStorageAdapter(StoragePort):
                     cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
                     conn.execute(
                         """
-                        INSERT OR REPLACE INTO findings (
+                        INSERT INTO findings (
                             id, run_id, category, file_path, line, commit_sha,
                             evidence, suggested_fix, rule_id, confidence,
-                            should_escalate, escalation_reasons
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            should_escalate, escalation_reasons, suggested_code, improvement_summary
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id, run_id) DO UPDATE SET
+                            category=excluded.category,
+                            file_path=excluded.file_path,
+                            line=excluded.line,
+                            commit_sha=excluded.commit_sha,
+                            evidence=excluded.evidence,
+                            suggested_fix=excluded.suggested_fix,
+                            rule_id=excluded.rule_id,
+                            confidence=excluded.confidence,
+                            should_escalate=excluded.should_escalate,
+                            escalation_reasons=excluded.escalation_reasons,
+                            suggested_code=CASE WHEN findings.suggested_code='' THEN excluded.suggested_code ELSE findings.suggested_code END,
+                            improvement_summary=CASE WHEN findings.improvement_summary='' THEN excluded.improvement_summary ELSE findings.improvement_summary END
                         """,
                         (
                             f.id,
@@ -1166,6 +1266,8 @@ class SQLiteStorageAdapter(StoragePort):
                             f.confidence,
                             should_esc,
                             reasons,
+                            f.suggested_code,
+                            f.improvement_summary,
                         ),
                     )
         finally:
@@ -1190,8 +1292,180 @@ class SQLiteStorageAdapter(StoragePort):
                     "confidence": r["confidence"],
                     "should_escalate": bool(r["should_escalate"]),
                     "escalation_reasons": json.loads(r["escalation_reasons"] or "[]"),
+                    "suggested_code": r["suggested_code"] if "suggested_code" in r.keys() else "",
+                    "improvement_summary": r["improvement_summary"] if "improvement_summary" in r.keys() else "",
+                    "decision_status": r["decision_status"] if "decision_status" in r.keys() else "pending",
+                    "branch_name": r["branch_name"] if "branch_name" in r.keys() else None,
+                    "branch_url": r["branch_url"] if "branch_url" in r.keys() else None,
+                    "commit_sha_applied": r["commit_sha_applied"] if "commit_sha_applied" in r.keys() else None,
                 })
             return findings
+        finally:
+            conn.close()
+
+    def update_finding_metadata(
+        self, run_id: str, finding_id: str, *, suggested_code: str | None = None,
+        improvement_summary: str | None = None, decision_status: str | None = None,
+        branch_name: str | None = None, branch_url: str | None = None,
+        commit_sha_applied: str | None = None,
+    ) -> None:
+        """Update the normalized projection without replacing the append-only history."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                cursor = conn.execute(
+                    "UPDATE findings SET suggested_code=COALESCE(?, suggested_code), "
+                    "improvement_summary=COALESCE(?, improvement_summary), "
+                    "decision_status=COALESCE(?, decision_status), "
+                    "branch_name=COALESCE(?, branch_name), branch_url=COALESCE(?, branch_url), "
+                    "commit_sha_applied=COALESCE(?, commit_sha_applied) WHERE id=? AND run_id=?",
+                    (suggested_code, improvement_summary, decision_status, branch_name,
+                     branch_url, commit_sha_applied, finding_id, run_id),
+                )
+                if cursor.rowcount != 1:
+                    raise LookupError("finding_not_found")
+        finally:
+            conn.close()
+
+    def reserve_finding_decision(
+        self, *, project_id: str, run_id: str, finding_id: str, idempotency_key: str,
+        request_id: str, event_id: str, request_sha256: str, request_json: str,
+        decision: str, actor_id: str, recorded_at: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Persist an idempotency receipt before any branch-side effect."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute(
+                    "SELECT * FROM finding_decision_requests WHERE project_id=? AND run_id=? "
+                    "AND finding_id=? AND idempotency_key=?",
+                    (project_id, run_id, finding_id, idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    row = dict(existing)
+                    if row["request_sha256"] != request_sha256:
+                        raise FindingDecisionStorageError("idempotency_conflict")
+                    if row["state"] == "processing":
+                        raise FindingDecisionStorageError("decision_in_progress")
+                    return "replay", row
+
+                active = conn.execute(
+                    "SELECT 1 FROM finding_decision_requests WHERE project_id=? AND run_id=? "
+                    "AND finding_id=? AND state='processing'",
+                    (project_id, run_id, finding_id),
+                ).fetchone()
+                if active is not None:
+                    raise FindingDecisionStorageError("decision_in_progress")
+                approved = conn.execute(
+                    "SELECT 1 FROM finding_decision_requests WHERE project_id=? AND run_id=? "
+                    "AND finding_id=? AND decision='approve'",
+                    (project_id, run_id, finding_id),
+                ).fetchone()
+                if approved is not None:
+                    raise FindingDecisionStorageError("approval_already_recorded")
+                prior_approval = conn.execute(
+                    "SELECT 1 FROM finding_decisions WHERE project_id=? AND run_id=? "
+                    "AND finding_id=? AND decision_status='approved'",
+                    (project_id, run_id, finding_id),
+                ).fetchone()
+                if prior_approval is not None:
+                    raise FindingDecisionStorageError("finding_already_approved")
+                conn.execute(
+                    "INSERT INTO finding_decision_requests "
+                    "(request_id, project_id, run_id, finding_id, idempotency_key, request_sha256, "
+                    "request_json, decision, actor_id, state, event_id, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?)",
+                    (request_id, project_id, run_id, finding_id, idempotency_key, request_sha256,
+                     request_json, decision, actor_id, event_id, recorded_at, recorded_at),
+                )
+                return "reserved", {"request_id": request_id, "event_id": event_id}
+        except sqlite3.IntegrityError as exc:
+            raise FindingDecisionStorageError("decision_conflict") from exc
+        finally:
+            conn.close()
+
+    def complete_finding_decision(
+        self, *, request_id: str, result_json: str, decision_status: str,
+        suggested_code: str, improvement_summary: str, branch_name: str | None,
+        branch_url: str | None, commit_sha_applied: str | None,
+        audit_entry: SecurityAuditEntry, recorded_at: str,
+    ) -> None:
+        """Commit normalized metadata, immutable decision, audit, and replay receipt together."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                request = conn.execute(
+                    "SELECT * FROM finding_decision_requests WHERE request_id=?", (request_id,),
+                ).fetchone()
+                if request is None or request["state"] != "processing":
+                    raise FindingDecisionStorageError("decision_receipt_unavailable")
+                cursor = conn.execute(
+                    "UPDATE findings SET suggested_code=?, improvement_summary=?, decision_status=?, "
+                    "branch_name=?, branch_url=?, commit_sha_applied=? WHERE id=? AND run_id=?",
+                    (suggested_code, improvement_summary, decision_status, branch_name, branch_url,
+                     commit_sha_applied, request["finding_id"], request["run_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise FindingDecisionStorageError("finding_not_found")
+                conn.execute(
+                    "INSERT INTO finding_decisions "
+                    "(event_id, request_id, project_id, run_id, finding_id, decision, decision_status, "
+                    "actor_id, idempotency_key, request_sha256, request_json, result_json, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (request["event_id"], request_id, request["project_id"], request["run_id"],
+                     request["finding_id"], request["decision"], decision_status, request["actor_id"],
+                     request["idempotency_key"], request["request_sha256"], request["request_json"],
+                     result_json, recorded_at),
+                )
+                self._insert_security_audit_event(conn, audit_entry)
+                conn.execute(
+                    "UPDATE finding_decision_requests SET state='completed', result_json=?, updated_at=? "
+                    "WHERE request_id=? AND state='processing'",
+                    (result_json, recorded_at, request_id),
+                )
+        finally:
+            conn.close()
+
+    def fail_finding_decision(
+        self, *, request_id: str, result_json: str, error_status: int, error_code: str,
+        error_message: str, suggested_code: str, improvement_summary: str,
+        audit_entry: SecurityAuditEntry, recorded_at: str,
+    ) -> None:
+        """Persist failure replay state and audit without retrying a possibly applied write."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                request = conn.execute(
+                    "SELECT * FROM finding_decision_requests WHERE request_id=?", (request_id,),
+                ).fetchone()
+                if request is None or request["state"] != "processing":
+                    raise FindingDecisionStorageError("decision_receipt_unavailable")
+                cursor = conn.execute(
+                    "UPDATE findings SET suggested_code=?, improvement_summary=?, decision_status='failed', "
+                    "branch_name=NULL, branch_url=NULL, commit_sha_applied=NULL WHERE id=? AND run_id=?",
+                    (suggested_code, improvement_summary, request["finding_id"], request["run_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise FindingDecisionStorageError("finding_not_found")
+                conn.execute(
+                    "INSERT INTO finding_decisions "
+                    "(event_id, request_id, project_id, run_id, finding_id, decision, decision_status, "
+                    "actor_id, idempotency_key, request_sha256, request_json, result_json, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?, ?)",
+                    (request["event_id"], request_id, request["project_id"], request["run_id"],
+                     request["finding_id"], request["decision"], request["actor_id"],
+                     request["idempotency_key"], request["request_sha256"], request["request_json"],
+                     result_json, recorded_at),
+                )
+                self._insert_security_audit_event(conn, audit_entry)
+                conn.execute(
+                    "UPDATE finding_decision_requests SET state='failed', result_json=?, error_status=?, "
+                    "error_code=?, error_message=?, updated_at=? WHERE request_id=? AND state='processing'",
+                    (result_json, error_status, error_code, error_message, recorded_at, request_id),
+                )
         finally:
             conn.close()
 

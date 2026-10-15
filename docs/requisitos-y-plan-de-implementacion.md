@@ -55,7 +55,7 @@ Los once requisitos provienen del documento universitario; las prioridades son *
 | **REQ-02** Estado y avance | Alta | **Cumplido / Consultable** | Estados normalizados (`pending`, `en_curso`, `completada`, `bloqueada`, `desconocido`), porcentaje de avance, próximas a vencer con ventana inclusiva configurable (`--due-soon-days`, default 7). CLI `tasks list` permite filtrar por estado (`--state`) y actividades críticas (`--critical`). | Seguimiento continuo de cambios por cron programado (H3). |
 | **REQ-03** Trello y cambios | Alta | **Parcial (historial CLI offline)** | `TrelloSourceAdapter` y `source-check` funcionan en vivo; `date_fields` contempla tableros por fases. H1A normaliza metadatos; H1C compara cambios observados sin atribuir actor ni operaciones físicas. H1D1 conserva capturas SQLite inmutables; H1D2 lista metadatos y compara IDs explícitos por CLI de solo lectura, validados offline. | Validación integrada en vivo y ejecución Trello pendientes **solo** tras autorización auditada; historial y comparador no autorizan ni ejecutan. |
 | **REQ-04** Retrasos y riesgos | Alta | **Cumplido / Consultable / Notificable** | Detección determinista de vencidas, próximas a vencer, bloqueadas y señales contradictorias. `tasks show/list` evalúa dependencias explícitas e impactos únicamente sobre evidencia real observada (sin inventar relaciones no registradas). Agregado y notificado en reporte semanal (`schedule run`). | Monitoreo continuo desatendido en background. |
-| **REQ-05** Acciones correctivas | Alta | **Cumplido / Verificado en vivo** | Propuestas estructuradas (`ActionProposal`), revisión técnica, autorización, simulación dry-run, ejecutor seguro con verificación post-ejecución (`execute_proposal_action`) y prueba real con restauración no destructiva validada en Trello (`scripts/check_action_trello.py`). | Integración de interfaz gráfica si se requiere en etapas posteriores. |
+| **REQ-05** Acciones correctivas | Alta | **Validación del flujo unificado en curso** | Ejecutor → Revisor automático → Aprobador humano → `/execute`, con motivo durable, tablero obligatorio, pre/post-read y protección de duplicados. Vías manuales anteriores retiradas. | Completar nueva evidencia local y revalidación acotada; sin proveedores reales para este cambio. |
 | **REQ-06** Reporte semanal | Media | **Cumplido / Configurable** | `WeeklySchedulerService` con especificación semanal determinista (`WeeklySchedule`), corte por defecto viernes 17:00 `America/Guayaquil`, opción de ejecución inmediata forzada (`--force`) sin esperar al corte, agregación completa de métricas/riesgos/pendientes/acciones ejecutadas, y outbox de notificaciones idempotente con recibos JSON/Markdown. | Configuración de servicio daemon / cron a nivel de sistema operativo. |
 | **REQ-07** Revisión de código | Alta | **Cumplido / Verificado** | Lector GitHub diffs con SHA, `CodeQualityAgent`, `SemanticValidator`, `VerifierAgent`, reglas Q1–Q3, adapters híbridos, y suite de benchmark integral de calidad (`quality benchmark`) con 0.00 % FPR en trampas de ausencia/alucinación y 100 % precisión. | Análisis periódico programado en background. |
 | **REQ-08** Tres roles y autorización | Alta | **Cumplido / Verificado** | Roles de Elaborador (Monitoring), Revisor (Quality), Aprobador (Report) y Gestor Humano diferenciados. Validación estricta de actor autenticado (`ExecutionActor` y `SecurityPrincipal`), autorización ligada a hash/versión y ejecutor Trello live probado. | Integración con proveedor SSO o IAM corporativo (fuera de alcance MVP). |
@@ -97,46 +97,15 @@ Normalizar prioridad/responsables/fechas, exponer planificación consultable y e
 
 **Salida pendiente del hito completo:** quedan vistas completas y riesgos justificables sin falsas inferencias de dependencias no registradas. REQ-03/10 siguen parciales por validación integrada en vivo y acciones/autorización/auditoría pendientes. H2 ya cerró su circuito exclusivamente offline, descrito abajo; scheduler y UI no están implementados. T9 permanece PENDING.
 
-### Hito H2 — Propuestas, revisión, aprobación, ejecución segura (REQ-03/05/08/09/10/11)
+### Hito H2 — Flujo unificado de propuestas y ejecución segura (REQ-03/05/08/09/10/11)
 
-Definir `ActionProposal` (acción, objetivo, valor anterior y propuesto, motivo, evidencia, impacto, autor); revisión de validez técnica y autorización separadas; petición al gestor, identidad/permiso, token de aprobación vinculado a versión, ejecutor Trello de lista permitida y verificación posterior de cambio; manejo idempotente de rechazos/duplicados y trazabilidad. **Nunca hacer escrituras sin autorización**. Mantener tres roles académicos y Verifier auxiliar; implementar nuevas funciones sin «recrear» agentes existentes.
+El circuito vigente es **Ejecutor → Revisor técnico automático → Aprobador humano → ejecución protegida**. Las antiguas decisiones `approve_offline`, la autorización pública de dry-run y sus comandos/rutas separados se retiraron como vías operativas; no hay fallback local ni compatibilidad con registros de prueba incompletos.
 
-**Avance histórico H2A (dominio puro, offline):** `ActionProposal` versionada admite solo `start_date`, `due_date`, `priority`, `assignee_ids` y `state`, con valores actual/propuesto, motivo, impacto y IDs de evidencia. `validate_action_proposal` comprueba vínculo captura/hash/proyecto, tarea única, observación explícita, valor actual y evidencia de apoyo sin mutación. Conserva null/desconocido/vacío y rechaza coerciones, contradicciones, duplicados y cambios nulos. Las propuestas permanecen `pending`, `not_authorized`, `not_executed`; no hay integración, transición de revisión, actores autorizados ni ejecutor. Se presupone captura autoritativa desde almacenamiento verificado: no se rehashea el modelo legado. La evidencia pasada valida metadatos de tarea, **no demuestra pertenencia a la captura inmutable**. REQ-08 sigue PARCIAL y T9 PENDING.
+`ActionProposal` y las funciones internas de evaluación/ledger siguen siendo invariantes del dominio usados por la revisión automática, no pasos públicos que el gestor deba encadenar. El endpoint unificado `/execute` exige decisión, motivo humano durable, sesión, alcance de proyecto, origen exacto, CSRF e idempotencia. El adaptador comprueba tablero, pre-lectura y post-lectura; prioridades se asignan mediante etiquetas configurables conservando las restantes.
 
-**Avance histórico H2B1/H2B2a (offline):** catálogo inmutable con digest del JSON exacto, evidencia de apoyo congelada y consultas que validan integridad/captura/hechos. `proposals list PROJECT --db-path DB` y `proposals show PROJECT PROPOSAL_ID --db-path DB` usan SQLite directo en solo lectura, sin Settings, composición, proveedores, artefactos ni migración. JSON por lista permitida: metadatos/conteo en list; campos propios conocidos de la propuesta en show, sin DTOs/payloads/snippets/resúmenes/URLs de apoyo ni snapshot completo. Ausencia/proyecto ajeno son indistinguibles en show; errores estáticos no exponen contenido privado. No hay transiciones, actores, autenticación, autorización ni ejecutor; la consistencia no prueba autoría ni pertenencia de evidencia a captura. REQ-08 sigue **PARCIAL**. Verificación de ese corte: 552 tests ejecutados, 550 aprobados, 2 omitidos y 7 comprobaciones del evaluador (no rendimiento), solo bases temporales; base real no abierta y T9 **PENDING**.
+Las decisiones de código exigen archivo fuente completo y validación sintáctica del resultado completo antes de crear una rama separada. La demostración se regenera con esquema vigente y al menos dos snapshots comparables; los datos previos quedan únicamente en una copia recuperable.
 
-**Cierre H2 (D1–D3 y C1–C3, SOLO OFFLINE):** propuestas fundamentadas desde
-entradas/reglas de Monitoring y reporte; revisión técnica separada de decisión
-del actor declarado, permiso de dry-run y ejecución real bloqueada. Captura
-inmutable/hash exacto almacenado, catálogo/evidencia congelada y ledger
-append-only conservan trazabilidad, no autentican ni conceden autoridad legal
-o identidad del SO. `state` muestra hash/versión/captura verificados; los flags
-son explícitos y no se copian automáticamente como permiso.
-
-Dry-run usa solo los cinco campos de la propuesta almacenada, TaskSource
-completo/observado y última captura almacenada única; bloquea empates,
-obsolescencia, falta de evidencia/permiso y versión incorrecta. Primera
-denegación legítima auditada; replay revalida tras revocación/nueva captura.
-`audit` histórico de solo lectura no convierte un `SIMULATED` previo en permiso
-actual: `not_executed`, `live=false`, iniciador desconocido, sin proveedores,
-fábrica de fuentes ni puente de ejecución. [CLI y límites](../README.md#decisiones-y-simulación-de-propuestas-h2-cerrado-solo-offline).
-
-**Avance H2 Ejecutor seguro offline (implementado):** `TaskActionPort`, `SimulatedTrelloActionAdapter`, `execute_proposal_action` y persistencia en SQLite (`proposal_executions`) con trigger append-only.
-- Exige identidad de actor autenticado (`ExecutionActor` con rol de gestión y mecanismo no simulado) y autorización verificable ligada a hash y versión.
-- Mapeo estricto de campos Trello: admite únicamente `due_date`, `start_date` y `assignee_ids`; rechaza explícitamente `priority` (sin soporte nativo estándar en Trello) y `state` (las listas en HORMIGESTION representan fases, no estados de ejecución).
-- Verificación de concurrencia read-before-write: distingue idempotencia (`ALREADY_APPLIED` sin re-escritura) y deriva externa (`CONFLICT`).
-- Verificación posterior de lectura: comprueba inmediatamente el valor resultante en el proveedor (`verified` vs `verification_failed`).
-- Auditoría inmutable con estados antes, propuesto y observado después. 714 pruebas ejecutadas (712 aprobadas, 2 omitidas opt-in) y 7 comprobaciones en `pruebas/`.
-
-**Validación real ejecutada en Trello (Completada y Auditada):**
-- Ejecución real aislada y no destructiva completada exitosamente sobre el tablero `6a957e9173d4d13d0c5db608` de HORMIGESTION (`scripts/check_action_trello.py --allow-real --execute`).
-- Tarjeta objetivo: `6a9582bcdf0dcc58846d4b01` ("Módulo administrador: Control en el mixer").
-- Pre-read verificó valor actual: `2026-10-13 17:00:00-05:00`.
-- Mutación real aplicada vía HTTP PUT con valor de prueba: `2026-10-14 17:00:00-05:00`.
-- Verificación posterior vía HTTP GET confirmó mutación en vivo (`verified`).
-- Restauración inmediata y automática vía HTTP PUT al valor original (`2026-10-13 17:00:00-05:00`), verificada por re-lectura en vivo. Tablero devuelto a su estado prístino.
-- Registro completo en SQLite (`.runtime/agente.db` tabla `proposal_executions` con triggers append-only). Todas las pruebas de regresión pasan (718 ejecutadas, 716 aprobadas, 2 omitidas). H2 completamente validado en entornos offline y en vivo.
-
+Las observaciones en vivo anteriores a este cambio son antecedentes, no instrucciones para reactivar el helper retirado ni prueba del flujo nuevo. No se ejecutan proveedores reales durante este reemplazo. La evidencia actual y los pendientes están en `odd/tasks/backend-fullstack-phase2.md` y la guía [Fase 2](phase2-fullstack.md).
 
 ### Hito H3 — Reportería y notificación automática (REQ-04/06/09/10) [Completado y Validado]
 

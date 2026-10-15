@@ -15,6 +15,7 @@ import { formatDate, formatPercentage, taskStateLabel, taskStateTone } from "../
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 import type { DomainTaskState, TaskDetailView, TaskPlanSummary, TaskQuery } from "../../api/types";
+import { DecisionCenter } from "../manager/DecisionCenter";
 import { ExecutiveInsights } from "./ExecutiveInsights";
 
 const numberFormatter = new Intl.NumberFormat("es-EC");
@@ -357,6 +358,8 @@ export function DashboardPage() {
           <ListTodo aria-hidden="true" size={16} /> Ver tareas <ArrowRight aria-hidden="true" size={15} />
         </Link>
       </div>
+
+      <DecisionCenter projectId={project.id} />
 
       {summaryQuery.isPending && <LoadingState label="Consultando métricas de la captura…" />}
       {summaryQuery.isError && (

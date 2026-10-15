@@ -34,7 +34,9 @@ def candidate():
     return {"id": "candidate", "rule_id": "SEC", "claim": "SQL injection in query",
             "severity": "high", "evidence_ids": [SHA], "commit_sha": SHA,
             "file_path": "src/example.py", "line": 1, "confidence": 0.8,
-            "requires_verification": True, "claim_basis": "visible_code"}
+            "requires_verification": True, "claim_basis": "visible_code",
+            "suggested_code": "query = \"SELECT * FROM users WHERE u = ?\"",
+            "improvement_summary": "Usar parámetros enlazados al ejecutar la consulta."}
 
 
 def response(finding=None, finish="stop", usage=None):

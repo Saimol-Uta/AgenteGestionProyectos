@@ -1,5 +1,6 @@
 """Bounded read-only GitHub adapter for commit diffs and evidence collection (T3)."""
 
+import base64
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,6 +46,7 @@ DEFAULT_MAX_REQUESTS = 32
 DEFAULT_MAX_TEXT_LENGTH = 65536
 DEFAULT_MAX_LINES = 5000
 DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024  # 10 MiB aggregate
+MAX_FULL_FILE_BYTES = 5 * 1024 * 1024
 MAX_CACHE_ENTRIES = 20
 
 
@@ -467,6 +469,69 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         self._last_collection_complete = collection.is_complete
         self._unavailable_file_paths = tuple(collection.unavailable_file_paths)
 
+    def _capture_full_file(
+        self, filename: str, pinned_sha: str, entry: dict[str, Any],
+        requests_count: list[int], total_bytes: list[int],
+    ) -> CodeDiffSnippet | None:
+        """Read one complete file only at the already resolved commit SHA."""
+        if requests_count[0] >= self._max_requests:
+            return None
+        encoded_path = "/".join(quote(part, safe="") for part in filename.split("/"))
+        url = (
+            f"https://api.github.com/repos/{self._owner}/{self._repo}/contents/{encoded_path}"
+            f"?ref={quote(pinned_sha, safe='')}"
+        )
+        requests_count[0] += 1
+        try:
+            response = self._transport.get(url=url, headers=self._auth_headers())
+        except Exception:
+            return None
+        total_bytes[0] += response.bytes_received
+        if total_bytes[0] > self._max_total_bytes:
+            raise SourceError(SourceProvider.github, SourceErrorCategory.limit_exceeded) from None
+        body = response.body
+        if response.status_code != 200 or not isinstance(body, dict) or body.get("encoding") != "base64":
+            return None
+        encoded = body.get("content")
+        blob_sha = body.get("sha")
+        if (not isinstance(encoded, str) or not isinstance(blob_sha, str)
+                or not FULL_SHA_RE.fullmatch(blob_sha)):
+            return None
+        expected_blob_sha = entry.get("sha")
+        if expected_blob_sha is not None and expected_blob_sha != blob_sha:
+            return None
+        try:
+            content_bytes = base64.b64decode(encoded, validate=True)
+            content = content_bytes.decode("utf-8")
+        except (ValueError, UnicodeError):
+            return None
+        if len(content_bytes) > min(MAX_FULL_FILE_BYTES, self._max_total_bytes):
+            return None
+        if len(content.splitlines()) > self._max_lines:
+            return None
+        size = body.get("size")
+        if size is not None and (type(size) is not int or size != len(content_bytes)):
+            return None
+        try:
+            self._assert_no_credential_echo(content)
+        except SourceError:
+            return None
+        line_count = len(content.splitlines())
+        return CodeDiffSnippet(
+            repository=f"{self._owner}/{self._repo}",
+            pull_request_id=None,
+            commit_sha=pinned_sha,
+            file_path=filename,
+            diff_side="NEW",
+            evidence_scope="full_file",
+            is_complete=True,
+            lines=list(range(1, line_count + 1)),
+            content=content,
+            total_lines=line_count,
+            source_sha256=hashlib.sha256(content_bytes).hexdigest(),
+            source_blob_sha=blob_sha.lower(),
+        )
+
     def _ensure_collection(
         self,
         project_id: str,
@@ -664,6 +729,7 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
             filename = entry["filename"]
             status = entry["status"]
             patch = entry.get("patch")
+            full_file = None
 
             if patch is None:
                 if status == "removed":
@@ -701,6 +767,13 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
                 patch_available = True
                 reason = "file_removed" if status == "removed" else None
 
+            if status != "removed":
+                full_file = self._capture_full_file(
+                    filename, pinned_sha, entry, requests_count, total_bytes,
+                )
+                if full_file is not None:
+                    snippets.append(full_file)
+
             # File diff evidence item
             stable_hash = hashlib.sha256(
                 f"github:{self._owner}/{self._repo}:{pinned_sha}:{filename}".encode("utf-8")
@@ -713,9 +786,13 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
                 "file_path": filename,
                 "status": status,
                 "patch_available": patch_available,
+                "full_file_available": full_file is not None,
                 "lines": lines_list,
                 "url": canonical_commit_url,
             }
+            if full_file is not None:
+                diff_payload["source_sha256"] = full_file.source_sha256
+                diff_payload["source_blob_sha"] = full_file.source_blob_sha
             if reason:
                 diff_payload["reason"] = reason
 

@@ -125,6 +125,8 @@ class QualityContextBudgetsTestCase(unittest.TestCase):
                                         "confidence": 0.95,
                                         "requires_verification": True,
                                         "claim_basis": "visible_code",
+                                        "suggested_code": "cursor.execute(\"SELECT * FROM users WHERE u = ?\", (user,))",
+                                        "improvement_summary": "Parametriza la consulta.",
                                     }
                                 ]
                             }),

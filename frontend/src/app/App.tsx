@@ -70,6 +70,7 @@ function RoutedApp() {
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route element={<AppShell />}>
           <Route index element={<Suspense fallback={<LoadingState label="Preparando dashboard…" />}><DashboardPage /></Suspense>} />
+          <Route path="dashboard" element={<Suspense fallback={<LoadingState label="Preparando dashboard…" />}><DashboardPage /></Suspense>} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="analysis" element={<Suspense fallback={<LoadingState label="Preparando el centro de análisis…" />}><AnalysisPage /></Suspense>} />

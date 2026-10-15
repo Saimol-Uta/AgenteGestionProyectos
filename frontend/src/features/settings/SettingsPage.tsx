@@ -1,3 +1,4 @@
+import { EmailDeliveryPanel } from "../notifications/EmailDeliveryPanel";
 import { ArrowUpRight, Clock3, Database, Moon, ShieldCheck, Sun } from "lucide-react";
 import { Link } from "react-router-dom";
 import { formatDate, runStatusLabel } from "../../api/formatters";
@@ -32,6 +33,8 @@ export function SettingsPage() {
         </div>
         <Pill tone="neutral">Solo lectura del servidor</Pill>
       </header>
+
+      {selectedProject && <EmailDeliveryPanel projectId={selectedProject.id} />}
 
       <div className="settings-layout">
         <section className="settings-panel settings-preferences" aria-labelledby="settings-preferences-title">

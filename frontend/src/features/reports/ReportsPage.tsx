@@ -1,3 +1,4 @@
+import { EmailDeliveryPanel } from "../notifications/EmailDeliveryPanel";
 import { useRef, useState } from "react";
 import { ArrowDownToLine, ChevronLeft, ChevronRight, Download, FileJson, FileText, LockKeyhole } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -134,6 +135,7 @@ export function ReportsPage() {
   return (
     <section className="governance-page reports-page">
       <header className="page-heading-row"><div><p className="eyebrow">EVIDENCIA Y DECISIÓN HUMANA</p><h1>Informes</h1><p className="page-subtitle">Consulta informes persistidos, descarga artefactos desde la API y registra una decisión humana versionada. La decisión del informe es independiente de la revisión de propuestas.</p></div><Pill tone="neutral">Solo lectura externa</Pill></header>
+      {project && <EmailDeliveryPanel projectId={project.id} />}
       <section className="module-toolbar panel" aria-label="Filtros de informes">
         <label className="filter-control"><span>Decisión humana</span><select value={decisionFilter} onChange={(event) => changeFilter(event.target.value)}><option value="">Todas las decisiones</option><option value="pending">Pendiente</option><option value="approved">Aprobado</option><option value="rejected">Rechazado</option><option value="changes_requested">Cambios solicitados</option><option value="postponed">Pospuesto</option></select></label>
         <span className="caption">Los artefactos se solicitan bajo demanda; el navegador no procesa HTML crudo ni carga imágenes remotas.</span>

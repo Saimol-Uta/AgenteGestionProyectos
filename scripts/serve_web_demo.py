@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Serve authentic history read-only or disposable web-test data, without remote calls."""
+"""Serve a source-complete local fixture without reading live project configuration."""
 
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -11,7 +12,7 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_OPERATOR_TOKEN = "h5-fixture-operator-only-never-use-in-production"
-FIXTURE_CLOCK = datetime(2026, 1, 8, 18, 0, tzinfo=timezone.utc)
+FIXTURE_CLOCK = datetime(2026, 1, 22, 18, 0, tzinfo=timezone.utc)
 
 
 def local_port(value: str) -> int:
@@ -27,77 +28,107 @@ def local_port(value: str) -> int:
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(
         description=(
-            "Demostración web local en 127.0.0.1: historial auténtico de solo lectura "
-            "o datos controlados desechables. No llama proveedores ni escribe en Trello."
+            "Demostración local H5-TEST con datos unificados y fuente completa. "
+            "Usa proveedores fake, escribe solo en SQLite/artifacts locales y no llama servicios externos."
         ),
     )
     command.add_argument(
-        "--dataset", choices=("historical", "fixture"), default="historical",
-        help="historical: consulta sin privilegios; fixture: base temporal de pruebas.",
+        "--dataset", choices=("fixture",), default="fixture",
+        help="fixture: base nueva aislada; no se ofrece el histórico legacy.",
     )
-    command.add_argument("--port", type=local_port, default=8000, help="Puerto local; predeterminado: 8000.")
+    command.add_argument(
+        "--fixture-db", type=Path,
+        help=(
+            "Usar una base regenerada por tests.web_fixtures.seed_unified_demo_data; "
+            "requiere artefactos frescos <db-stem>-runs y <db-stem>-outbox junto a la base. "
+            "El ledger de jobs y las ramas permanecen aislados en un directorio temporal."
+        ),
+    )
+    command.add_argument(
+        "--port", type=local_port, default=8000,
+        help="Puerto local de 127.0.0.1; predeterminado: 8000.",
+    )
     return command
 
 
 @contextmanager
-def demo_settings(dataset: str):
-    """Never make a writable copy of the authentic DB or alter historical artifacts."""
+def demo_settings(dataset: str = "fixture", *, fixture_db_path: Path | None = None):
+    """Build a matching writable H5-TEST config around a fresh isolated fixture database."""
+    if dataset != "fixture":
+        raise ValueError("Only the fresh unified fixture dataset is supported.")
+
     sys.path.insert(0, str(ROOT / "src"))
-    from agente_gestion.api.settings import ApiSettings, ProjectConfig, load_api_settings
+    sys.path.insert(0, str(ROOT / "tests"))
+    from agente_gestion.api.settings import ApiSettings, ProjectConfig
+    from agente_gestion.domain.weekly_schedule import WeeklySchedule
+    from web_fixtures import seed_unified_demo_data, validate_unified_demo_database
 
-    if dataset == "historical":
-        settings = load_api_settings()
-        if not Path(settings.db_path).is_file():
-            raise FileNotFoundError("No existe una base histórica; use --dataset fixture para pruebas aisladas.")
-        # This demonstration mode cannot gain privileges from an inherited operator token.
-        yield settings.model_copy(update={
-            "operator_token": None, "operator_project_ids": (), "analysis_enabled": False,
-            "governance_enabled": False, "report_decisions_enabled": False, "weekly_cycle_enabled": False,
-        })
-        return
-
-    runtime = ROOT / ".runtime"
-    runtime.mkdir(exist_ok=True)
-    with TemporaryDirectory(prefix="h5-web-fixture-", dir=runtime) as temporary:
+    with TemporaryDirectory(prefix="h5-unified-web-") as temporary:
         root = Path(temporary)
-        sys.path.insert(0, str(ROOT / "tests"))
-        from web_fixtures import PROJECT_ID, create_web_fixture_db
-        from agente_gestion.domain.weekly_schedule import WeeklySchedule
+        fixtures_dir = root / "fixtures"
+        fixtures_dir.mkdir()
+        branches_dir = root / "branches"
+        job_ledger_path = root / "analysis-jobs.sqlite"
+        analysis_config = root / "analysis-fixture.yaml"
+        analysis_config.write_text(
+            "is_fake: true\nallow_remote_ai: false\nsource_mode: fixtures\n"
+            f"fixtures_dir: {json.dumps(str(fixtures_dir))}\n",
+            encoding="utf-8",
+        )
 
-        database = root / "fixture.sqlite"
-        create_web_fixture_db(database)
-        config = root / "analysis-fixture.yaml"
-        config.write_text("is_fake: true\nallow_remote_ai: false\n", encoding="utf-8")
+        if fixture_db_path is None:
+            database_path = root / "fixture.sqlite"
+            runs_dir = root / "fixture-runs"
+            outbox_dir = root / "fixture-outbox"
+            seed_unified_demo_data(database_path, runs_dir, outbox_dir)
+        else:
+            database_path = Path(fixture_db_path).expanduser().resolve(strict=False)
+            runs_dir = database_path.with_name(f"{database_path.stem}-runs")
+            outbox_dir = database_path.with_name(f"{database_path.stem}-outbox")
+            validate_unified_demo_database(database_path, runs_dir, outbox_dir)
+
+        project_id = "H5-TEST"
         yield ApiSettings(
-            db_path=str(database),
-            runs_dir=str(root / "runs"),
-            outbox_dir=str(root / "outbox"),
+            db_path=str(database_path),
+            runs_dir=str(runs_dir),
+            outbox_dir=str(outbox_dir),
             projects=(ProjectConfig(
-                id=PROJECT_ID, name="HORMIGESTION · fixture controlada", source_mode="fixtures",
+                id=project_id,
+                name="HORMIGESTION · fixture unificada",
+                source_mode="fixtures",
             ),),
             operator_token=FIXTURE_OPERATOR_TOKEN,
             operator_actor="operador-fixture",
-            operator_project_ids=(PROJECT_ID,),
+            operator_project_ids=(project_id,),
+            allowed_origins=[
+                "http://localhost:8000", "http://127.0.0.1:8000",
+                "http://localhost:5173", "http://127.0.0.1:5173",
+            ],
+            allowed_hosts=["localhost", "127.0.0.1", "testserver"],
             analysis_enabled=True,
             governance_enabled=True,
             report_decisions_enabled=True,
             weekly_cycle_enabled=True,
             weekly_schedule=WeeklySchedule(
-                project_id=PROJECT_ID, weekday=3, local_time="13:00",
-                timezone="America/Guayaquil", window_rule="previous_scheduled_week",
+                project_id=project_id,
+                weekday=3,
+                local_time="13:00",
+                timezone="America/Guayaquil",
+                window_rule="previous_scheduled_week",
             ),
             weekly_schedule_status="configured",
-            analysis_config_path=str(config),
-            job_ledger_path=str(root / "jobs.sqlite"),
+            analysis_config_path=str(analysis_config),
+            job_ledger_path=str(job_ledger_path),
+            branches_dir=str(branches_dir),
+            external_writes_enabled=False,
         )
 
 
 def fixture_executor(project_id, plan, _remote_consent):
-    """Exercise job transport only; deliberately do not invoke an agent or source adapter."""
-    if project_id != "H5-TEST" or plan.engine_settings is None or not plan.engine_settings.is_fake:
-        raise RuntimeError("fixture_executor_refused_nonfake_plan")
-    print("Fixture job: existing simulated run returned; no pipeline or provider invoked.", flush=True)
-    return "run-current"
+    """Execute one real orchestrator pipeline with fixed data and simulated providers only."""
+    from web_fixtures import run_fixture_analysis
+
+    return run_fixture_analysis(project_id, plan.engine_settings, captured_at=FIXTURE_CLOCK)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,20 +140,27 @@ def main(argv: list[str] | None = None) -> int:
     from agente_gestion.api.app import create_app
 
     try:
-        with demo_settings(args.dataset) as settings:
-            print(f"Dataset: {args.dataset}; escrituras externas deshabilitadas.", flush=True)
-            application = create_app(
-                settings, analysis_executor=fixture_executor if args.dataset == "fixture" else None,
-                schedule_clock=(lambda: FIXTURE_CLOCK) if args.dataset == "fixture" else None,
+        with demo_settings(args.dataset, fixture_db_path=args.fixture_db) as settings:
+            print(
+                f"Dataset: fixture unificada H5-TEST; base aislada={args.fixture_db is None}; "
+                "escrituras externas deshabilitadas.",
+                flush=True,
             )
-            if args.dataset == "fixture":
-                print(f"Reloj fijo de pruebas: {FIXTURE_CLOCK.isoformat()}; ciclo manual local SQLite, sin IA.", flush=True)
+            application = create_app(
+                settings,
+                analysis_executor=fixture_executor,
+                schedule_clock=(lambda: FIXTURE_CLOCK),
+            )
+            print(
+                f"Reloj fijo de pruebas: {FIXTURE_CLOCK.isoformat()}; "
+                "cada análisis ejecuta el pipeline simulado y persiste una nueva corrida local.",
+                flush=True,
+            )
             uvicorn.run(application, host="127.0.0.1", port=args.port, log_level="warning")
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         command.error(str(exc))
     return 0
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(ROOT / "src"))
     raise SystemExit(main())

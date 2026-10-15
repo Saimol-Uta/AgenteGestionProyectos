@@ -14,7 +14,6 @@ from tests.web_fixtures import OPERATOR_TOKEN, PROJECT_ID, build_web_api_fixture
 
 
 ORIGIN = "http://testserver"
-RUN_ID = "run-current"
 
 
 class WebApiAnalysisJobTests(unittest.TestCase):
@@ -34,7 +33,7 @@ class WebApiAnalysisJobTests(unittest.TestCase):
             if self.executor_error is not None:
                 raise RuntimeError(self.executor_error)
             self.finished.set()
-            return RUN_ID
+            return self.fixture.current_run_id
 
         config_path = self.root / "analysis.yaml"
         config_path.write_text(
@@ -203,7 +202,7 @@ class WebApiAnalysisJobTests(unittest.TestCase):
         self.assertIsNotNone(polled)
         job = polled.json()
         self.assertEqual(job["status"], "completed")
-        self.assertEqual(job["run_id"], RUN_ID)
+        self.assertEqual(job["run_id"], self.fixture.current_run_id)
         self.assertTrue(job["stage_progress_available"])
 
         page = self.client.get(f"/api/v1/analysis/jobs?project_id={PROJECT_ID}")
@@ -273,7 +272,7 @@ class WebApiAnalysisJobTests(unittest.TestCase):
             started.set()
             release.wait(timeout=3)
             finished.set()
-            return RUN_ID
+            return self.fixture.current_run_id
 
         settings = ApiSettings(
             db_path=str(self.fixture.database_path),

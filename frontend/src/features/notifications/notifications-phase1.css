@@ -1,0 +1,43 @@
+.email-delivery-panel { min-width: 0; margin: 0 0 22px; padding: 22px; }
+.email-delivery-panel h2 { max-width: 680px; line-height: 1.35; }
+.delivery-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 16px 0; color: var(--text-secondary); font-size: 13px; }
+.delivery-recipient-form { max-width: 850px; }
+.delivery-recipient-form label { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 7px; font-weight: 650; }
+.delivery-recipient-form label span { font-weight: 400; font-size: 12px; color: var(--text-secondary); }
+.delivery-recipient-controls { display: flex; gap: 10px; }
+.delivery-recipient-controls input { min-width: 0; flex: 1; padding: 10px 12px; background: var(--surface-soft); color: var(--text-primary); border: 1px solid var(--border-strong); border-radius: 8px; }
+.delivery-recipient-controls input[aria-invalid="true"] { border-color: var(--danger); }
+.delivery-recipient-form .caption { color: var(--text-secondary); }
+.delivery-validation { color: var(--danger); }
+.delivery-saved { font-size: 13px; color: var(--success); }
+.delivery-preview-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+.delivery-preview-actions .caption { color: var(--text-secondary); }
+.executive-email { min-width: 0; margin: 20px 0; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow-card); }
+.executive-email-heading { display: flex; align-items: flex-start; gap: 12px; padding: 20px; border-bottom: 1px solid var(--border); background: var(--surface-soft); border-radius: 12px 12px 0 0; }
+.executive-email-heading > div { flex: 1; min-width: 0; }
+.executive-email-heading h3 { margin: 0; font-size: 16px; }
+.delivery-icon { display: grid; place-items: center; flex-shrink: 0; padding: 10px; color: var(--accent); background: var(--accent-soft); border-radius: 10px; }
+.executive-email-envelope { margin: 0; padding: 18px 20px; display: grid; gap: 8px; }
+.executive-email-envelope > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; }
+.executive-email-envelope dt { color: var(--text-secondary); font-size: 13px; }
+.executive-email-envelope dd { margin: 0; font-size: 13px; }
+.executive-email-envelope dd span { color: var(--text-secondary); }
+.delivery-boundary { padding: 12px 16px; margin: 0 20px; border-left: 3px solid var(--warning); color: var(--text-secondary); background: var(--warning-soft); font-size: 12px; }
+.executive-email-body { padding: 6px 20px 20px; color: var(--text-secondary); }
+.executive-email-body h4 { margin: 12px 0 6px; color: var(--text-primary); }
+.executive-email-signals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.executive-email-signals section { padding: 4px 14px 12px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
+.executive-email-signals strong { color: var(--accent); font-size: 22px; }
+.executive-email-signals p { margin: 0; }
+.executive-email-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+@media (max-width: 640px) {
+  .email-delivery-panel { padding: 16px; }
+  .delivery-recipient-controls { flex-direction: column; }
+  .delivery-preview-actions .button { width: 100%; white-space: normal; }
+  .executive-email-heading { flex-wrap: wrap; padding: 16px; }
+  .executive-email-envelope { padding: 16px; }
+  .executive-email-envelope > div { grid-template-columns: 48px minmax(0, 1fr); }
+  .executive-email-signals { grid-template-columns: minmax(0, 1fr); }
+  .delivery-boundary { margin-inline: 16px; }
+  .executive-email-body { padding-inline: 16px; }
+}

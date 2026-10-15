@@ -13,41 +13,35 @@ import { useSession } from "../features/auth/SessionProvider";
 import { LoginDialog } from "../features/auth/LoginDialog";
 import { useTheme } from "../features/theme/ThemeProvider";
 import { useToast } from "../components/ToastProvider";
+import { AgentWorkflowBar } from "../components/AgentWorkflowBar";
+import { useDecisionSummary } from "../features/manager/useDecisionSummary";
 import { Tooltip } from "../components/Tooltip";
 
 const navigation: Array<{
   heading: string;
   items: Array<{ label: string; path: string; icon: LucideIcon }>;
 }> = [
-  {
-    heading: "Espacio de trabajo",
-    items: [
-      { label: "Dashboard", path: "/", icon: Gauge },
-      { label: "Proyectos", path: "/projects", icon: FolderKanban },
-      { label: "Tareas", path: "/tasks", icon: CheckSquare2 },
-    ],
-  },
-  {
-    heading: "Análisis",
-    items: [
-      { label: "Análisis de IA", path: "/analysis", icon: Sparkles },
-      { label: "Calidad de código", path: "/quality", icon: ShieldCheck },
-      { label: "Propuestas", path: "/proposals", icon: Archive },
-      { label: "Informes", path: "/reports", icon: BarChart3 },
-    ],
-  },
-  {
-    heading: "Administración",
-    items: [
-      { label: "Calendario", path: "/calendar", icon: CalendarDays },
-      { label: "Auditoría", path: "/audit", icon: Activity },
-      { label: "Configuración", path: "/settings", icon: Settings2 },
-    ],
-  },
+  { heading: "1. Seguimiento y Control", items: [
+    { label: "Dashboard", path: "/", icon: Gauge },
+    { label: "Proyectos", path: "/projects", icon: FolderKanban },
+    { label: "Tareas", path: "/tasks", icon: CheckSquare2 },
+    { label: "Análisis de IA", path: "/analysis", icon: Sparkles },
+  ] },
+  { heading: "2. Bandeja de Decisiones", items: [
+    { label: "Propuestas", path: "/proposals", icon: Archive },
+    { label: "Calidad de código", path: "/quality", icon: ShieldCheck },
+  ] },
+  { heading: "3. Reportes y Auditoría", items: [
+    { label: "Informes", path: "/reports", icon: BarChart3 },
+    { label: "Calendario", path: "/calendar", icon: CalendarDays },
+    { label: "Auditoría", path: "/audit", icon: Activity },
+    { label: "Configuración", path: "/settings", icon: Settings2 },
+  ] },
 ];
 
 const routeTitles: Record<string, string> = {
   "/": "Dashboard",
+  "/dashboard": "Dashboard",
   "/projects": "Proyectos",
   "/tasks": "Tareas",
   "/analysis": "Análisis de IA",
@@ -60,6 +54,8 @@ const routeTitles: Record<string, string> = {
 };
 
 function SidebarNavigation({ onNavigate }: { onNavigate?: () => void }) {
+  const { selectedProjectId } = useWorkspace();
+  const counts = useDecisionSummary(selectedProjectId);
   return (
     <nav className="sidebar-navigation" aria-label="Navegación principal">
       {navigation.map((group) => (
@@ -76,6 +72,7 @@ function SidebarNavigation({ onNavigate }: { onNavigate?: () => void }) {
             >
               <Icon aria-hidden="true" size={17} strokeWidth={1.8} />
               <span>{label}</span>
+              {(path === "/proposals" || path === "/quality") && <span className="nav-decision-badge" aria-label="Pendientes según el backend">{(path === "/proposals" ? counts.proposals : counts.findings) ?? "—"}</span>}
             </NavLink>
           ))}
         </div>
@@ -334,6 +331,7 @@ export function AppShell() {
 
         <main className="page-container" id="main-content" tabIndex={-1}>
           <Breadcrumbs />
+          <AgentWorkflowBar />
           <Outlet />
         </main>
       </div>

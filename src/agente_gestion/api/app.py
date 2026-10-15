@@ -17,6 +17,9 @@ from agente_gestion.api.control_plane import ControlPlaneRepository
 from agente_gestion.api.errors import ApiProblem
 from agente_gestion.api.repository import DataIntegrityError, SQLiteQueryRepository
 from agente_gestion.api.routes import router
+from agente_gestion.api.email_notifications import router as email_notifications_router
+from agente_gestion.api.finding_actions import router as finding_actions_router
+from agente_gestion.api.proposal_execution import router as proposal_execution_router
 from agente_gestion.api.schemas import ErrorEnvelope
 from agente_gestion.api.security import OperatorSessionStore
 from agente_gestion.api.settings import ApiSettings, ProjectConfig, load_api_settings
@@ -132,6 +135,9 @@ def create_app(
         return _error(500, "error_interno", "Ocurrió un error interno al procesar la solicitud.")
 
     app.include_router(router)
+    app.include_router(finding_actions_router)
+    app.include_router(proposal_execution_router)
+    app.include_router(email_notifications_router)
     return app
 
 

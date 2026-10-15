@@ -1,5 +1,6 @@
 """Unit tests for modular Orchestrator routing, stage sequencing, and invariants."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -24,6 +25,10 @@ from agente_gestion.application.orchestrator import ProjectOrchestrator, Orchest
 from agente_gestion.application.escalation import EscalationGate, EscalationPolicy
 
 
+SAMPLE_COMMIT_SHA = "c" * 40
+SAMPLE_SOURCE = "def calculate_average(total): return 1 / total"
+
+
 class OrchestratorTestCase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -41,6 +46,21 @@ class OrchestratorTestCase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    def _complete_code_diff(self) -> CodeDiffSnippet:
+        return CodeDiffSnippet(
+            repository="org/repo",
+            commit_sha=SAMPLE_COMMIT_SHA,
+            file_path="src/service.py",
+            lines=[1],
+            content=SAMPLE_SOURCE,
+            evidence_scope="full_file",
+            is_complete=True,
+            start_line=1,
+            end_line=1,
+            total_lines=1,
+            source_sha256=hashlib.sha256(SAMPLE_SOURCE.encode("utf-8")).hexdigest(),
+        )
+
     def _sample_snapshot_with_code(self) -> WeeklySnapshot:
         return WeeklySnapshot(
             id="snap-code",
@@ -51,20 +71,12 @@ class OrchestratorTestCase(unittest.TestCase):
                 TaskCard(id="T1", title="Task 1", state=TaskState.completed, is_included=True),
                 TaskCard(id="T2", title="Task 2", state=TaskState.in_progress, is_included=True),
             ],
-            code_diffs=[
-                CodeDiffSnippet(
-                    repository="org/repo",
-                    commit_sha="c0ffee1",
-                    file_path="src/service.py",
-                    lines=[15],
-                    content="return 1 / total",
-                )
-            ],
+            code_diffs=[self._complete_code_diff()],
             ci_runs=[
                 CIRunResult(
                     id="ci-1",
                     workflow_name="tests",
-                    commit_sha="c0ffee1",
+                    commit_sha=SAMPLE_COMMIT_SHA,
                     status="success",
                     total_tests=10,
                     failed_tests=0,
@@ -285,15 +297,17 @@ class OrchestratorTestCase(unittest.TestCase):
                             "rule_id": "Q3",
                             "claim": "Inyeccion SQL detectada en concatenacion de consulta",
                             "severity": "critical",
-                            "evidence_ids": ["c0ffee1"],
-                            "commit_sha": "c0ffee1",
+                            "evidence_ids": [SAMPLE_COMMIT_SHA],
+                            "commit_sha": SAMPLE_COMMIT_SHA,
                             "file_path": "src/service.py",
-                            "line": 15,
+                            "line": 1,
                             "confidence": 0.9,
                             "requires_verification": True,
                             "category": "inyeccion_sql",
                             "evidence": "SELECT * FROM users WHERE id = " + "x",
                             "suggested_fix": "Use parameterized queries",
+                            "suggested_code": "cursor.execute(\"SELECT * FROM users WHERE id = ?\", (x,))",
+                            "improvement_summary": "Parametriza el valor de entrada.",
                         }
                     ]
                 },
@@ -314,7 +328,7 @@ class OrchestratorTestCase(unittest.TestCase):
                             "finding_id": "f-sql-1",
                             "verdict": "insufficient",
                             "reason": "Needs further human security audit",
-                            "evidence_ids": ["c0ffee1"],
+                            "evidence_ids": [SAMPLE_COMMIT_SHA],
                         }
                     ]
                 },
@@ -370,14 +384,16 @@ class OrchestratorTestCase(unittest.TestCase):
                     "findings": [
                         {
                             "id": "f-sql-esc",
+                            "suggested_code": "return 1 / total if total else 0",
+                            "improvement_summary": "Comprueba el divisor.",
                             # No review policy exists here: do not misuse CI test-count Q1.
                             "rule_id": None,
                             "claim": "Vulnerabilidad de inyeccion SQL en servicio",
                             "severity": "critical",
-                            "evidence_ids": ["c0ffee1"],
-                            "commit_sha": "c0ffee1",
+                            "evidence_ids": [SAMPLE_COMMIT_SHA],
+                            "commit_sha": SAMPLE_COMMIT_SHA,
                             "file_path": "src/service.py",
-                            "line": 15,
+                            "line": 1,
                             "confidence": 0.9,
                             "requires_verification": True,
                             "category": "inyeccion_sql",
@@ -437,14 +453,16 @@ class OrchestratorTestCase(unittest.TestCase):
                     "findings": [
                         {
                             "id": "f-sql-cloud",
+                            "suggested_code": "return 1 / total if total else 0",
+                            "improvement_summary": "Comprueba el divisor.",
                             # No review policy exists here: do not misuse CI test-count Q1.
                             "rule_id": None,
                             "claim": "Vulnerabilidad critica en servicio",
                             "severity": "critical",
-                            "evidence_ids": ["c0ffee1"],
-                            "commit_sha": "c0ffee1",
+                            "evidence_ids": [SAMPLE_COMMIT_SHA],
+                            "commit_sha": SAMPLE_COMMIT_SHA,
                             "file_path": "src/service.py",
-                            "line": 15,
+                            "line": 1,
                             "confidence": 0.9,
                             "requires_verification": True,
                             "category": "inyeccion_sql",
@@ -476,7 +494,7 @@ class OrchestratorTestCase(unittest.TestCase):
                                 "finding_id": "f-sql-cloud",
                                 "verdict": "confirmed",
                                 "reason": "Verified security flaw",
-                                "evidence_ids": ["c0ffee1"],
+                                "evidence_ids": [SAMPLE_COMMIT_SHA],
                             }
                         ]
                     },
@@ -555,20 +573,12 @@ class OrchestratorTestCase(unittest.TestCase):
             tasks=[
                 TaskCard(id="T1", title="Task 1", state=TaskState.completed, is_included=True),
             ],
-            code_diffs=[
-                CodeDiffSnippet(
-                    repository="org/repo",
-                    commit_sha="c0ffee1",
-                    file_path="src/service.py",
-                    lines=[15],
-                    content="return 1 / total",
-                )
-            ],
+            code_diffs=[self._complete_code_diff()],
             ci_runs=[
                 CIRunResult(
                     id="run-ci-101",
                     workflow_name="tests",
-                    commit_sha="c0ffee1",
+                    commit_sha=SAMPLE_COMMIT_SHA,
                     status="success",
                     total_tests=10,
                     failed_tests=0,
@@ -616,20 +626,12 @@ class OrchestratorTestCase(unittest.TestCase):
             tasks=[
                 TaskCard(id="T1", title="Task 1", state=TaskState.completed, is_included=True),
             ],
-            code_diffs=[
-                CodeDiffSnippet(
-                    repository="org/repo",
-                    commit_sha="c0ffee1",
-                    file_path="src/service.py",
-                    lines=[15],
-                    content="return 1 / total",
-                )
-            ],
+            code_diffs=[self._complete_code_diff()],
             ci_runs=[
                 CIRunResult(
                     id="run-ci-101",
                     workflow_name="tests",
-                    commit_sha="c0ffee1",
+                    commit_sha=SAMPLE_COMMIT_SHA,
                     status="success",
                     total_tests=10,
                     failed_tests=0,
@@ -753,7 +755,7 @@ class OrchestratorTestCase(unittest.TestCase):
         payload = provider.requests[0].evidences
         self.assertNotIn("code_snippets", payload)
         self.assertFalse(payload["source_context"]["is_complete"])
-        self.assertEqual(payload["source_context"]["commit_sha"], "c0ffee1")
+        self.assertEqual(payload["source_context"]["commit_sha"], SAMPLE_COMMIT_SHA)
 
 
 if __name__ == "__main__":

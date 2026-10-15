@@ -6,7 +6,8 @@ El proyecto incorpora una interfaz React/TypeScript y una API FastAPI dentro del
 
 - [Instalación, arranque en CachyOS/Fish, seguridad y demostración](docs/interfaz-web.md).
 - [Contrato REST y operaciones protegidas](docs/h5-api-contract.md).
-- El acceso local de consulta no concede privilegios; las escrituras reales en Trello siguen deshabilitadas.
+- [Fase 2: ramas de verificación, ejecución Trello y correo del gestor](docs/phase2-fullstack.md) (integración y verificación en curso).
+- El acceso local de consulta no concede privilegios; las escrituras externas permanecen deshabilitadas por defecto.
 - Las pruebas controladas no efectúan llamadas pagadas ni mutaciones externas; se distinguen de la consulta histórica auténtica.
 
 
@@ -162,46 +163,23 @@ la proyección no es un sanitizador de texto libre.
 
 Base ausente, catálogo legado o registros inválidos fallan con error estático
 por stderr y código 1, sin crear archivos ni migrar; propuesta ausente o de otro
-proyecto devuelve el mismo error. En el corte histórico H2B2a los estados eran `pending`,
-`not_authorized`, `not_executed`; el cierre H2 añade el circuito offline siguiente.
+proyecto devuelve el mismo error. Estas consultas no habilitan revisión manual,
+simulación pública ni decisiones locales; el flujo operativo vigente es el unificado.
 La integridad comprobada no autentica autoría ni prueba asociación de evidencia
 externa a captura. Pruebas con SQLite temporal en
 `tests/test_cli_proposals.py`; no se abrió la base real y T9 sigue **PENDING**.
 
-## Decisiones y simulación de propuestas (H2 cerrado, solo offline)
+## Decisiones unificadas: revisión automática y ejecución protegida
 
-Las propuestas fundamentadas usan entradas/reglas de Monitoring y reporte;
-la revisión técnica no es aprobación humana ni permiso. El catálogo y la
-evidencia congelada se vinculan a la captura inmutable verificada y al hash
-del cuerpo exacto almacenado; las decisiones quedan en un ledger append-only.
+El único circuito operativo es **Ejecutor → Revisor automático → Aprobador humano → ejecución**. Se retiraron las decisiones locales del navegador, la CLI manual de revisión/dry-run y las rutas separadas de revisión/autorización/simulación.
 
-Plantillas, **no acciones sobre un proyecto real** (sustituir marcadores por
-identificadores verificados; elegir una sola decisión de la lista):
+- Propuestas: `POST /api/v1/projects/{project_id}/proposals/{proposal_id}/execute`, con decisión y motivo humano persistidos. La revisión técnica/dry-run se ejecuta automáticamente; no concede aprobación por sí sola.
+- Código: `POST /api/v1/runs/{run_id}/findings/{finding_id}/decision`. Aprobar exige fuente completa, reemplazo unívoco y validación del archivo completo; no se crean ramas de fragmentos.
+- Capacidades: `governance:proposal_execute`, `quality:decide` y `notifications:email_send`, derivadas por el servidor bajo los mismos límites de proyecto/sesión y habilitación explícita.
+- Fixture: nuevas capturas/corridas con fuentes completas y al menos dos snapshots comparables; no se reutilizan registros incompletos. Sandbox no acredita cambios remotos.
+- Auditoría y ejecución conservan registros append-only, idempotencia, identidad del servidor y motivo humano.
 
-```text
-PYTHONPATH=src .venv/bin/python -m agente_gestion proposals state PROJECT PROPOSAL_ID --db-path DB
-PYTHONPATH=src .venv/bin/python -m agente_gestion proposals decide PROJECT PROPOSAL_ID --decision approve_offline|reject|authorize_dry_run|deny|revoke --actor ID --event-id ID --expected-version N --proposal-body-sha256 SHA --db-path DB
-PYTHONPATH=src .venv/bin/python -m agente_gestion proposals dry-run PROJECT PROPOSAL_ID --request-id ID --capture-id CAP --permission-event-id EVENT --expected-version N --proposal-body-sha256 SHA --db-path DB
-PYTHONPATH=src .venv/bin/python -m agente_gestion proposals audit PROJECT PROPOSAL_ID REQUEST_ID --db-path DB
-```
-
-`state` devuelve SHA-256 del cuerpo exacto verificado, versión actual y captura.
-El llamador debe verificar y aportar flags explícitos: no hay copia automática
-que convierta esos datos en confianza o permiso por defecto. `--actor` afirma
-una identidad offline: no autentica, no concede autoridad legal ni identidad
-del SO. `approve_offline` no equivale al permiso específico `authorize_dry_run`.
-La identidad iniciadora queda desconocida, no se atribuye automáticamente al
-actor que declara el permiso.
-
-El dry-run usa **solo la propuesta almacenada** para `start_date`, `due_date`,
-`priority`, `assignee_ids` o `state`, con TaskSource completo/observado y una
-única última captura **almacenada**, no Trello vivo. Empates, captura obsoleta,
-falta de evidencia/permiso o versión incorrecta bloquean; la primera denegación
-legítima queda auditada. El replay revalida y puede rechazarse tras revocación
-o nueva captura. `audit` es histórico y de solo lectura: un `SIMULATED` anterior
-no acredita permiso vigente ni habilita otra ejecución. Se conserva
-`not_executed` y `live=false`; no hay proveedores, fábrica de fuentes ni puente
-de ejecución. **T9 real y escrituras Trello siguen pendientes y no autorizados.**
+Consultá [configuración, endpoints y demostración de Fase 2](docs/phase2-fullstack.md). El avance y las pruebas del reemplazo están en `odd/tasks/backend-fullstack-phase2.md`; los resultados históricos de H2 no equivalen a verificación del circuito nuevo.
 
 ## Cumplimiento académico y continuidad
 

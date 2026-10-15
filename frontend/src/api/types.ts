@@ -244,7 +244,36 @@ export interface CodeExcerpt {
   redacted: boolean;
 }
 
+export type CodeFindingDecision = "approve" | "reject" | "request_changes";
+export type ExecutionMode = "live" | "sandbox";
+export type FindingDecisionStatus = "approved" | "rejected" | "changes_requested" | "pending";
+
+export interface DecideCodeFindingRequest {
+  decision: CodeFindingDecision;
+  suggested_code_override?: string;
+  target_branch?: string;
+  reason?: string;
+}
+
+export interface DecideCodeFindingResponse {
+  decision_status: FindingDecisionStatus;
+  suggested_code: string;
+  improvement_summary: string;
+  branch_name: string | null;
+  branch_url: string | null;
+  commit_sha_applied: string | null;
+  execution_mode: ExecutionMode;
+}
+
 export interface FindingDetail extends FindingSummary {
+  suggested_code?: string | null;
+  improvement_summary?: string | null;
+  decision_status?: FindingDecisionStatus | null;
+  commit_sha_applied?: string | null;
+  execution_mode?: ExecutionMode | null;
+  branch_name?: string | null;
+  branch_url?: string | null;
+  pull_request_url?: string | null;
   claim: string | null;
   suggested_fix: string | null;
   evidence_ids: string[] | null;
@@ -421,10 +450,24 @@ export interface ProposalEvidence {
   summary: string;
 }
 
-export type ProposalReviewStatus = "pending" | "approved_offline" | "rejected" | "unknown";
-export type ProposalReviewFilter = Exclude<ProposalReviewStatus, "unknown">;
-export type ProposalAuthorizationStatus = "not_authorized" | "authorized_dry_run" | "denied" | "revoked" | "unknown";
 export type ProposalExecutionStatus = "not_executed" | "EXECUTED" | "ALREADY_APPLIED" | "DENIED" | "CONFLICT" | "FAILED" | "unknown";
+
+export interface ProposalTechnicalReview {
+  review_id: string;
+  technical_status: "ready" | "blocked";
+  technical_errors: string[];
+  dry_run: {
+    status: "SIMULATED" | "denied";
+    reasons: string[];
+    field: string | null;
+    before: ProposalValue;
+    after: ProposalValue;
+    live_state_changed: false;
+  };
+  human_approval_status: "required";
+  execution_authorized: false;
+  recorded_at: string;
+}
 
 export interface ProposalSummary {
   proposal_id: string;
@@ -441,55 +484,38 @@ export interface ProposalSummary {
   version: number | null;
   technical_eligibility: "eligible" | "ineligible" | "unknown";
   technical_errors: string[];
+  technical_review?: ProposalTechnicalReview | null;
   freshness: "current" | "stale" | "unknown";
-  review_status: ProposalReviewStatus;
-  authorization_status: ProposalAuthorizationStatus;
   execution_status: ProposalExecutionStatus;
 }
 
-export interface ProposalDecisionEvent {
-  event_id: string;
-  decision: "approve_offline" | "reject" | "authorize_dry_run" | "deny" | "revoke";
-  version: number;
-  recorded_at: string | null;
-  actor_id: string | null;
-  actor_provenance: "asserted_offline" | "unknown";
-}
-
-export interface ProposalDryRun {
-  request_id: string;
-  status: "SIMULATED" | "denied";
-  reasons: string[];
-  field: string | null;
-  before: ProposalValue;
-  after: ProposalValue;
-  recorded_at: string;
-  execution_status: "not_executed";
-  live_state_changed: false;
-  real_execution_allowed: false;
-}
-
-export interface ProposalDetail extends ProposalSummary {
-  decision_history_availability: "available" | "unknown";
-  dry_run_availability: "available" | "unknown";
-  decision_history: ProposalDecisionEvent[];
-  dry_runs: ProposalDryRun[];
-}
+export type ProposalDetail = ProposalSummary;
 
 export interface ProposalCollection extends Paginated<ProposalSummary> {
   availability: "available" | "unknown";
 }
 
-export interface ProposalMutationResponse {
-  proposal: ProposalDetail;
-  reused: boolean;
-  audit_event_id: string;
+export type ProposalExecutionDecision = "approve_and_execute" | "modify_and_execute" | "reject";
+
+export interface ExecuteProposalRequest {
+  decision: ProposalExecutionDecision;
+  modified_due_date?: string;
+  modified_priority?: string;
+  modified_assignee_ids?: string[];
+  reason: string;
 }
 
-export interface ProposalDryRunResponse {
-  dry_run: ProposalDryRun;
-  reused: boolean;
-  audit_event_id: string;
+export interface ProposalExecutionResult {
+  status: string;
+  verification_status: string;
+  [key: string]: unknown;
+}
+
+export interface ExecuteProposalResponse {
+  proposal_id: string;
+  decision: ProposalExecutionDecision;
+  execution: ProposalExecutionResult;
+  execution_mode: ExecutionMode;
 }
 
 export interface ReportMetrics {
@@ -594,6 +620,7 @@ export interface WeeklyWindowView {
 }
 
 export interface OutboxReceiptSummary {
+  delivery_channel?: ManagerEmailDeliveryChannel | null;
   delivery_id: string;
   message_id: string;
   project_id: string;
@@ -635,6 +662,21 @@ export interface OutboxMessageView {
 export interface OutboxDetail {
   receipt: OutboxReceiptSummary;
   message: OutboxMessageView;
+}
+
+export interface SendManagerEmailRequest {
+  recipient_email?: string;
+  outbox_delivery_id?: string;
+}
+
+export type ManagerEmailDeliveryChannel = "local_outbox_simulated_email" | "smtp_email_sent" | "smtp_email_failed";
+
+export interface SendManagerEmailResponse {
+  delivery_id: string;
+  delivery_channel: ManagerEmailDeliveryChannel;
+  recipient_email: string;
+  html_preview_url: string | null;
+  status: string;
 }
 
 export interface OutboxCollection extends Paginated<OutboxReceiptSummary> {

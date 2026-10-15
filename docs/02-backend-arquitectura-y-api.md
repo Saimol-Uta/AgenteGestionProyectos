@@ -70,9 +70,9 @@ Todos los endpoints retornan respuestas tipadas bajo `/api/v1` y manejan errores
 | `GET` | `/projects/{id}/tasks/{task_id}` | Detalle completo de una tarea y su evidencia observada | Público |
 | `GET` | `/projects/{id}/proposals` | Listado de propuestas de acción generadas | Público |
 | `GET` | `/projects/{id}/proposals/{prop_id}` | Detalle de propuesta y su historial de decisiones | Público |
-| `POST` | `/projects/{id}/proposals/{prop_id}/review` | Revisión técnica de la propuesta (`approve_offline`/`reject`) | Operador (`governance:proposal_review`) |
-| `POST` | `/projects/{id}/proposals/{prop_id}/dry-run-authorization` | Autorización de simulación en entorno seguro | Operador (`governance:dry_run_authorization`) |
-| `POST` | `/projects/{id}/proposals/{prop_id}/dry-runs` | Ejecución de simulación (*dry-run*) | Operador (`governance:dry_run`) |
+| `POST` | `/projects/{id}/proposals/{prop_id}/execute` | Revisor técnico automático y decisión humana con ejecución protegida | Operador (`governance:proposal_execute`) |
+| `POST` | `/runs/{run_id}/findings/{finding_id}/decision` | Decidir sobre código validado contra fuente completa y crear rama separada | Operador (`quality:decide`) |
+| `POST` | `/projects/{id}/notifications/email` | Enviar resumen/reenviar recibo con destinatario confirmado | Operador (`notifications:email_send`) |
 | `GET` | `/runs` | Listado paginado de ejecuciones del pipeline | Público |
 | `GET` | `/runs/{run_id}` | Detalle de etapas de una ejecución y sus duraciones | Público |
 | `GET` | `/runs/{run_id}/findings` | Hallazgos de calidad candidatos de una ejecución | Público |
@@ -175,13 +175,11 @@ erDiagram
 
 El servidor puede iniciarse en dos modalidades desde la raíz del proyecto:
 
-### Modo A: Datos Reales Históricos (Base `.runtime/agente.db`)
-Carga los proyectos y capturas auténticas de HORMIGESTION:
+### Modo A: Base configurada (`.runtime/agente.db`)
+Carga exclusivamente el contenido de la base configurada. Tras la regeneración de demostración, son datos de prueba nuevos, no historial auténtico de HORMIGESTION. No uses una credencial pública de fixture en una base privada; aprovisioná `H5_OPERATOR_TOKEN` de forma segura:
+
 ```bash
-PYTHONPATH=src H5_OPERATOR_TOKEN="h5-fixture-operator-only-never-use-in-production" \
-H5_ANALYSIS_ENABLED=true H5_GOVERNANCE_ENABLED=true \
-H5_REPORT_DECISIONS_ENABLED=true H5_WEEKLY_CYCLE_ENABLED=true \
-.venv/bin/python -m uvicorn agente_gestion.api.app:app --host 127.0.0.1 --port 8000 --workers 1
+PYTHONPATH=src .venv/bin/python -m uvicorn agente_gestion.api.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 ### Modo B: Demostración Aislada con Base Temporal Desechable

@@ -69,27 +69,41 @@
     {
       "repository": "org/repo-main",
       "pull_request_id": "PR-101",
-      "commit_sha": "a1b2c3d4e5f6",
+      "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "file_path": "src/auth/service.py",
       "diff_side": "NEW",
-      "lines": [10, 11, 12, 13, 14, 15],
-      "content": "def authenticate(user, password):\n    conn = get_db()\n    query = f\"SELECT * FROM users WHERE u = '{user}'\"\n    return conn.execute(query)\n"
+      "lines": [1, 2, 3, 4, 5, 6],
+      "content": "def calculate_average(total): return 1 / total\n\ndef authenticate(user, password):\n    conn = get_db()\n    query = f\"SELECT * FROM users WHERE u = '{user}'\"\n    return conn.execute(query)\n",
+      "evidence_scope": "full_file",
+      "is_complete": true,
+      "start_line": 1,
+      "end_line": 6,
+      "total_lines": 6,
+      "truncated": false,
+      "source_sha256": "c3df25d8b817ffbd1efe719f02215acb1db54a1847c5774fd073036dde9448f1"
     },
     {
       "repository": "org/repo-main",
       "pull_request_id": "PR-101",
-      "commit_sha": "a1b2c3d4e5f6",
+      "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "file_path": "src/db/repo.py",
       "diff_side": "NEW",
-      "lines": [40, 41, 42, 43, 44, 45],
-      "content": "def calculate_average(items):\n    if not items:\n        return 0\n    return sum(items) / len(items)\n"
+      "lines": [1, 2, 3, 4],
+      "content": "def calculate_average(items):\n    if not items:\n        return 0\n    return sum(items) / len(items)\n",
+      "evidence_scope": "full_file",
+      "is_complete": true,
+      "start_line": 1,
+      "end_line": 4,
+      "total_lines": 4,
+      "truncated": false,
+      "source_sha256": "5d7246dc0cf5407a3456645bb76d2623d1d45c2ea540d6283b73b4a599f2f876"
     }
   ],
   "ci_runs": [
     {
       "id": "run-ci-101",
       "workflow_name": "test-and-coverage",
-      "commit_sha": "a1b2c3d4e5f6",
+      "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "status": "failure",
       "total_tests": 20,
       "failed_tests": 2,

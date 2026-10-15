@@ -13,11 +13,6 @@ from agente_gestion.api.control_schemas import (
     OutboxDetail,
     ProposalCollection,
     ProposalDetail,
-    ProposalDryRunAuthorizationRequest,
-    ProposalDryRunRequest,
-    ProposalDryRunResponse,
-    ProposalMutationResponse,
-    ProposalReviewRequest,
     ProjectConfiguration,
     ReportCollection,
     ReportDecisionRequest,
@@ -95,7 +90,7 @@ def _session_view(
         capabilities.extend(["analysis:prepare", "analysis:confirm"])
     if settings.governance_enabled and executable_scoped_projects:
         capabilities.extend([
-            "governance:proposal_review", "governance:dry_run_authorization", "governance:dry_run",
+            "governance:proposal_execute", "quality:decide", "notifications:email_send",
         ])
     if settings.report_decisions_enabled and executable_scoped_projects:
         capabilities.append("reports:decide")
@@ -141,7 +136,11 @@ def _require_project_capability(
         raise ApiProblem(404, "proyecto_no_configurado", "El proyecto no está configurado para esta operación.")
     if project_id not in session.project_ids:
         raise ApiProblem(403, "proyecto_fuera_de_sesion", "La sesión no tiene alcance para este proyecto.")
-    if capability.startswith("governance:") and not settings.governance_enabled:
+    governed_capability = (
+        capability.startswith("governance:")
+        or capability in {"quality:decide", "notifications:email_send"}
+    )
+    if governed_capability and not settings.governance_enabled:
         raise ApiProblem(503, "gobernanza_no_habilitada", "El servidor no habilitó las operaciones de gobernanza.")
     if capability == "reports:decide" and not settings.report_decisions_enabled:
         raise ApiProblem(503, "decision_informe_no_habilitada", "El servidor no habilitó decisiones humanas de informes.")
@@ -576,89 +575,6 @@ def get_project_proposal(
         _raise_lookup(exc)
 
 
-@router.post(
-    "/projects/{project_id}/proposals/{proposal_id}/review",
-    response_model=ProposalMutationResponse,
-    tags=["Gobernanza"],
-)
-def review_project_proposal(
-    request: Request,
-    body: ProposalReviewRequest,
-    project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    proposal_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    idempotency_key: Annotated[str, Header(
-        alias="Idempotency-Key", min_length=8, max_length=128,
-        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
-    )],
-) -> ProposalMutationResponse:
-    session = _require_project_capability(request, project_id, "governance:proposal_review", mutation=True)
-    cookie = request.cookies.get(request.app.state.settings.session_cookie_name)
-    try:
-        proposal, reused, audit_event_id = request.app.state.control_plane.review_proposal(
-            project_id, proposal_id, body.decision, body.expected_version,
-            body.proposal_body_sha256, body.capture_id, session.actor, cookie, idempotency_key,
-        )
-    except LookupError as exc:
-        _raise_lookup(exc)
-    return ProposalMutationResponse(proposal=proposal, reused=reused, audit_event_id=audit_event_id)
-
-
-@router.post(
-    "/projects/{project_id}/proposals/{proposal_id}/dry-run-authorization",
-    response_model=ProposalMutationResponse,
-    tags=["Gobernanza"],
-)
-def authorize_project_proposal_dry_run(
-    request: Request,
-    body: ProposalDryRunAuthorizationRequest,
-    project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    proposal_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    idempotency_key: Annotated[str, Header(
-        alias="Idempotency-Key", min_length=8, max_length=128,
-        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
-    )],
-) -> ProposalMutationResponse:
-    session = _require_project_capability(
-        request, project_id, "governance:dry_run_authorization", mutation=True,
-    )
-    cookie = request.cookies.get(request.app.state.settings.session_cookie_name)
-    try:
-        proposal, reused, audit_event_id = request.app.state.control_plane.authorize_proposal_dry_run(
-            project_id, proposal_id, body.expected_version, body.proposal_body_sha256,
-            body.capture_id, session.actor, cookie, idempotency_key,
-        )
-    except LookupError as exc:
-        _raise_lookup(exc)
-    return ProposalMutationResponse(proposal=proposal, reused=reused, audit_event_id=audit_event_id)
-
-
-@router.post(
-    "/projects/{project_id}/proposals/{proposal_id}/dry-runs",
-    response_model=ProposalDryRunResponse,
-    tags=["Gobernanza"],
-)
-def run_project_proposal_dry_run(
-    request: Request,
-    body: ProposalDryRunRequest,
-    project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    proposal_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    idempotency_key: Annotated[str, Header(
-        alias="Idempotency-Key", min_length=8, max_length=128,
-        pattern=r"^[A-Za-z0-9._:-]{8,128}$",
-    )],
-) -> ProposalDryRunResponse:
-    session = _require_project_capability(request, project_id, "governance:dry_run", mutation=True)
-    cookie = request.cookies.get(request.app.state.settings.session_cookie_name)
-    try:
-        result, reused, audit_event_id = request.app.state.control_plane.simulate_proposal(
-            project_id, proposal_id, body.expected_version, body.proposal_body_sha256,
-            body.capture_id, body.permission_event_id, session.actor, cookie, idempotency_key,
-        )
-    except LookupError as exc:
-        _raise_lookup(exc)
-    return ProposalDryRunResponse(dry_run=result, reused=reused, audit_event_id=audit_event_id)
-
-
 @router.get("/projects/{project_id}/reports", response_model=ReportCollection, tags=["Informes"])
 def list_project_reports(
     request: Request,
@@ -759,7 +675,7 @@ def list_project_audit(
     except LookupError as exc:
         _raise_lookup(exc)
     if event_type is not None and event_type not in {
-        "analysis_run", "report_decision", "proposal_decision", "proposal_dry_run",
+        "analysis_run", "report_decision", "proposal_decision",
         "proposal_execution", "outbox_delivery", "security",
     }:
         raise ApiProblem(422, "tipo_de_evento_invalido", "El filtro de evento de auditoría no es válido.")

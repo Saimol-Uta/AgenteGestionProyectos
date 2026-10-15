@@ -1,14 +1,15 @@
 """Application service orchestrating periodic weekly report scheduling and outbox delivery (H3)."""
 
 from datetime import datetime, timezone
-import json
-from pathlib import Path
-from typing import Any, Literal, Optional
+import hashlib
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
 from agente_gestion.adapters.outbox.hybrid_outbox import HybridNotificationOutboxAdapter
+from agente_gestion.adapters.outbox.smtp import SMTPConfig
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+from agente_gestion.application.manager_notifications import ManagerNotificationService
 from agente_gestion.application.tasks_query import build_task_plan_summary
 from agente_gestion.domain.notification_outbox import OutboxMessage, OutboxReceipt
 from agente_gestion.domain.weekly_schedule import WeeklySchedule, WeeklyWindow, plan_weekly_window
@@ -64,9 +65,27 @@ class WeeklySchedulerService:
         self,
         storage: SQLiteStorageAdapter,
         outbox: Optional[NotificationOutboxPort] = None,
+        *,
+        smtp_config: SMTPConfig | None = None,
     ) -> None:
         self.storage = storage
-        self.outbox = outbox or HybridNotificationOutboxAdapter(storage)
+        self.smtp_config = smtp_config or SMTPConfig()
+        self.manager_email = self.smtp_config.manager_email
+        self.legacy_recipient = "gestor_proyecto"
+        self.outbox = outbox or HybridNotificationOutboxAdapter(
+            storage, smtp_config=self.smtp_config,
+        )
+        if outbox is not None and isinstance(outbox, HybridNotificationOutboxAdapter) and smtp_config is not None:
+            outbox.smtp_config = smtp_config
+
+    @classmethod
+    def from_env(
+        cls,
+        storage: SQLiteStorageAdapter,
+        outbox: Optional[NotificationOutboxPort] = None,
+    ) -> "WeeklySchedulerService":
+        """Opt in to SMTP environment configuration; dotenv files are never loaded."""
+        return cls(storage, outbox, smtp_config=SMTPConfig.from_env())
 
     def check_schedule(
         self,
@@ -246,13 +265,34 @@ class WeeklySchedulerService:
             metrics=task_summary.model_dump(),
             risks=list(task_summary.identified_risks),
             action_ledger_summary=ledger_stats,
-            recipient="gestor_proyecto",
+            recipient=self.manager_email or self.legacy_recipient,
         )
 
+        if self.manager_email:
+            delivery_key = hashlib.sha256(
+                f"weekly-manager-email\0{project_id}\0{window.window_id}".encode("utf-8")
+            ).hexdigest()
+            delivery_fingerprint = hashlib.sha256(
+                f"weekly-manager-email\0{project_id}\0{window.window_id}\0{self.manager_email}".encode("utf-8")
+            ).hexdigest()
+            manager_notifications = ManagerNotificationService(
+                self.storage, self.outbox, smtp_config=self.smtp_config,
+            )
+            message = manager_notifications.with_email_delivery(
+                message,
+                recipient_email=self.manager_email,
+                delivery_key=delivery_key,
+                delivery_fingerprint=delivery_fingerprint,
+            )
+
         receipt = self.outbox.deliver(message, force=force)
+        result_status = (
+            "EXECUTED" if receipt.status == "DELIVERED" else
+            "FAILED" if receipt.status == "FAILED" else "SKIPPED_ALREADY_DISPATCHED"
+        )
         return ScheduledCycleResult(
             project_id=project_id,
-            status="EXECUTED" if receipt.status == "DELIVERED" else "SKIPPED_ALREADY_DISPATCHED",
+            status=result_status,
             window_id=window.window_id,
             receipt=receipt,
             message=message,

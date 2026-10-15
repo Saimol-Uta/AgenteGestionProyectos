@@ -104,6 +104,8 @@ class FakeProvider(LLMProviderPort):
                         "category": "division_cero",
                         "evidence": "return 1 / total",
                         "suggested_fix": "if total == 0: return 0",
+                        "suggested_code": "return 0 if total == 0 else 1 / total",
+                        "improvement_summary": "Evita la división por cero y conserva el cálculo para valores válidos.",
                     }
                 ]
             }

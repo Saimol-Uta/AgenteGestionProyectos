@@ -18,6 +18,25 @@ class ProposalEvidence(ApiModel):
     summary: str
 
 
+class ProposalTechnicalDryRun(ApiModel):
+    status: Literal["SIMULATED", "denied"]
+    reasons: list[str]
+    field: str | None = None
+    before: ProposalValue = None
+    after: ProposalValue = None
+    live_state_changed: Literal[False] = False
+
+
+class ProposalTechnicalReviewView(ApiModel):
+    review_id: str
+    technical_status: Literal["ready", "blocked"]
+    technical_errors: list[str]
+    dry_run: ProposalTechnicalDryRun
+    human_approval_status: Literal["required"] = "required"
+    execution_authorized: Literal[False] = False
+    recorded_at: datetime
+
+
 class ProposalSummary(ApiModel):
     proposal_id: str
     project_id: str
@@ -33,6 +52,7 @@ class ProposalSummary(ApiModel):
     version: int | None = Field(default=None, ge=0)
     technical_eligibility: Literal["eligible", "ineligible", "unknown"]
     technical_errors: list[str]
+    technical_review: ProposalTechnicalReviewView | None = None
     freshness: Literal["current", "stale", "unknown"]
     review_status: Literal["pending", "approved_offline", "rejected", "unknown"]
     authorization_status: Literal[
@@ -43,33 +63,8 @@ class ProposalSummary(ApiModel):
     ]
 
 
-class ProposalDecisionEvent(ApiModel):
-    event_id: str
-    decision: Literal["approve_offline", "reject", "authorize_dry_run", "deny", "revoke"]
-    version: int = Field(ge=1)
-    recorded_at: datetime | None = None
-    actor_id: str | None = None
-    actor_provenance: Literal["asserted_offline", "unknown"] = "unknown"
-
-
-class ProposalDryRun(ApiModel):
-    request_id: str
-    status: Literal["SIMULATED", "denied"]
-    reasons: list[str]
-    field: str | None = None
-    before: ProposalValue = None
-    after: ProposalValue = None
-    recorded_at: datetime
-    execution_status: Literal["not_executed"] = "not_executed"
-    live_state_changed: Literal[False] = False
-    real_execution_allowed: Literal[False] = False
-
-
 class ProposalDetail(ProposalSummary):
-    decision_history_availability: Literal["available", "unknown"]
-    dry_run_availability: Literal["available", "unknown"]
-    decision_history: list[ProposalDecisionEvent]
-    dry_runs: list[ProposalDryRun]
+    pass
 
 
 class ProposalCollection(ApiModel):
@@ -78,39 +73,6 @@ class ProposalCollection(ApiModel):
     total: int = Field(ge=0)
     page: int = Field(ge=1)
     page_size: int = Field(ge=1, le=100)
-
-
-class ProposalReviewRequest(ApiModel):
-    decision: Literal["approve", "reject"]
-    expected_version: StrictInt = Field(ge=0)
-    proposal_body_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    capture_id: StrictStr = Field(min_length=1, max_length=128)
-
-
-class ProposalDryRunAuthorizationRequest(ApiModel):
-    authorize: Literal[True]
-    expected_version: StrictInt = Field(ge=0)
-    proposal_body_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    capture_id: StrictStr = Field(min_length=1, max_length=128)
-
-
-class ProposalDryRunRequest(ApiModel):
-    expected_version: StrictInt = Field(ge=0)
-    proposal_body_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    capture_id: StrictStr = Field(min_length=1, max_length=128)
-    permission_event_id: StrictStr = Field(min_length=1, max_length=256)
-
-
-class ProposalMutationResponse(ApiModel):
-    proposal: ProposalDetail
-    reused: bool
-    audit_event_id: str
-
-
-class ProposalDryRunResponse(ApiModel):
-    dry_run: ProposalDryRun
-    reused: bool
-    audit_event_id: str
 
 
 class ReportMetrics(ApiModel):
@@ -235,6 +197,7 @@ class ScheduleRemoteView(ApiModel):
 
 
 class OutboxReceiptSummary(ApiModel):
+    delivery_channel: Literal["local_outbox_simulated_email", "smtp_email_sent", "smtp_email_failed"] | None = None
     delivery_id: str
     message_id: str
     project_id: str

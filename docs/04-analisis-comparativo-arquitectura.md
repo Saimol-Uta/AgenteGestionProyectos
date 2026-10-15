@@ -102,7 +102,7 @@ flowchart TD
 
 1. **Hito H2 — De Solo Lectura a Mutación Segura en Trello**:
    - `ARCHITECTURA.md` decía: *"En el MVP ningún agente modifica Trello"*.
-   - **Hoy**: Existe el modelo `ActionProposal`, la revisión técnica, la simulación determinista (*dry-run*) y el adaptador `TaskActionPort`. Se probó y auditó una mutación real en vivo en Trello con pre-lectura, actualización HTTP PUT y post-lectura de confirmación con reversión limpia (`scripts/check_action_trello.py`).
+   - **Hoy**: Existe el modelo `ActionProposal`, la revisión técnica, la simulación determinista (*dry-run*) y el adaptador `TaskActionPort`. El circuito operativo actual usa revisión automática y una decisión humana en `/execute`, con pre-lectura, actualización PUT y post-lectura. El helper manual anterior se retiró; sus observaciones históricas no prueban el flujo unificado ni autorizan nuevas llamadas en vivo. La validación actual está en `odd/tasks/backend-fullstack-phase2.md`.
 2. **Hito H3 — Automatización Semanal y Outbox Idempotente**:
    - `ARCHITECTURA.md` tenía el cronograma como una idea de evolución.
    - **Hoy**: `WeeklySchedulerService` calcula la ventana semanal con corte los viernes a las 17:00 (`America/Guayaquil`), permite ejecuciones forzadas inmediatas (`--force`) y despacha recibos de entrega estructurados a `.runtime/outbox/` y SQLite.

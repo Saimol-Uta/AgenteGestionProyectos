@@ -1,8 +1,38 @@
 """Code diff snippets and CI run entities with exact commit matching."""
 
+import ast
 from datetime import datetime
+import hashlib
+import json
+import re
 from typing import Literal, Optional
 from pydantic import BaseModel, Field, model_validator
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def validate_source_syntax(file_path: str, content: str) -> Literal["valid", "invalid", "unsupported"]:
+    """Validate supported source syntax without executing project code."""
+    suffix = file_path.rsplit(".", 1)[-1].lower() if "." in file_path.rsplit("/", 1)[-1] else ""
+    if suffix in {"py", "pyw"}:
+        try:
+            ast.parse(content, filename=file_path)
+        except (SyntaxError, ValueError):
+            return "invalid"
+        return "valid"
+    if suffix == "json":
+        try:
+            json.loads(content, parse_constant=_reject_json_constant)
+        except ValueError:
+            return "invalid"
+        return "valid"
+    return "unsupported"
 
 
 class CodeDiffSnippet(BaseModel):
@@ -20,6 +50,8 @@ class CodeDiffSnippet(BaseModel):
     end_line: Optional[int] = Field(default=None, ge=1)
     total_lines: Optional[int] = Field(default=None, ge=0)
     truncated: bool = False
+    source_sha256: Optional[str] = Field(default=None, description="SHA-256 of the exact complete source bytes")
+    source_blob_sha: Optional[str] = Field(default=None, description="Provider blob identifier at the pinned commit")
 
     @model_validator(mode="after")
     def validate_coverage(self):
@@ -35,6 +67,12 @@ class CodeDiffSnippet(BaseModel):
         self.start_line, self.end_line = first, last
         if self.total_lines is not None and last is not None and last > self.total_lines:
             raise ValueError("Visible lines exceed total_lines")
+        if self.source_sha256 is not None:
+            if (not _SHA256_RE.fullmatch(self.source_sha256)
+                    or hashlib.sha256(self.content.encode("utf-8")).hexdigest() != self.source_sha256):
+                raise ValueError("source_sha256 must match the exact content")
+        if self.source_blob_sha is not None and not _SHA_RE.fullmatch(self.source_blob_sha):
+            raise ValueError("source_blob_sha must be a full hexadecimal object identifier")
         if self.evidence_scope == "truncated":
             self.truncated = True
         if self.is_complete or self.evidence_scope == "full_file":

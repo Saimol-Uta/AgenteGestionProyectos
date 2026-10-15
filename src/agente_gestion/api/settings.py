@@ -1,5 +1,6 @@
 """Explicit API settings; this module never loads dotenv files or starts services."""
 
+import json
 import os
 import re
 from pathlib import Path
@@ -53,6 +54,61 @@ class ApiSettings(BaseModel):
     weekly_cycle_enabled: bool = False
     weekly_schedule: WeeklySchedule | None = Field(default=None, repr=False)
     weekly_schedule_status: Literal["configured", "not_configured", "incomplete", "invalid"] = "not_configured"
+
+    # External mutations remain opt-in, independent of local governance permissions.
+    external_writes_enabled: bool = False
+    github_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    github_repository: str | None = None
+    github_base_branch: str = "main"
+    branches_dir: str = ".runtime/branches"
+    trello_api_key: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    trello_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    trello_priority_labels: dict[str, dict[str, str]] = Field(default_factory=dict)
+    trello_board_ids: dict[str, str] = Field(default_factory=dict)
+    manager_email: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_user: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    smtp_password: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    smtp_use_tls: bool = True
+
+    @field_validator("manager_email")
+    @classmethod
+    def valid_manager_email(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+", value):
+            raise ValueError("El correo del gestor no es válido.")
+        return value
+
+    @field_validator("github_repository")
+    @classmethod
+    def valid_github_repository(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", value):
+            raise ValueError("El repositorio debe tener el formato owner/repository.")
+        if value is not None and value.split("/")[1] in {".", ".."}:
+            raise ValueError("El repositorio no es válido.")
+        return value
+
+    @field_validator("trello_board_ids")
+    @classmethod
+    def valid_board_bindings(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not IDENTIFIER_PATTERN.fullmatch(project_id)
+               or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", board_id)
+               for project_id, board_id in value.items()):
+            raise ValueError("El mapa de tableros Trello no es válido.")
+        return value
+
+    @field_validator("trello_priority_labels")
+    @classmethod
+    def valid_priority_labels(cls, value: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+        for project_id, priorities in value.items():
+            if not IDENTIFIER_PATTERN.fullmatch(project_id):
+                raise ValueError("El proyecto del mapa de prioridades no es válido.")
+            for priority, label_id in priorities.items():
+                if priority not in {"alta", "media", "baja", "high", "medium", "low", "critical", "critica"}:
+                    raise ValueError("La prioridad configurada no es válida.")
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", label_id):
+                    raise ValueError("El ID de etiqueta de prioridad no es válido.")
+        return value
 
     operator_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
     operator_actor: str = Field(default="operador-local", min_length=1, max_length=128)
@@ -268,6 +324,21 @@ def load_api_settings() -> ApiSettings:
         weekly_cycle_enabled=_bool_setting("H5_WEEKLY_CYCLE_ENABLED", False),
         weekly_schedule=weekly_schedule,
         weekly_schedule_status=weekly_schedule_status,
+        external_writes_enabled=_bool_setting("EXTERNAL_WRITES_ENABLED", False),
+        github_token=SecretStr(os.environ["GITHUB_TOKEN"]) if os.environ.get("GITHUB_TOKEN") else None,
+        github_repository=os.environ.get("GITHUB_REPOSITORY") or None,
+        github_base_branch=os.environ.get("GITHUB_BASE_BRANCH", "main"),
+        branches_dir=os.environ.get("BRANCHES_DIR", ".runtime/branches"),
+        trello_api_key=SecretStr(os.environ["TRELLO_API_KEY"]) if os.environ.get("TRELLO_API_KEY") else None,
+        trello_token=SecretStr(os.environ["TRELLO_TOKEN"]) if os.environ.get("TRELLO_TOKEN") else None,
+        trello_priority_labels=json.loads(os.environ.get("TRELLO_PRIORITY_LABELS", "{}")),
+        trello_board_ids=json.loads(os.environ.get("TRELLO_BOARD_IDS", "{}")),
+        manager_email=os.environ.get("MANAGER_EMAIL") or None,
+        smtp_host=os.environ.get("SMTP_HOST") or None,
+        smtp_port=int(os.environ.get("SMTP_PORT", "587")),
+        smtp_user=SecretStr(os.environ["SMTP_USER"]) if os.environ.get("SMTP_USER") else None,
+        smtp_password=SecretStr(os.environ["SMTP_PASSWORD"]) if os.environ.get("SMTP_PASSWORD") else None,
+        smtp_use_tls=_bool_setting("SMTP_USE_TLS", True),
         analysis_config_path=str(config_path),
         job_ledger_path=os.environ.get("H5_WEB_JOBS_DB_PATH", ".runtime/h5-web-jobs.sqlite"),
         operator_token=SecretStr(operator_token) if operator_token else None,

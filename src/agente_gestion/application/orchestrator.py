@@ -1,6 +1,7 @@
 """Modular project analysis orchestrator with stage sequencing, budget tracking, and persistence."""
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from agente_gestion.domain.snapshot import WeeklySnapshot
 from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
+from agente_gestion.application.proposal_auto_review import ProposalAutoReviewService
 from agente_gestion.agents.context import monitoring_choices
 from agente_gestion.domain.tasks import (
     TaskCard,
@@ -146,6 +148,8 @@ class ProjectOrchestrator:
         source_adapter: Optional[Any] = None,
         escalation_gate: Optional[EscalationGate] = None,
         config: Optional[OrchestratorConfig] = None,
+        manager_notifications: Optional[Any] = None,
+        manager_email: Optional[str] = None,
     ):
         self.sqlite = sqlite_storage
         self.artifacts = artifact_storage
@@ -156,6 +160,8 @@ class ProjectOrchestrator:
         self.source_adapter = source_adapter
         self.escalation_gate = escalation_gate or EscalationGate()
         self.config = config or OrchestratorConfig()
+        self.manager_notifications = manager_notifications
+        self.manager_email = manager_email
         self._last_collection_result: Optional[Any] = None
         self._last_target_commit_sha: Optional[str] = None
 
@@ -761,12 +767,25 @@ class ProjectOrchestrator:
             execution_metrics=exec_metrics_payload,
         )
 
+        if self.manager_notifications is not None and self.manager_email and (
+            candidate_findings or task_metrics.overdue_card_ids or task_metrics.blocked_card_ids
+            or (run.stages.get("proposals") and json.loads(run.stages["proposals"].output_summary).get("saved", 0))
+        ):
+            try:
+                self.manager_notifications.send_project_email(
+                    proj_id, recipient_email=self.manager_email,
+                    idempotency_key=f"run:{run_id}",
+                )
+            except Exception:
+                # A delivery failure must not rewrite or discard a completed analysis.
+                logging.getLogger(__name__).warning("manager_notification_failed run_id=%s", run_id)
         return run
 
     def _persist_proposals(self, run, draft, rules, capture, evidence, limitations):
         """Catalogue recommendations only; pure fact checks do not prove chronology."""
         codes = list(limitations)
         saved, failures = 0, []
+        technical_ready, technical_blocked = 0, 0
         choices = []
         if rules is None:
             codes.append("missing_rules")
@@ -815,6 +834,18 @@ class ProjectOrchestrator:
                             raise NotImplementedError
                         save(proposal, supporting)
                         saved += 1
+                        try:
+                            list_captures = getattr(self.sqlite, "list_snapshot_captures", None)
+                            project_captures = list_captures(run.project_id) if callable(list_captures) else [capture]
+                            review = ProposalAutoReviewService(self.sqlite).review_and_record(
+                                proposal, capture, supporting, project_captures=project_captures,
+                            )
+                            if review.technical_status == "ready" and review.dry_run.status == "SIMULATED":
+                                technical_ready += 1
+                            else:
+                                technical_blocked += 1
+                        except (NotImplementedError, ValueError, TypeError, AttributeError):
+                            failures.append({"choice_index": index, "codes": ["technical_review_unavailable"]})
                 except NotImplementedError:
                     errors = ["catalogue_unavailable"]
                 except ValueError:
@@ -824,6 +855,7 @@ class ProjectOrchestrator:
             if errors:
                 failures.append({"choice_index": index, "codes": errors})
         summary = json.dumps({"selected": len(keys), "saved": saved,
+            "technical_ready": technical_ready, "technical_blocked": technical_blocked,
             "limitations": sorted(set(codes)), "failures": failures}, sort_keys=True)
         run.stages["proposals"] = StageExecutionRecord(stage_name="proposals",
             status=StageStatus.completed if saved else StageStatus.skipped,

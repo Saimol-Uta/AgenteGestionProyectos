@@ -33,6 +33,8 @@ class GeneratedFindingSchema(BaseModel):
     category: Optional[str] = Field(default="otros", description="Defect category")
     evidence: Optional[str] = Field(default="", description="Snippet excerpt")
     suggested_fix: Optional[str] = Field(default="", description="Suggested fix proposal")
+    suggested_code: str = Field(default="", description="Syntactically coherent code example for human review")
+    improvement_summary: str = Field(default="", description="Breve resumen en español de la mejora propuesta")
 
     @field_validator("evidence_ids", mode="before")
     @classmethod
@@ -119,6 +121,8 @@ class CodeQualityAgent:
             "  * line: numero de linea exacto dentro de las lineas del fragmento.\n"
             "  * confidence: flotante entre 0.0 y 1.0.\n"
             "  * requires_verification: booleano (true).\n"
+            "  * suggested_code: ejemplo de código concreto que corrige el hallazgo, compatible con el contexto visible.\n"
+            "  * improvement_summary: resumen breve de la mejora en español.\n"
             "- Prohibido inventar o autoasignar IDs de reglas o evidencias inexistentes.\n\n"
             "EJEMPLO DE ESQUEMA VALIDO:\n"
             "{\n"
@@ -136,7 +140,9 @@ class CodeQualityAgent:
             '      "requires_verification": true,\n'
             '      "category": "inyeccion_sql",\n'
             '      "evidence": "query = f\\"SELECT * FROM users WHERE u = \'{user}\'\\"",\n'
-            '      "suggested_fix": "Usar consultas parametrizadas"\n'
+            '      "suggested_fix": "Usar consultas parametrizadas",\n'
+            '      "suggested_code": "cursor.execute(\\\"SELECT * FROM users WHERE u = ?\\\", (user,))",\n'
+            '      "improvement_summary": "Parametriza la consulta para evitar inyección SQL."\n'
             '    }\n'
             '  ]\n'
             "}\n"
@@ -214,6 +220,8 @@ class CodeQualityAgent:
             for item in raw_findings:
                 try:
                     gen_item = GeneratedFindingSchema.model_validate(item)
+                    if not gen_item.suggested_code.strip() or not gen_item.improvement_summary.strip():
+                        return ["Finding must include suggested_code and improvement_summary."]
                     parsed_findings.append(CandidateFinding.model_validate(gen_item.model_dump()))
                 except Exception as e:
                     return [f"Malformed finding structure: {str(e)}"]

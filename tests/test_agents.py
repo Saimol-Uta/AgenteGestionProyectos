@@ -598,24 +598,35 @@ if __name__ == "__main__":
 
 class RuntimeContextRegressionTests(unittest.TestCase):
     setUp = AgentsAndGenerationTestCase.setUp
-    def test_all_roles_use_bounded_context_and_partial_evidence_instructions(self):
+    def test_partial_evidence_keeps_other_roles_bounded_and_verifier_fails_closed(self):
         from agente_gestion.agents.context import ContextBuilder
         from unittest.mock import Mock
         builder = ContextBuilder()
         for method in ("build_monitoring_context", "build_code_context", "build_verifier_context"):
             setattr(builder, method, Mock(wraps=getattr(builder, method)))
         class Capture(FakeProvider):
+            def __init__(self):
+                super().__init__()
+                self.requests = []
             def generate(self, request):
                 self.request = request
+                self.requests.append(request)
                 return super().generate(request)
         provider = Capture()
         draft = ProjectMonitoringAgent(provider, context_builder=builder).run("p", self.metrics, self.tasks, evidence_ids=["ev-1"])
         rule = QualityRule(id="Q3", description="Review", source="review", metric_key="open_critical_findings", operator="==", threshold=0)
         findings = CodeQualityAgent(provider, context_builder=builder).run("p", draft, self.snippets, rules=[rule])
         quality_request = provider.request
-        VerifierAgent(provider, context_builder=builder).run("p", findings, self.snippets, rules=[rule], evidence_ids=["c0ffee1"])
-        for method in ("build_monitoring_context", "build_code_context", "build_verifier_context"):
-            getattr(builder, method).assert_called_once()
+        verifier = VerifierAgent(provider, context_builder=builder)
+        for snippets in (self.snippets, []):
+            verifications = verifier.run("p", findings, snippets, rules=[rule], evidence_ids=["c0ffee1"])
+            self.assertEqual(len(verifications), len(findings))
+            self.assertTrue(all(item.verdict == VerificationVerdict.insufficient for item in verifications))
+        self.assertEqual(len(provider.requests), 2)
+        self.assertIs(provider.request, quality_request)
+        builder.build_monitoring_context.assert_called_once()
+        builder.build_code_context.assert_called_once()
+        builder.build_verifier_context.assert_not_called()
         for request in (quality_request, provider.request):
             self.assertEqual(request.evidences["context_metadata"]["status"], "complete")
             self.assertFalse(request.evidences["code_snippets"][0]["is_complete"])
