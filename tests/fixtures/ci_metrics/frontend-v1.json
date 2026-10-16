@@ -1,0 +1,14 @@
+{
+  "schema_version": "v1",
+  "repository": "example-org/frontend",
+  "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "workflow_run_id": "23456",
+  "workflow_run_attempt": "1",
+  "status": "success",
+  "e2e_status": "not_implemented",
+  "total_tests": 31,
+  "failed_tests": 0,
+  "coverage_percentage": 92.73,
+  "coverage_metric": "lines",
+  "coverage_basis": "Loaded frontend TypeScript sources; UI TSX is excluded."
+}

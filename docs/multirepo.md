@@ -1,6 +1,6 @@
 # MultiRepo collection: independent pins and bounded budgets
 
-MultiRepo collection pins each configured repository independently for one run, keeps code and CI results in repository-scoped containers, and applies shared project plus per-repository source budgets. Existing singleton collection stays on its legacy path. This stage does not download CI artifacts or certify metrics.
+MultiRepo collection pins each configured repository independently for one run, keeps code and CI results in repository-scoped containers, and applies shared project plus per-repository source budgets. Existing singleton collection stays on its legacy path. T2 collection still does not select or download CI artifacts; T3 now provides a standalone artifact-validation core, pending T4 integration.
 
 ## Quick path
 
@@ -69,7 +69,7 @@ The file count is the number of changed paths observed in code-diff evidence. To
 
 `source_mode: fixtures` keeps the fixture-only path. In the analysis factory, remote sources still require `allow_remote_ai` and non-fake mode; MultiRepo remote collection also requires the existing GitHub token gate. When that gate is closed, fixture results remain unscoped and are not relabeled as evidence from configured private repositories. Operational defaults remain unchanged, including `external_writes_enabled: true` in project configuration and the API default `True`. Run tests and task analyses with `EXTERNAL_WRITES_ENABLED=false`; collection adapters expose GET only. Existing human approval, authorization, idempotency, and audit controls remain in place.
 
-Actions workflow metadata is not an artifact or metrics certificate. This unit does not select run attempts, fetch binary artifacts, validate the CI metrics schema, infer test/cobertura metrics from a green workflow, or rewrite workflows. Those are later T3/T4 work.
+Actions workflow metadata is not an artifact or metrics certificate. This T2 collection unit does not select run attempts, fetch binary artifacts, infer test/coverage metrics from a green workflow, or rewrite workflows. The standalone T3 artifact core in [CI metrics artifacts](ci-metrics.md) accepts a bounded reports-tree ZIP with exactly one safe `ci-metrics.json` document, validates every member, and checks suite aggregates and coverage field relationships without converting unknowns to zero. Deterministic run selection and integration into `GitHubActionsSourceAdapter` and the MultiRepo factory remain T4 work.
 
 ## Public result contracts
 
@@ -79,4 +79,4 @@ Repository provenance is source metadata, not proof that an artifact or metric w
 
 ## Verification and next stage
 
-The focused deterministic tests use fake GET transports, temporary fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. T3 can wrap the shared `BudgetedHttpGetTransport`/`CollectionBudgetLedger` hooks to account for bounded binary response bytes without relaxing the current JSON GET transport.
+The focused deterministic tests use fake GET transports, in-memory artifact fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. T3's binary port can be wrapped by the shared `BudgetedHttpGetTransport`/`CollectionBudgetLedger` to account each bounded redirect hop and its observed bytes without relaxing the current JSON GET transport. T4 must reuse the existing ledger and must not reset repository counters.

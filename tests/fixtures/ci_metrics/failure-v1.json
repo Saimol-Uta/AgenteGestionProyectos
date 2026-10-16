@@ -1,0 +1,25 @@
+{
+  "schema_version": "v1",
+  "repository": "example-org/backend",
+  "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "workflow_run_id": "12345",
+  "workflow_run_attempt": "2",
+  "status": "failure",
+  "total_tests": 49,
+  "failed_tests": 2,
+  "coverage_percentage": null,
+  "coverage_metric": null,
+  "coverage_basis": "Coverage was unavailable in this failed run.",
+  "test_suites": {
+    "unit": {
+      "tests": 44,
+      "failed": 2,
+      "passed": 42,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "success": false
+    },
+    "integration": null
+  }
+}

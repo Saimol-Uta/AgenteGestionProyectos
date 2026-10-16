@@ -1,0 +1,33 @@
+{
+  "schema_version": "v1",
+  "repository": "example-org/backend",
+  "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "workflow_run_id": "12345",
+  "workflow_run_attempt": "2",
+  "status": "success",
+  "total_tests": 49,
+  "failed_tests": 0,
+  "coverage_percentage": 97.9,
+  "coverage_metric": "lines",
+  "coverage_basis": "Loaded backend TypeScript sources in src/**/*.ts.",
+  "test_suites": {
+    "unit": {
+      "tests": 44,
+      "failed": 0,
+      "passed": 44,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "success": true
+    },
+    "integration": {
+      "tests": 5,
+      "failed": 0,
+      "passed": 5,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "success": true
+    }
+  }
+}

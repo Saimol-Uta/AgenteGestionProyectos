@@ -1,0 +1,89 @@
+"""Fixed official CI metrics v1 schema; payloads can never select a schema."""
+
+import json
+
+
+CI_METRICS_V1_SCHEMA_JSON = r'''{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Provisional CI metrics v1",
+  "description": "Top-level extensions are permitted; e2e_status=not_implemented is an optional frontend field and is not emitted by the backend.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "repository",
+    "commit_sha",
+    "workflow_run_id",
+    "status",
+    "total_tests",
+    "failed_tests",
+    "coverage_percentage",
+    "coverage_metric",
+    "coverage_basis"
+  ],
+  "properties": {
+    "schema_version": { "const": "v1" },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "workflow_run_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "workflow_run_attempt": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "status": { "enum": ["success", "failure", "cancelled"] },
+    "e2e_status": { "enum": ["not_implemented"] },
+    "total_tests": { "type": ["integer", "null"], "minimum": 0 },
+    "failed_tests": { "type": ["integer", "null"], "minimum": 0 },
+    "coverage_percentage": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+    "coverage_metric": { "enum": ["lines", null] },
+    "coverage_basis": { "type": "string", "minLength": 1 },
+    "test_suites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "integration"],
+      "properties": {
+        "unit": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["tests", "failed", "passed", "cancelled", "skipped", "todo", "success"],
+          "properties": {
+            "tests": { "type": ["integer", "null"], "minimum": 0 },
+            "failed": { "type": ["integer", "null"], "minimum": 0 },
+            "passed": { "type": ["integer", "null"], "minimum": 0 },
+            "cancelled": { "type": ["integer", "null"], "minimum": 0 },
+            "skipped": { "type": ["integer", "null"], "minimum": 0 },
+            "todo": { "type": ["integer", "null"], "minimum": 0 },
+            "success": { "type": ["boolean", "null"] }
+          }
+        },
+        "integration": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["tests", "failed", "passed", "cancelled", "skipped", "todo", "success"],
+          "properties": {
+            "tests": { "type": ["integer", "null"], "minimum": 0 },
+            "failed": { "type": ["integer", "null"], "minimum": 0 },
+            "passed": { "type": ["integer", "null"], "minimum": 0 },
+            "cancelled": { "type": ["integer", "null"], "minimum": 0 },
+            "skipped": { "type": ["integer", "null"], "minimum": 0 },
+            "todo": { "type": ["integer", "null"], "minimum": 0 },
+            "success": { "type": ["boolean", "null"] }
+          }
+        }
+      }
+    }
+  }
+}'''
+
+CI_METRICS_V1_SCHEMA = json.loads(CI_METRICS_V1_SCHEMA_JSON)
+
+__all__ = ["CI_METRICS_V1_SCHEMA", "CI_METRICS_V1_SCHEMA_JSON"]
