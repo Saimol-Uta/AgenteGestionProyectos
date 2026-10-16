@@ -2,7 +2,9 @@
 
 from enum import Enum
 from typing import Any, Literal, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from agente_gestion.domain.repositories import RepositoryIdentity, RepositoryProvenance
 
 
 class FindingCategory(str, Enum):
@@ -55,6 +57,12 @@ class CandidateFinding(BaseModel):
     branch_name: Optional[str] = None
     branch_url: Optional[str] = None
     commit_sha_applied: Optional[str] = None
+    repository_identity: Optional[RepositoryIdentity] = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    provenance: Optional[RepositoryProvenance] = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
     @field_validator("id", "claim", "commit_sha", "file_path", mode="before")
     @classmethod
@@ -107,6 +115,15 @@ class CandidateFinding(BaseModel):
             return v.strip().lower() in ("true", "1", "yes")
         return bool(v)
 
+    @model_validator(mode="after")
+    def validate_repository_provenance(self) -> "CandidateFinding":
+        if self.provenance is not None:
+            if (self.provenance.repository_identity is not None and self.repository_identity is not None
+                    and self.provenance.repository_identity != self.repository_identity):
+                raise ValueError("Finding provenance repository does not match repository_identity.")
+            if self.provenance.commit_sha is not None and self.provenance.commit_sha != self.commit_sha:
+                raise ValueError("Finding provenance commit does not match commit_sha.")
+        return self
 
 
 class VerificationVerdict(str, Enum):

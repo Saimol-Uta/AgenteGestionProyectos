@@ -4,10 +4,13 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 import math
+import re
 from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agente_gestion.domain.code import CIRunResult, CodeDiffSnippet
 from agente_gestion.domain.evidence import EvidenceItem
+from agente_gestion.domain.repositories import RepositoryAnalysisState, RepositoryIdentity
 from agente_gestion.domain.snapshot import WeeklySnapshot
 from agente_gestion.ports.source_errors import (
     SourceError,
@@ -61,6 +64,19 @@ class SourceExecutionRecord(BaseModel):
         default=None,
         description="Sanitized error information if the source execution failed.",
     )
+    repository_identity: Optional[RepositoryIdentity] = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    target_commit_sha: Optional[str] = Field(default=None, exclude_if=lambda value: value is None)
+
+    @field_validator("target_commit_sha")
+    @classmethod
+    def validate_target_commit_sha(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value):
+            raise ValueError("Source record target_commit_sha must be a full hexadecimal SHA.")
+        return value.lower()
 
     @field_validator("duration_seconds")
     @classmethod
@@ -81,6 +97,8 @@ class SourceExecutionRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "SourceExecutionRecord":
+        if self.target_commit_sha is not None and self.repository_identity is None:
+            raise ValueError("A repository-scoped target_commit_sha requires repository_identity.")
         if self.status == SourceExecutionStatus.success:
             if self.error is not None:
                 raise ValueError("Successful source execution cannot have an error attached.")
@@ -89,6 +107,37 @@ class SourceExecutionRecord(BaseModel):
                 raise ValueError("Failed source execution must have an error attached.")
             if self.error.provider != self.provider:
                 raise ValueError("Execution record provider and error provider must match.")
+        return self
+
+
+class RepositorySourceCollectionResult(BaseModel):
+    """Repository-scoped source payload that can retain partial success and failure."""
+
+    repository_state: RepositoryAnalysisState
+    code_diffs: list[CodeDiffSnippet] = Field(default_factory=list)
+    ci_runs: list[CIRunResult] = Field(default_factory=list)
+    evidence: list[EvidenceItem] = Field(default_factory=list)
+    records: list[SourceExecutionRecord] = Field(default_factory=list)
+    is_complete: Optional[bool] = None
+    incomplete_reason: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_repository_scope(self) -> "RepositorySourceCollectionResult":
+        identity = self.repository_state.identity
+        target_sha = self.repository_state.target_commit_sha
+        for item in [*self.code_diffs, *self.ci_runs]:
+            if item.repository_identity is not None and item.repository_identity != identity:
+                raise ValueError("Repository collection item identity does not match repository_state.")
+            if target_sha is not None and item.commit_sha.lower() != target_sha:
+                raise ValueError("Repository collection item commit does not match target_commit_sha.")
+        for record in self.records:
+            if record.repository_identity is not None and record.repository_identity != identity:
+                raise ValueError("Repository collection record identity does not match repository_state.")
+            if (target_sha is not None and record.target_commit_sha is not None
+                    and record.target_commit_sha != target_sha):
+                raise ValueError("Repository collection record commit does not match target_commit_sha.")
+            if self.is_complete is True and record.status != SourceExecutionStatus.success:
+                raise ValueError("A complete repository collection cannot contain a failed source record.")
         return self
 
 
@@ -101,11 +150,21 @@ class SourceCollectionResult(BaseModel):
         default=None,
         description="Optional pinned target commit SHA across source queries.",
     )
+    repository_results: list[RepositorySourceCollectionResult] = Field(
+        default_factory=list,
+        exclude_if=lambda results: not results,
+    )
 
     @model_validator(mode="after")
     def validate_completeness(self) -> "SourceCollectionResult":
         if self.snapshot.is_complete:
-            for record in self.records:
+            if any(result.is_complete is not True for result in self.repository_results):
+                raise ValueError("A complete snapshot cannot contain an incomplete repository collection.")
+            all_records = [
+                *self.records,
+                *(record for result in self.repository_results for record in result.records),
+            ]
+            for record in all_records:
                 if record.status != SourceExecutionStatus.success or record.error is not None:
                     raise ValueError(
                         f"A complete snapshot cannot accompany an incomplete or failed record: "

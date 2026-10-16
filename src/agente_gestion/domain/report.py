@@ -10,6 +10,7 @@ from agente_gestion.domain.tasks import TaskState, DeterministicTaskMetrics
 from agente_gestion.domain.code import CIRunResult
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.policies import PolicyEvaluationResult
+from agente_gestion.domain.repositories import RepositoryAnalysisState
 
 
 class HumanDecisionState(str, Enum):
@@ -99,6 +100,39 @@ class MonitoringDraft(BaseModel):
     claimed_total_cards: Optional[int] = Field(default=None, description="Optional claimed total cards count")
 
 
+class RepositoryReportResult(BaseModel):
+    """Repository-isolated report payload; unknown evidence remains explicitly null."""
+
+    repository_state: RepositoryAnalysisState
+    ci_result: Optional[CIRunResult] = None
+    policy_evaluations: Optional[PolicyEvaluationResult] = None
+    confirmed_findings: list[CandidateFinding] = Field(default_factory=list)
+    rejected_findings: list[CandidateFinding] = Field(default_factory=list)
+    insufficient_findings: list[CandidateFinding] = Field(default_factory=list)
+    pending_findings: list[CandidateFinding] = Field(default_factory=list)
+    coverage_percentage: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    coverage_scope: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_repository_scope(self) -> "RepositoryReportResult":
+        identity = self.repository_state.identity
+        target_sha = self.repository_state.target_commit_sha
+        items = [
+            *self.confirmed_findings,
+            *self.rejected_findings,
+            *self.insufficient_findings,
+            *self.pending_findings,
+        ]
+        if self.ci_result is not None:
+            items.append(self.ci_result)
+        for item in items:
+            if item.repository_identity is not None and item.repository_identity != identity:
+                raise ValueError("Repository report item identity does not match repository_state.")
+            if target_sha is not None and item.commit_sha.lower() != target_sha:
+                raise ValueError("Repository report item commit does not match target_commit_sha.")
+        return self
+
+
 class FinalReport(BaseModel):
     """Complete synthesized weekly report awaiting human manager decision."""
     project_id: str
@@ -122,3 +156,7 @@ class FinalReport(BaseModel):
     providers_used: dict[str, str] = Field(default_factory=dict)
     candidate_findings: list[CandidateFinding] = Field(default_factory=list)
     all_evidence_ids: list[str] = Field(default_factory=list)
+    repository_results: list[RepositoryReportResult] = Field(
+        default_factory=list,
+        exclude_if=lambda results: not results,
+    )

@@ -6,7 +6,9 @@ import hashlib
 import json
 import re
 from typing import Literal, Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_serializer, model_validator
+
+from agente_gestion.domain.repositories import RepositoryIdentity, RepositoryProvenance
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -52,6 +54,8 @@ class CodeDiffSnippet(BaseModel):
     truncated: bool = False
     source_sha256: Optional[str] = Field(default=None, description="SHA-256 of the exact complete source bytes")
     source_blob_sha: Optional[str] = Field(default=None, description="Provider blob identifier at the pinned commit")
+    repository_identity: Optional[RepositoryIdentity] = None
+    provenance: Optional[RepositoryProvenance] = None
 
     @model_validator(mode="after")
     def validate_coverage(self):
@@ -81,8 +85,25 @@ class CodeDiffSnippet(BaseModel):
                     or self.lines != list(range(1, self.total_lines + 1))
                     or len(self.content.splitlines()) != self.total_lines):
                 raise ValueError("Complete file requires untruncated content and every file line")
+        if self.repository_identity is not None and "/" in self.repository:
+            if self.repository != f"{self.repository_identity.owner}/{self.repository_identity.repo}":
+                raise ValueError("Code snippet repository name does not match repository_identity.")
+        if self.provenance is not None:
+            if (self.provenance.repository_identity is not None and self.repository_identity is not None
+                    and self.provenance.repository_identity != self.repository_identity):
+                raise ValueError("Code snippet provenance repository does not match repository_identity.")
+            if self.provenance.commit_sha is not None and self.provenance.commit_sha != self.commit_sha:
+                raise ValueError("Code snippet provenance commit does not match commit_sha.")
         return self
 
+    @model_serializer(mode="wrap")
+    def serialize_optional_repository_metadata(self, handler):
+        data = handler(self)
+        if self.repository_identity is None:
+            data.pop("repository_identity", None)
+        if self.provenance is None:
+            data.pop("provenance", None)
+        return data
 
 
 class CIRunResult(BaseModel):
@@ -95,6 +116,40 @@ class CIRunResult(BaseModel):
     failed_tests: Optional[int] = Field(default=None, description="Failed tests count if reported")
     coverage_percentage: Optional[float] = Field(default=None, description="Reported test coverage percentage")
     timestamp: Optional[datetime] = Field(default=None, description="Completion timestamp")
+    repository_identity: Optional[RepositoryIdentity] = None
+    workflow_path: Optional[str] = None
+    run_attempt: Optional[int] = Field(default=None, ge=1)
+    artifact_id: Optional[str] = None
+    artifact_name: Optional[str] = None
+    provenance: Optional[RepositoryProvenance] = None
+
+    @model_validator(mode="after")
+    def validate_repository_provenance(self) -> "CIRunResult":
+        if self.provenance is not None:
+            if (self.provenance.repository_identity is not None and self.repository_identity is not None
+                    and self.provenance.repository_identity != self.repository_identity):
+                raise ValueError("CI provenance repository does not match repository_identity.")
+            if self.provenance.commit_sha is not None and self.provenance.commit_sha != self.commit_sha:
+                raise ValueError("CI provenance commit does not match commit_sha.")
+            if self.provenance.workflow_path is not None and self.workflow_path is not None:
+                if self.provenance.workflow_path != self.workflow_path:
+                    raise ValueError("CI provenance workflow does not match workflow_path.")
+            if self.provenance.run_id is not None and self.provenance.run_id != self.id:
+                raise ValueError("CI provenance run does not match id.")
+            if self.provenance.run_attempt is not None and self.run_attempt is not None:
+                if self.provenance.run_attempt != self.run_attempt:
+                    raise ValueError("CI provenance attempt does not match run_attempt.")
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_repository_metadata(self, handler):
+        data = handler(self)
+        for field_name in (
+            "repository_identity", "workflow_path", "run_attempt", "artifact_id", "artifact_name", "provenance",
+        ):
+            if getattr(self, field_name) is None:
+                data.pop(field_name, None)
+        return data
 
 
 def match_ci_for_commit(ci_runs: list[CIRunResult], commit_sha: str) -> Optional[CIRunResult]:
