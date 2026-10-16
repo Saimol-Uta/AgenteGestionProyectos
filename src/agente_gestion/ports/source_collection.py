@@ -12,6 +12,7 @@ from agente_gestion.domain.code import CIRunResult, CodeDiffSnippet
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.repositories import RepositoryAnalysisState, RepositoryIdentity
 from agente_gestion.domain.snapshot import WeeklySnapshot
+from agente_gestion.domain.source_limits import SourceBudgetReceipt
 from agente_gestion.ports.source_errors import (
     SourceError,
     SourceErrorCategory,
@@ -120,6 +121,7 @@ class RepositorySourceCollectionResult(BaseModel):
     records: list[SourceExecutionRecord] = Field(default_factory=list)
     is_complete: Optional[bool] = None
     incomplete_reason: Optional[str] = None
+    budget_receipt: Optional[SourceBudgetReceipt] = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_repository_scope(self) -> "RepositorySourceCollectionResult":
@@ -129,7 +131,18 @@ class RepositorySourceCollectionResult(BaseModel):
             if item.repository_identity is not None and item.repository_identity != identity:
                 raise ValueError("Repository collection item identity does not match repository_state.")
             if target_sha is not None and item.commit_sha.lower() != target_sha:
-                raise ValueError("Repository collection item commit does not match target_commit_sha.")
+                provenance = item.provenance
+                is_explicit_non_target = (
+                    isinstance(item, CIRunResult)
+                    and provenance is not None
+                    and provenance.repository_identity == identity
+                    and provenance.commit_sha == item.commit_sha.lower()
+                    and provenance.certifies_target is False
+                )
+                if not is_explicit_non_target:
+                    raise ValueError("Repository collection item commit does not match target_commit_sha.")
+        if self.is_complete is True and self.budget_receipt is not None and self.budget_receipt.exhausted:
+            raise ValueError("A complete repository collection cannot have an exhausted budget.")
         for record in self.records:
             if record.repository_identity is not None and record.repository_identity != identity:
                 raise ValueError("Repository collection record identity does not match repository_state.")
@@ -154,6 +167,7 @@ class SourceCollectionResult(BaseModel):
         default_factory=list,
         exclude_if=lambda results: not results,
     )
+    budget_receipt: Optional[SourceBudgetReceipt] = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_completeness(self) -> "SourceCollectionResult":

@@ -271,6 +271,36 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         self.invalidate_cache(project_id)
         return self.get_diffs(project_id, commit_sha=commit_sha)
 
+    def resolve_commit_sha(self) -> str:
+        """Resolve this adapter's configured branch without collecting or caching its diff."""
+        if self._branch is None:
+            raise SourceError(SourceProvider.github, SourceErrorCategory.configuration) from None
+        self._assert_no_credential_echo(self._branch, is_config=True)
+        url = (
+            f"https://api.github.com/repos/{self._owner}/{self._repo}/commits/"
+            f"{quote(self._branch, safe='')}"
+        )
+        try:
+            response = self._transport.get(url=url, headers=self._auth_headers())
+        except SourceError as exc:
+            if exc.provider != SourceProvider.github:
+                raise SourceError(SourceProvider.github, exc.category) from None
+            raise
+        except Exception:
+            raise SourceError(SourceProvider.github, SourceErrorCategory.network) from None
+        if (response.status_code != 200 or not isinstance(response.body, dict)
+                or type(response.bytes_received) is not int or response.bytes_received < 0
+                or response.bytes_received > self._max_total_bytes):
+            category = (SourceErrorCategory.limit_exceeded
+                        if getattr(response, "bytes_received", 0) > self._max_total_bytes
+                        else SourceErrorCategory.malformed_payload)
+            raise SourceError(SourceProvider.github, category) from None
+        resolved_sha = response.body.get("sha")
+        if not isinstance(resolved_sha, str) or not FULL_SHA_RE.fullmatch(resolved_sha):
+            raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+        self._assert_no_credential_echo(resolved_sha)
+        return resolved_sha.lower()
+
     def _parse_link_header(self, link_str: str) -> dict[str, str]:
         """Parse HTTP Link header into rel -> url mapping."""
         links: dict[str, str] = {}

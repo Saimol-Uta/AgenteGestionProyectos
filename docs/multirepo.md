@@ -1,10 +1,8 @@
-# MultiRepo budgeted source transport
+# MultiRepo collection: independent pins and bounded budgets
 
-Projects can declare several independent GitHub repositories without choosing a primary one. Configuration, model contracts, and source budget settings are available. A reusable ledger and bounded JSON transport now enforce quotas when explicitly composed. Automatic MultiRepo branch pinning/factory wiring, CI artifacts, orchestration, storage, and API endpoints remain future work.
+MultiRepo collection pins each configured repository independently for one run, keeps code and CI results in repository-scoped containers, and applies shared project plus per-repository source budgets. Existing singleton collection stays on its legacy path. This stage does not download CI artifacts or certify metrics.
 
-## Configure repositories
-
-Use `sources.github.repositories` in project YAML, or set `GITHUB_REPOSITORIES` to JSON with the same entry shape:
+## Quick path
 
 ```yaml
 sources:
@@ -33,28 +31,27 @@ sources:
       repository_max_estimated_tokens: 50000
 ```
 
-Each entry requires a unique `id`, `owner`, `repo`, and `branch`. `commit_sha` is optional and, when supplied, must be a full 40- or 64-character hexadecimal SHA. It is an explicit configuration pin; omitting it does not resolve a branch or claim that a commit was analyzed. `quality_workflow_path` is an optional path selector under `.github/workflows/`.
+A repository entry requires a unique `id`, `owner`, `repo`, and `branch`. An optional `commit_sha` is an explicit 40- or 64-character hexadecimal pin. Without it, collection resolves that repository's configured branch at the start of each run. Pins are not shared across the collection.
 
-`config/hormigestion.yaml` uses the two entries above, both on `develop`, and does not carry forward the old fixed SHA. Existing operational defaults, including `external_writes_enabled: true`, are unchanged. Tests and local verification for this stage run with `EXTERNAL_WRITES_ENABLED=false` and block network sockets.
+`Settings.from_env_and_file` keeps its existing precedence: explicit overrides, process environment, dotenv, layered YAML, then defaults. Budget values can be set in `sources.github.collection_budget` (`sources.github.budget` is an accepted alias) or with matching environment variables such as `MULTIREPO_PROJECT_MAX_HTTP_CALLS` and `MULTIREPO_REPOSITORY_MAX_ESTIMATED_TOKENS`.
 
-## Precedence and legacy settings
+## Collection behavior
 
-Configuration keeps the existing source precedence: explicit `Settings.from_env_and_file` overrides, process environment, dotenv, layered YAML, then defaults. `GITHUB_REPOSITORIES` uses that same environment precedence over YAML.
+| Boundary | Behavior |
+|---|---|
+| Branch pinning | A fresh GitHub code adapter resolves each branch once. Diff requests then use that full SHA, and Actions receives the same target. Reusing the MultiRepo collector starts a new run and resolves branch tips again. |
+| Explicit pin | The configured repository SHA is used only for that repository. No branch-tip request is made for that pin. |
+| Contradictory response | If a diff response SHA differs from its fixed target, that repository's code collection fails; it is never silently repinned. |
+| CI mismatch | A returned run keeps its actual SHA and repository. Non-target run metadata is marked `certifies_target: false`, excluded from the snapshot's target-run list, and cannot certify the current target. |
+| Repository isolation | Every scoped diff/run and execution record carries the matching repository identity and SHA/provenance. Evidence IDs are prefixed with the repository ID, including same-path/same-SHA cases. Existing contradictory child identity is rejected. |
+| Shared project inputs | Task/Trello and policy sources are fetched once per project collection and their valid results remain available when one repository fails. |
+| Partial failure | A denied, unavailable, malformed, or over-budget repository is reported independently; results already collected for other repositories are retained. A 404 means not found, not proof that permissions were denied. |
 
-The legacy singleton variables remain supported when no repository collection is configured:
+The collection path has no arbitrary primary repository and does not expose a shared `target_commit_sha`. The legacy `GITHUB_OWNER`, `GITHUB_REPO`/`GITHUB_REPOSITORY`, `GITHUB_BRANCH`/`GITHUB_REF`, and `GITHUB_COMMIT_SHA` fields remain supported when no repository collection is configured. When a collection is present, legacy values may corroborate exactly one matching entry but cannot choose one or distribute a shared SHA. In real-source mode, direct singleton code/CI factory calls reject a collection to avoid selecting an implicit primary; fixture mode keeps its fixture-only adapter even when a collection is configured.
 
-- `GITHUB_OWNER`
-- `GITHUB_REPO` / `GITHUB_REPOSITORY`
-- `GITHUB_BRANCH` / `GITHUB_REF`
-- `GITHUB_COMMIT_SHA`
+## Budget defaults and accounting
 
-Without a collection, the legacy `GITHUB_REPOSITORY=owner/repository` form keeps its historical normalization: the owner encoded in the full repository value is used, even if a separate `GITHUB_OWNER` differs. When a collection is present, raw legacy owner/repository contradictions are rejected before normalization; any supplied legacy values must identify exactly one entry and match its configured values. They cannot replace collection entries, pick a primary repository, or distribute one legacy SHA across entries. A legacy SHA cannot match an entry whose `commit_sha` is unset. Ambiguous or contradictory coexistence is rejected.
-
-`Settings.github_repositories` exposes the validated tuple or `None` when no collection was supplied. The API settings loader exposes the same entries on `ProjectConfig.repositories`; a multi-repository project does not populate the legacy `ApiSettings.github_repository` field with an arbitrary entry.
-
-## Collection budget settings
-
-Declare source budgets in `sources.github.collection_budget` (`sources.github.budget` is an accepted alias). Every key in the YAML example maps to an environment variable with the `MULTIREPO_` prefix and uppercase spelling, for example `MULTIREPO_PROJECT_MAX_HTTP_CALLS`. Existing settings precedence is unchanged.
+The defaults below apply only to MultiRepo collection; legacy singleton adapters keep their existing request, file, response, and timeout limits.
 
 | Budget | Project | Per repository |
 |---|---:|---:|
@@ -64,47 +61,22 @@ Declare source budgets in `sources.github.collection_budget` (`sources.github.bu
 | Elapsed time | 300 seconds | 180 seconds |
 | Estimated source-context tokens | 100,000 | 50,000 |
 
-Integer caps must be positive integers, not booleans or fractional values. Timeout budgets must be positive finite numbers. Legacy singleton serialization omits the new budget fields when no repository collection is configured.
+All permitted HTTP GET requests, including shared project sources, count against the project call/deadline/byte caps; code and Actions requests also count against their repository caps. The bounded JSON transport charges decoded bytes as streamed, before retaining each chunk, while preserving its HTTPS origin checks, per-response cap, sanitized errors, and reject-all-redirect behavior. `Content-Length` is not treated as decoded-body length or an EOF marker; JSON is parsed only after the stream ends. To distinguish exact-cap EOF from overflow, the transport may read at most one positive, bounded extra chunk; empty chunks do not consume that probe, and deadlines are checked on every iteration. Every yielded byte is charged, but an overflow chunk is never retained. Aggregate exhaustion receipts identify only project/repository byte caps actually reached, not a response-local cap. Caller-supplied GET transports remain supported and are charged from their reported `HttpResponse.bytes_received`.
 
-`agente_gestion.domain.source_limits.SourceBudgetReceipt` defines an additive usage record for HTTP calls, changed files, streamed bytes, elapsed seconds, estimated tokens, and exhaustion. Token units are serialized-source estimates, not measured model usage. The runtime hooks below enforce these quotas; automatic MultiRepo collection is added by the next unit.
+The file count is the number of changed paths observed in code-diff evidence. Token units use the existing serialized-context estimator (approximately three characters per token); they are **estimates**, not model token usage. Receipts expose HTTP calls, changed files, response bytes, elapsed seconds, estimated token units, and exhaustion state. If a cap stops further retrieval, available partial results stay in the result and the source records show the failure.
 
-## Public domain contracts
+## Access gate and evidence limits
 
-The shared types live in `agente_gestion.domain.repositories`:
+`source_mode: fixtures` keeps the fixture-only path. In the analysis factory, remote sources still require `allow_remote_ai` and non-fake mode; MultiRepo remote collection also requires the existing GitHub token gate. When that gate is closed, fixture results remain unscoped and are not relabeled as evidence from configured private repositories. Operational defaults remain unchanged, including `external_writes_enabled: true` in project configuration and the API default `True`. Run tests and task analyses with `EXTERNAL_WRITES_ENABLED=false`; collection adapters expose GET only. Existing human approval, authorization, idempotency, and audit controls remain in place.
 
-| Type | Purpose and public fields |
-|------|---------------------------|
-| `RepositoryIdentity` | Stable `id`, `owner`, and `repo`; no run-specific SHA. |
-| `RepositoryConfiguration` | Identity plus `branch`, optional `commit_sha`, and optional `quality_workflow_path`. |
-| `RepositoryAnalysisState` | Run-scoped `identity`, `branch`, `target_commit_sha`, `commit_resolution_status`, `access_status`, and `availability_status`. |
-| `CommitResolutionStatus` | `pending`, `resolved`, or `failed`. A resolved state requires a target SHA. |
-| `RepositoryAccessStatus` | `unknown`, `allowed`, or `denied`; unknown is not approval. |
-| `RepositoryAvailabilityStatus` | `unknown`, `available`, or `unavailable`, separate from access. |
-| `RepositoryProvenance` | Optional recorded `repository_identity`, `commit_sha`, `source`, `workflow_path`, `run_id`, and `run_attempt`; metadata alone does not validate evidence. |
+Actions workflow metadata is not an artifact or metrics certificate. This unit does not select run attempts, fetch binary artifacts, validate the CI metrics schema, infer test/cobertura metrics from a green workflow, or rewrite workflows. Those are later T3/T4 work.
 
-The six extended models add only optional metadata or empty-by-default containers, so older singleton inputs continue to load without fabricated provenance:
+## Public result contracts
 
-- `CodeDiffSnippet`: optional `repository_identity` and `provenance`.
-- `CIRunResult`: optional repository identity/provenance, `workflow_path`, `run_attempt`, `artifact_id`, and `artifact_name`.
-- `CandidateFinding`: optional `repository_identity` and `provenance`.
-- `WeeklySnapshot`: empty-by-default `repository_results` of `RepositorySnapshotResult`.
-- `SourceCollectionResult`: empty-by-default `repository_results` of `RepositorySourceCollectionResult`; each result can retain scoped diffs, CI runs, evidence, execution records, analysis state, and nullable completeness.
-- `FinalReport`: empty-by-default `repository_results` of `RepositoryReportResult`, with independent CI, policy, finding, and nullable coverage fields.
+`RepositoryIdentity`, `RepositoryConfiguration`, `RepositoryAnalysisState`, and `RepositoryProvenance` are defined in `agente_gestion.domain.repositories`. `SourceCollectionResult.repository_results` and `WeeklySnapshot.repository_results` contain scoped repository results; the legacy top-level code/CI lists remain empty for a MultiRepo result rather than assigning one repository as primary. Shared task/policy data remains project-scoped. Budget receipts are additive and omitted when absent, so old singleton result serialization retains its prior shape.
 
-Absent historical identity, SHA, workflow, attempt, or provenance remains `None`. Empty per-repository result collections do not change singleton serialization fields. Repository result containers allow partial outcomes; their presence is not proof that a source or artifact was successfully validated.
+Repository provenance is source metadata, not proof that an artifact or metric was validated. Historical records without recoverable origin remain unknown. A non-target CI run can be preserved for display, but the explicit non-target marker does not validate it.
 
-## Budgeted JSON transport
+## Verification and next stage
 
-`agente_gestion.adapters.sources.collection_budget.CollectionBudgetLedger` keeps one project ledger plus independent repository counters. `BudgetedHttpGetTransport` reserves each GET, passes a request-scoped hook to `BoundedGetTransport`, and returns project/repository receipts. Caller-injected GET ports remain supported and are charged using `HttpResponse.bytes_received`.
-
-The JSON transport preserves HTTPS origin validation, sanitized errors, per-response limits, and rejection of redirects. It accounts for actual decoded bytes before retaining chunks, not declared `Content-Length`, and parses JSON only after iterator EOF. At an exact cap it may read one bounded positive extra chunk, at most `min(65536, stream_limit)`; empty chunks do not spend that probe. Every yielded byte is charged and an overflow chunk is discarded. Deadlines are checked before every iterator advancement, including after empty chunks. A new request at an exhausted byte budget is rejected before network access.
-
-Aggregate byte receipts identify only project/repository caps actually reached; a response-local limit alone does not exhaust those aggregate scopes. Exact-cap equality exhausts the reached scope even if that final request succeeds. Errors close the response/session and clear the active budget context. Legacy adapters retain their configured singleton limits.
-
-The nine focused streaming tests cover exact caps, empty chunks, gzip decoded-body handling, scope-specific receipts, positive overflow, deadlines, cleanup, and pre-request rejection. Runtime MultiRepo composition and CI metrics remain separate later units.
-
-## Not implemented in this stage
-
-The domain models define status vocabulary and additive data shapes; the budgeted transport above adds explicit quota enforcement. Automatic collection does not yet resolve branch tips, test repository permissions, mark repositories available, download or validate artifacts, evaluate findings, aggregate reports, or persist/API-serve repository results. Later stages must keep each resolved SHA and its evidence scoped to its repository and preserve unknown metrics as null.
-
-This stage adds no CLI commands or options. The public settings and domain contract tests are the intended regression coverage for shared configuration parsing.
+The focused deterministic tests use fake GET transports, temporary fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. T3 can wrap the shared `BudgetedHttpGetTransport`/`CollectionBudgetLedger` hooks to account for bounded binary response bytes without relaxing the current JSON GET transport.

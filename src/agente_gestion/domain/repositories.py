@@ -153,6 +153,10 @@ class RepositoryProvenance(BaseModel):
     workflow_path: Optional[StrictStr] = None
     run_id: Optional[StrictStr] = None
     run_attempt: Optional[int] = Field(default=None, ge=1)
+    certifies_target: Optional[bool] = Field(
+        default=None,
+        description="False explicitly marks non-target historical metadata; metadata never certifies evidence.",
+    )
 
     @field_validator("commit_sha")
     @classmethod
