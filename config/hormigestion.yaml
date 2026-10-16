@@ -35,6 +35,14 @@ sources:
     board_id: "6a957e9173d4d13d0c5db608"
     state_strategy: "date_fields"
   github:
-    owner: "Josu-F1"
-    repo: "hormigestion-backend"
-    commit_sha: "5412744023c4b3961be9cd783609423d12280f64"
+    repositories:
+      - id: backend
+        owner: "Josu-F1"
+        repo: "hormigestion-backend"
+        branch: develop
+        quality_workflow_path: .github/workflows/ci.yml
+      - id: frontend
+        owner: "Josu-F1"
+        repo: "hormigestion-frontend"
+        branch: develop
+        quality_workflow_path: .github/workflows/ci-quality.yml

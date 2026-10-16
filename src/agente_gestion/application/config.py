@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Type
 from zoneinfo import ZoneInfo
 from agente_gestion.domain.tasks import validate_due_soon_days
-from pydantic import Field, SecretStr, field_validator, model_validator
+from agente_gestion.domain.repositories import RepositoryConfiguration
+from pydantic import Field, SecretStr, field_validator, model_serializer, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -146,6 +147,11 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             if eff_repo is not None:
                 merged["github_repo"] = eff_repo
                 merged["github_repository"] = eff_repo
+            if "repositories" in gh:
+                repositories = gh["repositories"]
+                if not isinstance(repositories, list):
+                    raise ValueError("sources.github.repositories must be a non-empty list.")
+                merged["github_repositories"] = repositories
 
             branch_val = gh.get("branch")
             branch_alias = gh.get("ref")
@@ -376,6 +382,10 @@ class Settings(BaseSettings):
         default=None,
         description="Optional full 40-char or 64-char hexadecimal commit SHA.",
     )
+    github_repositories: Optional[tuple[RepositoryConfiguration, ...]] = Field(
+        default=None,
+        description="Configured GitHub repositories; authoritative when present, without a primary repository.",
+    )
     http_timeout_seconds: float = Field(
         default=30.0,
         gt=0.0,
@@ -548,6 +558,20 @@ class Settings(BaseSettings):
             raise ValueError("GitHub owner is not valid.")
         return value.strip()
 
+    @field_validator("github_repositories")
+    @classmethod
+    def validate_github_repositories(
+        cls, value: Optional[tuple[RepositoryConfiguration, ...]],
+    ) -> Optional[tuple[RepositoryConfiguration, ...]]:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("github_repositories must contain at least one repository.")
+        ids = [repository.id for repository in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("GitHub repository ids must be unique.")
+        return value
+
     @model_validator(mode="after")
     def validate_sources_consistency(self) -> "Settings":
         if (self.github_repo and self.github_repository
@@ -559,6 +583,11 @@ class Settings(BaseSettings):
         if selected_repo:
             if "/" in selected_repo:
                 owner, repository_name = selected_repo.split("/", 1)
+                if (self.github_repositories is not None and self.github_owner
+                        and self.github_owner != owner):
+                    raise ValueError(
+                        "Contradictory GitHub owner and repository configuration: owner does not match repository path."
+                    )
                 object.__setattr__(self, "github_owner", owner)
             else:
                 repository_name = selected_repo
@@ -586,6 +615,28 @@ class Settings(BaseSettings):
                 )
             object.__setattr__(self, "github_commit_sha", raw_sha.lower())
 
+        # Legacy singleton values may corroborate one collection entry, but never
+        # select, distribute to, or override entries in the authoritative list.
+        if self.github_repositories is not None and any((
+            self.github_owner, self.github_repo, self.github_branch, self.github_commit_sha,
+        )):
+            legacy_values = {
+                "owner": self.github_owner,
+                "repo": self.github_repo,
+                "branch": self.github_branch,
+                "commit_sha": self.github_commit_sha,
+            }
+            candidates = [
+                repository for repository in self.github_repositories
+                if all(value is None or getattr(repository, key) == value
+                       for key, value in legacy_values.items())
+            ]
+            if len(candidates) != 1:
+                raise ValueError(
+                    "Legacy GitHub configuration must match exactly one configured repository; "
+                    "it cannot override or distribute values across the repository collection."
+                )
+
         # Validate budgets
         if not math.isfinite(self.http_timeout_seconds) or self.http_timeout_seconds <= 0.0:
             raise ValueError("http_timeout_seconds must be a positive finite number.")
@@ -593,6 +644,13 @@ class Settings(BaseSettings):
             raise ValueError("http_max_response_bytes must be a positive integer.")
 
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_legacy_shape(self, handler):
+        data = handler(self)
+        if self.github_repositories is None:
+            data.pop("github_repositories", None)
+        return data
 
     def get_trello_mapping(self) -> Any:
         from agente_gestion.domain.tasks import TaskMappingConfig

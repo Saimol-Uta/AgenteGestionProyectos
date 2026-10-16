@@ -394,7 +394,7 @@ Branch: feature/multirepo; base: 99161b289996c8af4b1030ea30142c058fb57ad5; deliv
 
 ## Tasks
 
-- T1 | S2,S5,S8,S9 | delegated/context-backstop (parent 83,382 tokens) | in_progress | Configuration and additive domain contracts; 52 tests green but independent verifier found malformed-YAML API swallow and baseline singleton regression; focused21+regression34 green, parent targeted3 green, independent recheck resolved all3; normalizing coherent commits/native review, not closed | commit: pending
+- T1 | S2,S5,S8,S9 | delegated/context-backstop (parent 83,382 tokens) | in_progress | Configuration and additive domain contracts; checks green, clean review worktree created; domain native medium/reviewDue=false, configuration commit pending | commit: 7220191c07c388aa1b4211888be31e5e93c32129 (domain), configuration pending
 - T2 | S3,S8,S9 | delegated/parallel-independent repo collection vs artifact parser | pending | Per-repository pinning/composition and shared budgets | commit: pending
 - T3 | S4,S8,S9 | delegated/parallel-independent artifact parser vs repo collection | pending | Safe CI v1 artifact download/validation | commit: pending
 - T4 | S3,S4,S8,S9 | inline | pending | Deterministic Actions selection and artifact adapter integration | commit: pending
@@ -859,3 +859,21 @@ Limited verifier continuation mvb39llw-7-tvzn now rechecks ONLY original YAML re
 Verifier mvb39llw-7-tvzn resolved original YAML rejection, legacy singleton normalization/API retention/fixture-CLI compatibility, and collection-present strictness. Isolated guarded3tests exit0/0.118s; no broader sweep. Independent base/candidate fixture CLI both exit0, byte-identical stdout (githubsuccess,2diffs,SHAunknown,duration0.000,errornone), empty stderr. No repo edits/live requests. Combined evidence: self21+34green,parent3green,independent scoped recheck green; original source chronology and future stages remain explicitly unverified.
 
 T1 functional evidence ready; keep task active until coherent local commit/review records. Packaging: passive tracking bootstrap, domain/provenance contracts with domain tests/guide, then collection/API-settings config with config/regression tests/guide. Domain and config are separate high-risk work units so review can target each alone; ~400lines advisory, natural cohesive units may exceed it without code-golf. No publication. Normalize generated blockquote blank markers only (remove Markdown marker trailing spaces), preserve every user quote/log body. Documentation bootstrap requires structural readback, no fabricated RED. Native review only for provider-due normalized committed units, not TODO/accumulated branch.
+
+### L13 — Local commits and native scope
+
+Tracking bootstrap9adf69a41e7d552cefc917e01f9519621e86fb8f: only tracking861lines,structural/verbatim/stagedwhitespace checks passed; no source. Domain7220191c07c388aa1b4211888be31e5e93c32129: eightfiles696add/4delete=700changed,models/domain tests/domain guide. Config separate/pending; natural cohesive700 exceeds advisory400 without code-golf. No hooks/signoverride/publication. Actualbase99161b...; verifiedlogscope excludes unrelated toolhint origin/mvp/real-sources25362lines. Native modeglobalon/cloneunset; rootinspectexclude offeredambientworkspace/no existinglineages. Review only domaincommitted9ad..722,notpendingconfig/wholebranch. No assessmentapproval inferred.
+
+### L14 — Native committed-range routing blocker; human decision required
+
+Domain9adf69a..7220191 ASSESS still unassessable for untracked declaration after inspectexclude. START(multirepo-domain-7220191-native-01,ordinary,committedOnly/base9adf69a) refused native-start-retained-selection-candidate-mismatch,mutation_performed=false/mutation_outcome=none. No lineage created: do not status/advance inspect-proposed lineage. Provider nextaction plaininspect returned workspace intended-untracked selection, not committed domain range. Do not loop/replay START, review wrong workspace, ignore human files or reset/recover authority.
+
+Need explicit authorization for clean same-clone review worktree /home/saimoljimenez/Univercidad/GestionProyectos/AgenteGestionProyectos/.runtime/multirepo-review, or explicit stage1-native-review disposition/pause. T1 blocked on external choice;T2–T10pending. Config commit pending; full verified configuration guide restored unstaged. Passing proof55self,parent3,independentbounded3 unchanged. No native consent/verdict invented, no publication. A first bookkeeping script restored guide then failed an exact task-line match before tracking edits; repaired from current task line, no source changes.
+
+### L15 — Explicit review-worktree authorization
+
+Human selected 'Autorizar worktree limpio — recomendado' (authorize_multirepo_review_worktree): create/register /home/saimoljimenez/Univercidad/GestionProyectos/AgenteGestionProyectos/.runtime/multirepo-review in same clone for this task's commit reviews. Path authorization only, not native consent/verdict/publication. No secrets/runtime copied. T1 active again; prepare detached domain7220191 worktree, register, then fresh native root-bound operations; never reuse old workspace bindings.
+
+### L16 — Clean worktree assessment; no review due for domain unit
+
+Authorized worktree created/registered clean at domain7220191,common .git confirmed,no.env copied. Root-bound committed-range ASSESS(base9adf69a,committedOnly=true,item3) now succeeds:8paths/700changedlines,nativeRisk=medium,agent risk=high,reviewDue=false,reviewDueReason=under_budget,candidate.consumed=false,nativeReviewOutcome=unknown. Independent item3 requirement already covered by stage1 verification on identical source; no extra verifier or native START/capture is due. This is NOT native approval. Keep every later native call bound to authorized review root. Proceed separate configuration work-unit commit; native review only when provider says due.

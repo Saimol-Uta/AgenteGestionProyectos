@@ -54,30 +54,33 @@ class UnifiedRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(settings.github_repo, "explicit-repo")
 
     def test_github_full_repo_aliases_and_same_layer_conflicts(self):
-        with patch.dict(os.environ, {
-            "GITHUB_REPOSITORY": "canonical-owner/canonical-repo",
-        }, clear=True):
-            canonical = Settings.from_env_and_file(_env_file=None)
-        self.assertEqual(canonical.github_owner, "canonical-owner")
-        self.assertEqual(canonical.github_repo, "canonical-repo")
-        self.assertEqual(canonical.github_repository, "canonical-repo")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            engine_config, "PROJECT_ROOT", Path(temporary),
+        ):
+            with patch.dict(os.environ, {
+                "GITHUB_REPOSITORY": "canonical-owner/canonical-repo",
+            }, clear=True):
+                canonical = Settings.from_env_and_file(_env_file=None)
+            self.assertEqual(canonical.github_owner, "canonical-owner")
+            self.assertEqual(canonical.github_repo, "canonical-repo")
+            self.assertEqual(canonical.github_repository, "canonical-repo")
 
-        with patch.dict(os.environ, {"GITHUB_REPO": "owner/full-repository"}, clear=True):
-            full = Settings.from_env_and_file(_env_file=None)
-        self.assertEqual(full.github_owner, "owner")
-        self.assertEqual(full.github_repo, "full-repository")
+            with patch.dict(os.environ, {"GITHUB_REPO": "owner/full-repository"}, clear=True):
+                full = Settings.from_env_and_file(_env_file=None)
+            self.assertEqual(full.github_owner, "owner")
+            self.assertEqual(full.github_repo, "full-repository")
 
-        with patch.dict(os.environ, {
-            "GITHUB_OWNER": "legacy-owner", "GITHUB_REPO": "legacy-repository",
-        }, clear=True):
-            split = Settings.from_env_and_file(_env_file=None)
-        self.assertEqual(split.github_owner, "legacy-owner")
-        self.assertEqual(split.github_repo, "legacy-repository")
+            with patch.dict(os.environ, {
+                "GITHUB_OWNER": "legacy-owner", "GITHUB_REPO": "legacy-repository",
+            }, clear=True):
+                split = Settings.from_env_and_file(_env_file=None)
+            self.assertEqual(split.github_owner, "legacy-owner")
+            self.assertEqual(split.github_repo, "legacy-repository")
 
-        with patch.dict(os.environ, {
-            "GITHUB_REPO": "legacy/repository", "GITHUB_REPOSITORY": "canonical/repository",
-        }, clear=True), self.assertRaises(ValueError):
-            Settings.from_env_and_file(_env_file=None)
+            with patch.dict(os.environ, {
+                "GITHUB_REPO": "legacy/repository", "GITHUB_REPOSITORY": "canonical/repository",
+            }, clear=True), self.assertRaises(ValueError):
+                Settings.from_env_and_file(_env_file=None)
 
     def test_explicit_project_scope_does_not_inherit_default_project_bindings(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -135,6 +138,50 @@ class UnifiedRuntimeConfigTests(unittest.TestCase):
                     "GITHUB_REPO": "owner/legacy", "GITHUB_REPOSITORY": "owner/canonical",
                 }, clear=True), self.assertRaises(ValueError):
                     load_api_settings(env_file=None)
+
+    def test_legacy_owner_with_full_repository_alias_preserves_singleton_api_and_cli(self):
+        import io
+        import sys
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from agente_gestion.cli import main as cli_main
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            config_path = config_dir / "hormigestion.yaml"
+            config_path.write_text(
+                "project:\n  id: probe-project\n"
+                "sources:\n  mode: fixtures\n",
+                encoding="utf-8",
+            )
+            environment = {
+                "GITHUB_OWNER": "legacy-owner",
+                "GITHUB_REPOSITORY": "encoded-owner/repository",
+                "EXTERNAL_WRITES_ENABLED": "false",
+            }
+            with patch.object(engine_config, "PROJECT_ROOT", root), patch(
+                "agente_gestion.api.settings.PROJECT_ROOT", root,
+            ), patch.dict(os.environ, environment, clear=True):
+                engine = Settings.from_env_and_file(_env_file=None)
+                api_settings = load_api_settings(env_file=None)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                arguments = [
+                    "agente_gestion", "source-check", "github", "--sources", "fixtures",
+                    "--project", "fixture_1_standard", "--config", str(config_path), "--env-file", "/dev/null",
+                ]
+                with patch.object(sys, "argv", arguments), redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = cli_main()
+
+        self.assertEqual(engine.github_owner, "encoded-owner")
+        self.assertEqual(engine.github_repo, "repository")
+        self.assertIsNone(engine.github_repositories)
+        self.assertEqual(api_settings.projects[0].id, "probe-project")
+        self.assertEqual(api_settings.github_repository, "encoded-owner/repository")
+        self.assertEqual(exit_code, 0)
+        self.assertRegex(stdout.getvalue(), r"(?m)^github\s+success\s")
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_api_and_analysis_share_dotenv_credentials_and_auto_bind_single_board(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -11,10 +11,20 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from agente_gestion.domain.tasks import validate_due_soon_days
 from agente_gestion.domain.weekly_schedule import WeeklySchedule
+from agente_gestion.domain.repositories import RepositoryConfiguration
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -36,6 +46,24 @@ class ProjectConfig(BaseModel):
     id: str = Field(min_length=1, max_length=128, pattern=IDENTIFIER_PATTERN.pattern)
     name: str = Field(min_length=1, max_length=160)
     source_mode: Literal["fixtures", "real", "stored"] = "stored"
+    repositories: tuple[RepositoryConfiguration, ...] = Field(default_factory=tuple)
+
+    @field_validator("repositories")
+    @classmethod
+    def unique_repository_ids(
+        cls, value: tuple[RepositoryConfiguration, ...],
+    ) -> tuple[RepositoryConfiguration, ...]:
+        ids = [repository.id for repository in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Los identificadores de repositorio configurados deben ser únicos.")
+        return value
+
+    @model_serializer(mode="wrap")
+    def serialize_legacy_shape(self, handler):
+        data = handler(self)
+        if not self.repositories:
+            data.pop("repositories", None)
+        return data
 
 
 class ApiSettings(BaseModel):
@@ -238,6 +266,17 @@ class _ConfigurationAliasError(ValueError):
     pass
 
 
+def _is_repository_collection_error(error: BaseException) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in (
+        "github_repositories",
+        "github repository collection",
+        "legacy github configuration",
+        "github owner and repository configuration",
+        "sources.github.repositories",
+    ))
+
+
 def _validate_alias_pair(
     values: Mapping[str, object], first: str, second: str, description: str,
 ) -> None:
@@ -370,7 +409,7 @@ def load_api_settings(*, env_file: str | Path | None = ".env") -> ApiSettings:
     if selected_path is not None and not selected_path.is_absolute():
         selected_path = PROJECT_ROOT / selected_path
     project_path = PROJECT_ROOT / "config" / "hormigestion.yaml"
-
+    document: dict[str, object] = {}
     try:
         from agente_gestion.application.config import (
             Settings as EngineSettings,
@@ -379,6 +418,11 @@ def load_api_settings(*, env_file: str | Path | None = ".env") -> ApiSettings:
 
         layered_paths = _yaml_configuration_paths(PROJECT_ROOT, selected_path)
         document = _merge_yaml_documents(layered_paths)
+        source_section = document.get("sources")
+        github_section = source_section.get("github") if isinstance(source_section, Mapping) else None
+        if isinstance(github_section, Mapping) and "repositories" in github_section:
+            if not isinstance(github_section["repositories"], list):
+                raise ValueError("Invalid GitHub repository collection configuration.")
         configured = _configured_project(layered_paths)
         engine = EngineSettings.from_env_and_file(
             config_path=str(selected_path) if selected_path is not None else None,
@@ -386,7 +430,9 @@ def load_api_settings(*, env_file: str | Path | None = ".env") -> ApiSettings:
         )
     except _ConfigurationAliasError:
         raise
-    except (OSError, TypeError, ValueError, ValidationError, yaml.YAMLError):
+    except (OSError, TypeError, ValueError, ValidationError, yaml.YAMLError) as exc:
+        if _is_repository_collection_error(exc):
+            raise ValueError("Invalid GitHub repository collection configuration.") from None
         document = {}
         configured = None
         engine = None
@@ -411,7 +457,12 @@ def load_api_settings(*, env_file: str | Path | None = ".env") -> ApiSettings:
     configured_project = None
     if project_id is not None and IDENTIFIER_PATTERN.fullmatch(project_id) and project_name is not None:
         try:
-            configured_project = ProjectConfig(id=project_id, name=project_name, source_mode=source_mode)
+            configured_project = ProjectConfig(
+                id=project_id,
+                name=project_name,
+                source_mode=source_mode,
+                repositories=engine.github_repositories if engine is not None and engine.github_repositories else (),
+            )
         except ValidationError:
             configured_project = None
 
