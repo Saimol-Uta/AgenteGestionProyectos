@@ -1,6 +1,6 @@
-# MultiRepo configuration, contracts and budget settings
+# MultiRepo budgeted source transport
 
-Projects can declare several independent GitHub repositories without choosing a primary one. Configuration, model contracts, and source budget settings are available. Runtime commit resolution, collection, quota enforcement, CI artifact validation, orchestration, storage, and API endpoints remain future work.
+Projects can declare several independent GitHub repositories without choosing a primary one. Configuration, model contracts, and source budget settings are available. A reusable ledger and bounded JSON transport now enforce quotas when explicitly composed. Automatic MultiRepo branch pinning/factory wiring, CI artifacts, orchestration, storage, and API endpoints remain future work.
 
 ## Configure repositories
 
@@ -66,7 +66,7 @@ Declare source budgets in `sources.github.collection_budget` (`sources.github.bu
 
 Integer caps must be positive integers, not booleans or fractional values. Timeout budgets must be positive finite numbers. Legacy singleton serialization omits the new budget fields when no repository collection is configured.
 
-`agente_gestion.domain.source_limits.SourceBudgetReceipt` defines an additive usage record for HTTP calls, changed files, streamed bytes, elapsed seconds, estimated tokens, and exhaustion. Token units are serialized-source estimates, not measured model usage. This configuration/contract unit does not yet wire runtime quota enforcement or MultiRepo collection.
+`agente_gestion.domain.source_limits.SourceBudgetReceipt` defines an additive usage record for HTTP calls, changed files, streamed bytes, elapsed seconds, estimated tokens, and exhaustion. Token units are serialized-source estimates, not measured model usage. The runtime hooks below enforce these quotas; automatic MultiRepo collection is added by the next unit.
 
 ## Public domain contracts
 
@@ -93,8 +93,18 @@ The six extended models add only optional metadata or empty-by-default container
 
 Absent historical identity, SHA, workflow, attempt, or provenance remains `None`. Empty per-repository result collections do not change singleton serialization fields. Repository result containers allow partial outcomes; their presence is not proof that a source or artifact was successfully validated.
 
+## Budgeted JSON transport
+
+`agente_gestion.adapters.sources.collection_budget.CollectionBudgetLedger` keeps one project ledger plus independent repository counters. `BudgetedHttpGetTransport` reserves each GET, passes a request-scoped hook to `BoundedGetTransport`, and returns project/repository receipts. Caller-injected GET ports remain supported and are charged using `HttpResponse.bytes_received`.
+
+The JSON transport preserves HTTPS origin validation, sanitized errors, per-response limits, and rejection of redirects. It accounts for actual decoded bytes before retaining chunks, not declared `Content-Length`, and parses JSON only after iterator EOF. At an exact cap it may read one bounded positive extra chunk, at most `min(65536, stream_limit)`; empty chunks do not spend that probe. Every yielded byte is charged and an overflow chunk is discarded. Deadlines are checked before every iterator advancement, including after empty chunks. A new request at an exhausted byte budget is rejected before network access.
+
+Aggregate byte receipts identify only project/repository caps actually reached; a response-local limit alone does not exhaust those aggregate scopes. Exact-cap equality exhausts the reached scope even if that final request succeeds. Errors close the response/session and clear the active budget context. Legacy adapters retain their configured singleton limits.
+
+The nine focused streaming tests cover exact caps, empty chunks, gzip decoded-body handling, scope-specific receipts, positive overflow, deadlines, cleanup, and pre-request rejection. Runtime MultiRepo composition and CI metrics remain separate later units.
+
 ## Not implemented in this stage
 
-The models define status vocabulary and additive data shapes only. They do not resolve branch tips, test repository permissions, mark repositories available, download or validate artifacts, evaluate findings, aggregate reports, or persist/API-serve repository results. Later stages must keep each resolved SHA and its evidence scoped to its repository and preserve unknown metrics as null.
+The domain models define status vocabulary and additive data shapes; the budgeted transport above adds explicit quota enforcement. Automatic collection does not yet resolve branch tips, test repository permissions, mark repositories available, download or validate artifacts, evaluate findings, aggregate reports, or persist/API-serve repository results. Later stages must keep each resolved SHA and its evidence scoped to its repository and preserve unknown metrics as null.
 
 This stage adds no CLI commands or options. The public settings and domain contract tests are the intended regression coverage for shared configuration parsing.

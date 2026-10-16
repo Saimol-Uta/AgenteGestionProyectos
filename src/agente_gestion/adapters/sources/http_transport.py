@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import requests
 import urllib3.exceptions
 
+from agente_gestion.adapters.sources.collection_budget import active_budget_scope
 from agente_gestion.ports.source_errors import (
     SourceError,
     SourceErrorCategory,
@@ -202,6 +203,10 @@ class BoundedGetTransport(HttpGetTransportPort):
         # Preflight validation before touching network or session
         self._validate_url(url)
         effective_timeout = self._validate_timeout(timeout_seconds)
+        budget_scope = active_budget_scope()
+        if budget_scope is not None:
+            effective_timeout = min(effective_timeout, budget_scope.timeout_seconds)
+            budget_scope.ensure_stream_capacity()
 
         if params is not None and not isinstance(params, dict):
             raise SourceError(self.provider, SourceErrorCategory.configuration) from None
@@ -275,17 +280,29 @@ class BoundedGetTransport(HttpGetTransportPort):
             deadline = start_time + effective_timeout
             chunks: list[bytes] = []
             bytes_received = 0
-            chunk_size = 65536
+            stream_limit = self.max_response_bytes
+            if budget_scope is not None:
+                stream_limit = min(stream_limit, budget_scope.byte_limit)
+            chunk_size = min(65536, stream_limit)
 
             try:
-                for chunk in response.iter_content(chunk_size=chunk_size):
+                chunk_iterator = iter(response.iter_content(chunk_size=chunk_size))
+                while True:
+                    if self._clock() > deadline:
+                        raise SourceError(self.provider, SourceErrorCategory.timeout) from None
+                    if budget_scope is not None:
+                        budget_scope.ensure_stream_capacity(allow_eof_probe=bytes_received >= stream_limit)
+                    try:
+                        chunk = next(chunk_iterator)
+                    except StopIteration:
+                        break
                     if not chunk:
                         continue
                     bytes_received += len(chunk)
-                    if bytes_received > self.max_response_bytes:
+                    if budget_scope is not None:
+                        budget_scope.consume_streamed_bytes(len(chunk))
+                    if bytes_received > stream_limit:
                         raise SourceError(self.provider, SourceErrorCategory.limit_exceeded) from None
-                    if self._clock() > deadline:
-                        raise SourceError(self.provider, SourceErrorCategory.timeout) from None
                     chunks.append(chunk)
             except SourceError:
                 raise
