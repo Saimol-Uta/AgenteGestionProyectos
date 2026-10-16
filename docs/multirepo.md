@@ -1,6 +1,6 @@
-# MultiRepo configuration and domain contracts
+# MultiRepo configuration, contracts and budget settings
 
-Projects can declare several independent GitHub repositories without choosing a primary one. Stage 1 adds configuration and model contracts only: commit resolution at analysis time, collection, CI artifact validation, orchestration, storage, and API endpoints remain future work.
+Projects can declare several independent GitHub repositories without choosing a primary one. Configuration, model contracts, and source budget settings are available. Runtime commit resolution, collection, quota enforcement, CI artifact validation, orchestration, storage, and API endpoints remain future work.
 
 ## Configure repositories
 
@@ -20,6 +20,17 @@ sources:
         repo: hormigestion-frontend
         branch: develop
         quality_workflow_path: .github/workflows/ci-quality.yml
+    collection_budget:
+      project_max_http_calls: 128
+      repository_max_http_calls: 48
+      project_max_files: 6000
+      repository_max_files: 3000
+      project_max_response_bytes: 67108864
+      repository_max_response_bytes: 31457280
+      project_timeout_seconds: 300
+      repository_timeout_seconds: 180
+      project_max_estimated_tokens: 100000
+      repository_max_estimated_tokens: 50000
 ```
 
 Each entry requires a unique `id`, `owner`, `repo`, and `branch`. `commit_sha` is optional and, when supplied, must be a full 40- or 64-character hexadecimal SHA. It is an explicit configuration pin; omitting it does not resolve a branch or claim that a commit was analyzed. `quality_workflow_path` is an optional path selector under `.github/workflows/`.
@@ -40,6 +51,22 @@ The legacy singleton variables remain supported when no repository collection is
 Without a collection, the legacy `GITHUB_REPOSITORY=owner/repository` form keeps its historical normalization: the owner encoded in the full repository value is used, even if a separate `GITHUB_OWNER` differs. When a collection is present, raw legacy owner/repository contradictions are rejected before normalization; any supplied legacy values must identify exactly one entry and match its configured values. They cannot replace collection entries, pick a primary repository, or distribute one legacy SHA across entries. A legacy SHA cannot match an entry whose `commit_sha` is unset. Ambiguous or contradictory coexistence is rejected.
 
 `Settings.github_repositories` exposes the validated tuple or `None` when no collection was supplied. The API settings loader exposes the same entries on `ProjectConfig.repositories`; a multi-repository project does not populate the legacy `ApiSettings.github_repository` field with an arbitrary entry.
+
+## Collection budget settings
+
+Declare source budgets in `sources.github.collection_budget` (`sources.github.budget` is an accepted alias). Every key in the YAML example maps to an environment variable with the `MULTIREPO_` prefix and uppercase spelling, for example `MULTIREPO_PROJECT_MAX_HTTP_CALLS`. Existing settings precedence is unchanged.
+
+| Budget | Project | Per repository |
+|---|---:|---:|
+| HTTP GET calls | 128 | 48 |
+| Changed files | 6,000 | 3,000 |
+| Actual response bytes | 64 MiB | 30 MiB |
+| Elapsed time | 300 seconds | 180 seconds |
+| Estimated source-context tokens | 100,000 | 50,000 |
+
+Integer caps must be positive integers, not booleans or fractional values. Timeout budgets must be positive finite numbers. Legacy singleton serialization omits the new budget fields when no repository collection is configured.
+
+`agente_gestion.domain.source_limits.SourceBudgetReceipt` defines an additive usage record for HTTP calls, changed files, streamed bytes, elapsed seconds, estimated tokens, and exhaustion. Token units are serialized-source estimates, not measured model usage. This configuration/contract unit does not yet wire runtime quota enforcement or MultiRepo collection.
 
 ## Public domain contracts
 

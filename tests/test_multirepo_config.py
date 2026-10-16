@@ -287,6 +287,45 @@ class MultiRepoSettingsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "(?i)(owner|contradict|legacy)"):
                 self.load_engine()
 
+    def test_collection_budget_yaml_environment_and_singleton_compatibility(self):
+        self.write_yaml([self.repository()])
+        content = self.yaml_path.read_text(encoding="utf-8")
+        self.yaml_path.write_text(
+            content.replace(
+                "    repositories:\n",
+                "    collection_budget:\n"
+                "      project_max_http_calls: 9\n"
+                "      repository_max_estimated_tokens: 1234\n"
+                "    repositories:\n",
+            ),
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            yaml_settings = self.load_engine()
+        self.assertEqual(yaml_settings.multirepo_project_max_http_calls, 9)
+        self.assertEqual(yaml_settings.multirepo_repository_max_estimated_tokens, 1234)
+        self.assertEqual(yaml_settings.multirepo_repository_max_http_calls, 48)
+
+        with patch.dict(os.environ, {
+            "AGENTE_CONFIG_PATH": str(self.yaml_path),
+            "MULTIREPO_REPOSITORY_MAX_HTTP_CALLS": "7",
+        }, clear=True):
+            env_settings = Settings.from_env_and_file(_env_file=None)
+        self.assertEqual(env_settings.multirepo_repository_max_http_calls, 7)
+
+        singleton = Settings(github_owner="legacy-owner", github_repo="legacy-repo")
+        self.assertNotIn("multirepo_project_max_http_calls", singleton.model_dump())
+        self.assertEqual(singleton.multirepo_project_max_http_calls, 128)
+
+    def test_collection_budgets_reject_zero_boolean_and_nonfinite_values(self):
+        for values in (
+            {"multirepo_project_max_http_calls": 0},
+            {"multirepo_repository_max_files": True},
+            {"multirepo_project_timeout_seconds": float("inf")},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                Settings(**values)
+
     def test_configured_collection_coexistence_must_identify_exactly_one_entry(self):
         self.write_yaml([
             self.repository(),

@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple, Type
 from zoneinfo import ZoneInfo
 from agente_gestion.domain.tasks import validate_due_soon_days
 from agente_gestion.domain.repositories import RepositoryConfiguration
+from agente_gestion.domain.source_limits import DEFAULT_MULTIREPO_BUDGETS
 from pydantic import Field, SecretStr, field_validator, model_serializer, model_validator
 from pydantic_settings import (
     BaseSettings,
@@ -170,6 +171,14 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
                 merged["github_commit_sha"] = gh["commit"]
             elif "sha" in gh:
                 merged["github_commit_sha"] = gh["sha"]
+
+            budget = gh.get("collection_budget", gh.get("budget"))
+            if budget is not None:
+                if not isinstance(budget, dict):
+                    raise ValueError("sources.github.collection_budget must be a mapping.")
+                for key in DEFAULT_MULTIREPO_BUDGETS:
+                    if key in budget:
+                        merged[f"multirepo_{key}"] = budget[key]
 
     # Directly specified top-level keys
     for k, v in file_data.items():
@@ -396,6 +405,46 @@ class Settings(BaseSettings):
         gt=0,
         description="Maximum allowed HTTP response bytes.",
     )
+    multirepo_project_max_http_calls: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["project_max_http_calls"], gt=0,
+        description="Shared HTTP call cap across one MultiRepo project collection.",
+    )
+    multirepo_repository_max_http_calls: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["repository_max_http_calls"], gt=0,
+        description="HTTP call cap for one repository inside a MultiRepo collection.",
+    )
+    multirepo_project_max_files: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["project_max_files"], gt=0,
+        description="Shared changed-file cap across one MultiRepo project collection.",
+    )
+    multirepo_repository_max_files: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["repository_max_files"], gt=0,
+        description="Changed-file cap for one repository inside a MultiRepo collection.",
+    )
+    multirepo_project_max_response_bytes: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["project_max_response_bytes"], gt=0,
+        description="Actual streamed response-byte cap across one MultiRepo project collection.",
+    )
+    multirepo_repository_max_response_bytes: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["repository_max_response_bytes"], gt=0,
+        description="Actual streamed response-byte cap for one repository.",
+    )
+    multirepo_project_timeout_seconds: float = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["project_timeout_seconds"], gt=0,
+        description="Wall-clock deadline for one MultiRepo project collection.",
+    )
+    multirepo_repository_timeout_seconds: float = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["repository_timeout_seconds"], gt=0,
+        description="Wall-clock deadline for one repository in a MultiRepo collection.",
+    )
+    multirepo_project_max_estimated_tokens: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["project_max_estimated_tokens"], gt=0,
+        description="Estimated source-context token-unit cap across the project; not model usage.",
+    )
+    multirepo_repository_max_estimated_tokens: int = Field(
+        default=DEFAULT_MULTIREPO_BUDGETS["repository_max_estimated_tokens"], gt=0,
+        description="Estimated source-context token-unit cap for one repository; not model usage.",
+    )
 
     model_config = SettingsConfigDict(
         env_file=None,
@@ -436,6 +485,43 @@ class Settings(BaseSettings):
             AliasNormalizingSettingsSource(settings_cls, s)
             for s in (init_settings, env_settings, dotenv_settings, yaml_src)
         )
+
+    @field_validator(
+        "multirepo_project_max_http_calls", "multirepo_repository_max_http_calls",
+        "multirepo_project_max_files", "multirepo_repository_max_files",
+        "multirepo_project_max_response_bytes", "multirepo_repository_max_response_bytes",
+        "multirepo_project_max_estimated_tokens", "multirepo_repository_max_estimated_tokens",
+        mode="before",
+    )
+    @classmethod
+    def parse_multirepo_integer_budget(cls, value: Any) -> int:
+        if isinstance(value, bool):
+            raise ValueError("MultiRepo integer budgets must be positive integers.")
+        if isinstance(value, str):
+            try:
+                if not re.fullmatch(r"[0-9]+", value.strip()):
+                    raise ValueError
+                value = int(value.strip())
+            except ValueError:
+                raise ValueError("MultiRepo integer budgets must be positive integers.") from None
+        if type(value) is not int or value <= 0:
+            raise ValueError("MultiRepo integer budgets must be positive integers.")
+        return value
+
+    @field_validator(
+        "multirepo_project_timeout_seconds", "multirepo_repository_timeout_seconds", mode="before",
+    )
+    @classmethod
+    def parse_multirepo_time_budget(cls, value: Any) -> float:
+        if isinstance(value, bool):
+            raise ValueError("MultiRepo timeout budgets must be positive finite numbers.")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("MultiRepo timeout budgets must be positive finite numbers.") from None
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("MultiRepo timeout budgets must be positive finite numbers.")
+        return value
 
     @field_validator("due_soon_days", mode="before")
     @classmethod
@@ -650,6 +736,8 @@ class Settings(BaseSettings):
         data = handler(self)
         if self.github_repositories is None:
             data.pop("github_repositories", None)
+            for key in DEFAULT_MULTIREPO_BUDGETS:
+                data.pop(f"multirepo_{key}", None)
         return data
 
     def get_trello_mapping(self) -> Any:
