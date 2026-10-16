@@ -546,6 +546,14 @@ class GitHubActionsSourceAdapter(CISourcePort):
             status_str = self._validate_variable_text(row.get("status"), is_required=False, default=None)
             conclusion_str = self._validate_variable_text(row.get("conclusion"), is_required=False, default=None)
 
+            # Additive T4 fields: run_attempt and workflow_path are optional in the runs API.
+            raw_run_attempt = row.get("run_attempt")
+            if (raw_run_attempt is not None
+                    and (not isinstance(raw_run_attempt, int) or isinstance(raw_run_attempt, bool)
+                         or raw_run_attempt < 1)):
+                raise SourceError(SourceProvider.github_actions, SourceErrorCategory.malformed_payload) from None
+            workflow_path_value = self._validate_variable_text(row.get("path"), is_required=False, default=None)
+
             wf_id = row.get("workflow_id")
             if wf_id is not None:
                 if not isinstance(wf_id, int) or isinstance(wf_id, bool) or wf_id <= 0:
@@ -579,6 +587,8 @@ class GitHubActionsSourceAdapter(CISourcePort):
                 failed_tests=None,
                 coverage_percentage=None,
                 timestamp=None,
+                run_attempt=raw_run_attempt,
+                workflow_path=workflow_path_value,
             )
 
             canonical_run_url = f"https://api.github.com/repos/{self._owner}/{self._repo}/actions/runs/{run_id_str}"
