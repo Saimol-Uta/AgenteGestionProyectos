@@ -391,12 +391,16 @@ Branch: feature/multirepo; base: 99161b289996c8af4b1030ea30142c058fb57ad5; deliv
 > pausemos el subagente, voy a salir y llegar el equipo
 >
 > ya puedes continuar
+>
+> pausa el voy a salir con el equipo
+>
+> ya puedes continuar
 
 ## Tasks
 
-- T1 | S2,S5,S8,S9 | delegated/context-backstop (parent 83,382 tokens) | in_progress | Configuration and additive domain contracts; checks green, clean review worktree created; domain native medium/reviewDue=false, configuration commit pending | commit: 7220191c07c388aa1b4211888be31e5e93c32129 (domain), configuration pending
-- T2 | S3,S8,S9 | delegated/parallel-independent repo collection vs artifact parser | pending | Per-repository pinning/composition and shared budgets | commit: pending
-- T3 | S4,S8,S9 | delegated/parallel-independent artifact parser vs repo collection | pending | Safe CI v1 artifact download/validation | commit: pending
+- T1 | S2,S5,S8,S9 | delegated/context-backstop (parent 83,382 tokens) | done | Stage1 verified:55 self-checks,parent3,independent3 recheck; both committed units native medium/reviewDue=false, no native approval claimed | commit: 7220191c07c388aa1b4211888be31e5e93c32129 (domain), cb3f3bd5b47a0350f35c94fee03869437226367a (config); tracking9adf69a
+- T2 | S3,S8,S9 | delegated/context-backstop; establish shared budget before T3 | done | Verified self33+200, independent224+legacy differential and B1final9/probes; committed prefixes26/30/85; all three native medium/reviewDuefalse, no native approval | commit: 893872b88ae0a50ae29e98c6a8da4ea8e1042861 (configuration), 8b946a418572b469e2a1d4bc47dfd4c3fd61f8d1 (budget/HTTP), af3d4ee30a1d8e01d9eeac6087cd7e7f1a6435fb (composition)
+- T3 | S4,S8,S9 | delegated/context-backstop after T2 budget interface | in_progress | Stable T2 budget interface; implement standalone secure CI v1 artifact transport/validation, keep Actions selection/integration T4 separate | commit: pending
 - T4 | S3,S4,S8,S9 | inline | pending | Deterministic Actions selection and artifact adapter integration | commit: pending
 - T5 | S5,S8,S9,S10 | inline | pending | Isolated orchestration, agents, evaluator and consolidated report | commit: pending
 - T6 | S6,S8,S9 | inline | pending | Additive SQLite persistence and historical/idempotent queries | commit: pending
@@ -774,43 +778,27 @@ Al finalizar, entregar una matriz de cumplimiento, resultados de pruebas, eviden
 
 **Autorizo crear la rama e implementar. No autorizo push, merge ni escrituras externas.**
 
-### L3 — Baseline, approved design and routing evidence
+### L3 — Baseline, approved design and initial evidence
 
-Base and HEAD rechecked before branch creation: 99161b289996c8af4b1030ea30142c058fb57ad5. Created feature/multirepo; preserve pre-existing untracked frontend/pnpm-lock.yaml. No source changes or tests yet. Remote audit used read-only GET; no producer changes or remote mutations. Current operational defaults remain unchanged.
+Base/HEAD99161b289996c8af4b1030ea30142c058fb57ad5 rechecked before feature/multirepo creation; humanfrontend/pnpm-lock.yaml preserved. Approved collection sources.github.repositories/GITHUB_REPOSITORIES,legacyfallback/explicitcontradictions,no primary; perrunSHA/state/provenance,additivestorage/API,existingviews/approvals,unknownnull/noaveragedcoverage. Defaults unchanged,no remote mutations. Large/resumable; forecast3500–6000authoredlines,about400cohesive/advisorynotcodegolf. Runtimecontextbackstop83382tokens requires boundedwriters; T1route recorded above. Risk2artifact/actiontrust,1history,3sharedcontracts; independent verification as applicable, native review onlyactualdue unit.
 
-Approved design: sources.github.repositories / GITHUB_REPOSITORIES JSON collection; legacy singleton fallback, explicit contradictions rejected, no arbitrary primary repo. Fields id, owner, repo, branch and quality workflow selector; resolve per-run SHA and record access/availability separately. Per-repo provenance throughout the six named models; no averaged coverage. Reuse adapters, additive storage/API and existing React views/approval gates.
+Producer audit schema blob09033371c03dd9458c45065b9fb1930bbff230ac identical;attempt/test_suitesoptional,frontend no inventedintegration. Observed backenddevelopf275af93d37bd886b063f6090b0a8991cbdf0ac4 run38833954051/1 artifact12018119032:49tests,97.9%loadedTSunitlines; frontenddevelop71404615a18038b9209a1028acbae0d522445fea run38842647221/1 artifact12022370289:31tests,92.73%loadedTSexcludingTSX/UI,e2e_statusnot_implemented. AuditGETonly/inmemoryZIP,no futurepins;ghaccessdoesn'tproveapptoken. Initialdocument-script syntaxfailure made0toolcalls/mutations;fixed.
 
-Producer schema identical (blob 09033371c03dd9458c45065b9fb1930bbff230ac); workflow_run_attempt and test_suites optional; unknowns stay null. Reference backend develop f275af93d37bd886b063f6090b0a8991cbdf0ac4 run38833954051/1 artifact12018119032:49 tests,97.9% loaded TS unit lines. Frontend develop71404615a18038b9209a1028acbae0d522445fea run38842647221/1 artifact12022370289:31 tests,92.73% loaded TS lines excluding TSX/UI,e2e_status not_implemented. Observations are not future analysis pins. Audit gh identity access does not prove app token access.
+### L4 — Human delivery selection
 
-Size: large (multi-stage deliverables and durable requirements required for resumption). Forecast 3,500–6,000 authored changed lines, generated files excluded; coherent work units around 400 lines, not a hard cap or a reason to omit tests/docs. Delivery shape selected before the first commit: auto-chain / feature-branch-chain; publication remains unauthorized. Context backstop fired at 83,382 parent tokens; next bounded T1 reads/edits/checks go to gentle-ai-worker. T2/T3 may later run together only with disjoint edit surfaces and the shared domain contract settled.
-
-Risk: item 2 (artifact trust and action origin routing); item 1 (SQLite historical compatibility); item 3 (shared config/domain/API consumers). Independent verification required for affected work units; functional tests remain mandatory. RDD only follows actual user-owned review mode and native assess/continuations, never task checkboxes.
-
-T1 launched as worker mvayhv3y-2-2isg with narrow config/domain/test/doc surfaces; RED/GREEN, regression and differential checks assigned with real network blocked. No outcome or proof has returned; T1 remains in_progress. T2–T10 remain pending. Full Engram mirror1195 readback matches local document after trimming the trailing newline (Engram normalization).
-
-Tooling note: first document-construction script had a JavaScript syntax error; the tool confirmed no calls/mutations. Corrected construction uses stored exact request strings. No source or repository incident occurred.
-
-### L4 — Delivery selection and review-mode observation
-
-Human selected: “Cadena sobre feature/multirepo — recomendado” (value: feature-branch-chain). Cache delivery_strategy=auto-chain, chain_strategy=feature-branch-chain; work-unit boundaries become future review slices targeting the feature/tracker branch. This grants no publication. No PRs are being created. Review mode status: receipt-driven development on (global on, clone-local unset); native assess/consent follows only actual work-unit candidate boundaries. T1 was running at this observation; later user stop L5 supersedes automatic continuation.
+Human selected 'Cadena sobre feature/multirepo — recomendado' (feature-branch-chain). Cache delivery_strategy=auto-chain,chain_strategy=feature-branch-chain; no push/PR/merge/reviewconsent granted. Review switch observedglobalon/cloneunset; followactualnativecontinuations,notchecklists.
 
 ### L5 — Explicit user pause (verbatim)
 
 pausemos el subagente, voy a salir y llegar el equipo
 
-Action: cancelled worker mvayhv3y-2-2isg successfully. Do not continue implementation, checks, commits or delegated work until the human explicitly resumes. T1 blocked on that external decision; T2–T10 remain pending.
-
-Pause snapshot: branch feature/multirepo; HEAD still99161b289996c8af4b1030ea30142c058fb57ad5; index unchanged and no new commits. Tracked partial edits: config/hormigestion.yaml, api/settings.py, application/config.py, domain/code.py, domain/findings.py, domain/report.py, domain/snapshot.py, ports/source_collection.py (Python paths under src/agente_gestion). Tracked diff332 insertions/11 deletions across8files, excluding untracked additions. New untracked agent files: docs/multirepo.md, domain/repositories.py, tests/test_multirepo_config.py, tests/test_multirepo_domain.py, this tracking document. Preserve pre-existing human frontend/pnpm-lock.yaml separately. No files discarded or reset.
-
-Proof: worker was cancelled before delivering its final report; parent has no verified RED/GREEN, regression or differential outcomes and has not reviewed the partial code. Do not claim stage1 complete or tests passing. No further checks run after user stop. Operational defaults must remain unchanged; all future analyses/tests false and offline/simulated transports, no external writes or publication.
-
-Resume: mem_context -> feature-scoped mem_search -> mem_get_observation1195 -> actual task file, reconcile diff and any retained child proof. Reauthorize only by explicit user resume; cancelled worker does not resume itself. Delegate the remaining T1 reads/edits/checks due context backstop, with the existing partial/untracked agent files explicitly within its allowed surfaces, preserving all human files. Complete and observe checks before committing or progressing to stage2. Cached delivery auto-chain/feature-branch-chain remains; no push/PR/merge permission.
+Cancelled mvayhv3y-2-2isg, preserved partial8trackedfiles332+/11- plus agent additions/humanpnpm lock. HEAD/base99161b... and index unchanged,no commits/finalproof. Stopped until resumeL6; full historical snapshot memory1198/1199. No reset/discard.
 
 ### L6 — Explicit user resume (verbatim)
 
 ya puedes continuar
 
-Resume reconciliation completed in required order: mem_context, project/feature search, full observation1195, actual task file. Mirror readback matches after trim. Branch feature/multirepo,HEAD/base99161b289996c8af4b1030ea30142c058fb57ad5,index and partial file list/diff stat exactly match pause snapshot. Old worker confirmed cancelled, no final proof. No tasks completed; T1 returns to in_progress, T2–T10 stay pending. Remaining T1 reads/edits/checks will be delegated to a fresh scoped worker due recorded context backstop; preserve partial code/tests/docs and human pnpm-lock. Existing defaults and no-external-writes/publication restrictions unchanged.
+Required memory/file/Git reconciliation matched pause; old worker cancelled/no proof. Fresh mvb1g33x-3-gscj assigned same bounded scope under context backstop, preserving partial/human files/default/no-external-writes/publication restrictions. No task marked done then.
 
 ### L7 — Tracking refresh request (verbatim)
 
@@ -820,60 +808,96 @@ Tracking refreshed from reconciled durable tasks: only T1 active; zero outcomes 
 
 Resume dispatch: fresh worker mvb1g33x-3-gscj now owns remaining T1 reads/edits/checks under the same narrow allowed surfaces, including existing agent additions. User stop is superseded by L6; do not restart old cancelled worker. Worker must preserve partial work, report any reconstructed baseline RED honestly, observe RED before new corrections, run focused GREEN/config-domain regressions and safe differential with real network blocked. No proof yet. Resume automatically on this task's completion event; no polling or duplicate launches.
 
-### L8 — Runner incident and correction dispatch
+### L8 — Runner correction
 
-Worker mvb1g33x-3-gscj made no new edits. Focused and regression commands importing pytest each exited1 before collection: ModuleNotFoundError: No module named 'pytest'; zero tests, not RED. Parent read-only diagnosis: pyproject has no pytest dependency, README.md:156 uses unittest, both new modules subclass unittest.TestCase. No install or failed-command retry. Native ASSESS item3: self+independent verification required; nativeRisk unassessable/undeclared untracked scope, no authority.
+Two pytest wrappers exited1/ModuleNotFoundError:No module named 'pytest',zero tests/notRED. Repo uses unittest;no install/retry. Guard allchecks falseenv/socketconnect+connect_ex denial beforeimports. Nativeuntrackedassessmentnotapproval.
 
-Corrected runner (socket denial BEFORE imports) uses EXTERNAL_WRITES_ENABLED=false .venv/bin/python -c with socket.socket.connect and connect_ex raising AssertionError('External network blocked'), unittest.TextTestRunner(verbosity=2), defaultTestLoader.loadTestsFromNames, and SystemExit(not result.wasSuccessful()). Focused modules: tests.test_multirepo_config,tests.test_multirepo_domain; regression: tests.test_settings,tests.test_unified_runtime_config,tests.test_sources_contracts. No live providers/state or pytest installation. Correction mvb1q013-4-l5b0 assigned missing independent-SHA coverage and stage1 self-review; preserved all original requirements/surfaces. No task complete then.
+### L9 — Initial T1 checks
 
-### L9 — Stage1 self-checks and initial independent verification
+Writer19focused/33regression green(afterone33testfixturecollisionexit1),parent19green;originalsourceREDunknown. Verifiermvb2ahsb-5-01zm ran52green and publicbaseline99161b differentials. No stage2then.
 
-Worker mvb1q013-4-l5b0 added explicit distinct-SHA public-loader test and isolated existing legacy-alias fixture root; no source correction. Focused19 exit0/0.092s. Regression first exit1,33tests/one inherited-default fixture error; after isolation exit0,33tests/0.074s. New SHA test passed existing behavior; original source RED chronology unknown. No CLI differential performed; not a blanket shared-consumer exemption.
+### L10 — T1 defects
 
-Parent guarded focused run: exit0,19tests/0.091s,OK; bounded config/API/YAML/legacy-test/guide review, Git structural/status commandexit0. Full draft13files1209authoredlines (1174add/35delete), not commits. Native ASSESS item3 retained independent plan, native scope unassessable, no approval. Independent verifier mvb2ahsb-5-01zm assigned whole spec, baseline99161b289996c8af4b1030ea30142c058fb57ad5, isolated52tests and public singleton/CLI differentials, explicitly challenging owner/fullrepo compatibility and swallowed YAML errors. No stage2 work.
+MalformedYAMLrepositoriesmapping silently producedAPIprojects[];engineerror 'sources.github.repositories must be a non-empty list' swallowed. Legacyowner/fullrepo no collection normalizedonbase butcandidateerror/APIprojectloss/fixtureCLIexit2(emptystdout,stderr'ERROR: Configuration validation failed.\n')vsbase0. Singlecorrectionmvb2p4mv-6-q4i7 restoredlegacy normalization onlywithoutcollection andexplicitYAMLerror,keptcollectionstrictness.
 
-### L10 — Independent defects and one bounded correction
+### L11 — T1 correction proof
 
-Verifier mvb2ahsb-5-01zm: S2blocked,S5contracts/S8safetypass,S9partial. Guarded52tests exit0/OK; no repo edits/live requests. --help both exit0,byte-identical stdout/stderr. Consistent aliases and source precedence match baseline; legacy fixture-root isolation accepted.
+Threepublictargettests REDexit1(1failure1error),thenGREEN3exit0;intermediateearlyYAMLcatch/CLIspacingassertionfixedsamebatch. Focused21/regression34green,parent3green;legacyfixtureCLI github --sources fixtures --project fixture_1_standard --config <scratch>/probe.yaml --env-file /dev/null both0/byte-identicalstdout/emptystderr. BadfixtureIDbaseline1notcomparable. OriginalcancelledREDunknown. Limitedrecheckmvb39llw-7-tvzn onlyreporteddefects.
 
-Blocker: isolated YAML project.id=probe-project,sources.github.repositories={invalid:collection},noGITHUB_REPOSITORIES,public load_api_settings(env_file=None) returnsprojects=[]/noexception. Engine raises 'sources.github.repositories must be a non-empty list'; API error matcher269–276 misses marker and catch435–444 swallows it.
+### L12 — T1 independent closure/packaging
 
-Legacy differential: no collection,GITHUB_OWNER=legacy-owner,GITHUB_REPOSITORY=encoded-owner/repository. Base Settings normalizes encoded-owner/repository,API retainsprobe-project; candidate raisesValueError/APIprojects[]. Fixture source-check baseexit0/success;candidateexit2/emptystdout/stderr'ERROR: Configuration validation failed.\n'. Verifier called advisory; parent adopts unrequested regression under user's exact 'Preservar los contratos actuales de monorrepositorio.'. Concrete YAML blocker starts correction; advisory did not alone trigger it. Preserve baseline normalization only without collection; keep collection-present rawowner conflicts strict.
+LimitedrecheckresolvedYAML/legacy/strictness:3exit0/.118s,CLIboth0/byteidentical(2diffs,SHAunknown,duration0,errornone). Overallself21+34,parent3,initialindependent52+recheck3;futurestagesunverified. Normalize generatedblockquote blankmarkers only,userquotes preserved. Tracking/domain/configsplit chosen,nocodegolf.
 
-Single correction mvb2p4mv-6-q4i7 limited to application/config.py,api/settings.py,tests/test_multirepo_config.py,tests/test_unified_runtime_config.py,docs/multirepo.md. Require public RED before minimal fixes, GREEN/regression and exact fixture CLI differential; no redesign/default changes/install/livewrites. Afterwards limited same-defect verifier recheck, not new sweep. T1 active, no commits.
+### L13 — Local commits
 
-### L11 — Correction proof and limited independent recheck
+9adf69a41e7d552cefc917e01f9519621e86fb8f tracking861lines;7220191c07c388aa1b4211888be31e5e93c32129 domain696add/4delete=700withtests/guide. Whitespace/structuralchecks passed,nohooks/signoverride/publication. Toolhint origin/mvp25362lines was unrelated;truebase99161b. Configseparate pendingthen.
 
-Writer mvb2p4mv-6-q4i7 fixed five authorized files only: owner guard conditional on collection; YAML shape/discovery errors propagated; public regressions/docs updated. Target methods: tests.test_multirepo_config.MultiRepoSettingsTests.test_api_loader_rejects_non_list_yaml_collection_instead_of_dropping_project; tests.test_unified_runtime_config.UnifiedRuntimeConfigTests.test_legacy_owner_with_full_repository_alias_preserves_singleton_api_and_cli; tests.test_multirepo_config.MultiRepoSettingsTests.test_collection_still_rejects_owner_conflicting_with_full_repository_alias.
+### L14 — Resolved routing incident
 
-Target RED exit1,3tests/1failure+1error (API noexception,legacyowner rejection);strictness passed. Intermediate exit1: early YAML discovery error still swallowed and CLI spacing assertion wrong despite success; corrected same batch. Target GREEN exit0,3tests/0.076s;focused21 exit0/0.099s;regression34 exit0/0.140s. No earlier cancelled-source RED claim. Parent exact guarded target3 exit0/0.078s/OK, bounded diff/guide review and Gitdiffcheckexit0.
-
-Fixture CLI source-check github --sources fixtures --project fixture_1_standard --config <scratch>/probe.yaml --env-file /dev/null: before fix base0/candidate2 with stderr'ERROR: Configuration validation failed.\n'; after both0,byte-identical stdout/stderr (stderr empty,GitHubsuccess/2diffs/unknownSHA). Preliminary unsupported fixture ID baseline1 was not comparable. Final probes falseenv/socket-denied, no secrets/live services.
-
-Direct ASSESS item3 retained independent plan; untracked native scope not approval. An earlier codemode attempt was refused before execution (only prior memory save ran); native facade must be called directly. No source/tracking mutation from refused call.
-
-Limited verifier continuation mvb39llw-7-tvzn now rechecks ONLY original YAML rejection, legacy Settings/API/fixture CLI exact differential and collection strictness: three named tests plus independent isolated guarded probes, no full sweep/edits. T1 not closed; commits/native review/stage2 pending. Wait for completion, no polling.
-
-### L12 — Limited independent recheck resolved; work-unit packaging
-
-Verifier mvb39llw-7-tvzn resolved original YAML rejection, legacy singleton normalization/API retention/fixture-CLI compatibility, and collection-present strictness. Isolated guarded3tests exit0/0.118s; no broader sweep. Independent base/candidate fixture CLI both exit0, byte-identical stdout (githubsuccess,2diffs,SHAunknown,duration0.000,errornone), empty stderr. No repo edits/live requests. Combined evidence: self21+34green,parent3green,independent scoped recheck green; original source chronology and future stages remain explicitly unverified.
-
-T1 functional evidence ready; keep task active until coherent local commit/review records. Packaging: passive tracking bootstrap, domain/provenance contracts with domain tests/guide, then collection/API-settings config with config/regression tests/guide. Domain and config are separate high-risk work units so review can target each alone; ~400lines advisory, natural cohesive units may exceed it without code-golf. No publication. Normalize generated blockquote blank markers only (remove Markdown marker trailing spaces), preserve every user quote/log body. Documentation bootstrap requires structural readback, no fabricated RED. Native review only for provider-due normalized committed units, not TODO/accumulated branch.
-
-### L13 — Local commits and native scope
-
-Tracking bootstrap9adf69a41e7d552cefc917e01f9519621e86fb8f: only tracking861lines,structural/verbatim/stagedwhitespace checks passed; no source. Domain7220191c07c388aa1b4211888be31e5e93c32129: eightfiles696add/4delete=700changed,models/domain tests/domain guide. Config separate/pending; natural cohesive700 exceeds advisory400 without code-golf. No hooks/signoverride/publication. Actualbase99161b...; verifiedlogscope excludes unrelated toolhint origin/mvp/real-sources25362lines. Native modeglobalon/cloneunset; rootinspectexclude offeredambientworkspace/no existinglineages. Review only domaincommitted9ad..722,notpendingconfig/wholebranch. No assessmentapproval inferred.
-
-### L14 — Native committed-range routing blocker; human decision required
-
-Domain9adf69a..7220191 ASSESS still unassessable for untracked declaration after inspectexclude. START(multirepo-domain-7220191-native-01,ordinary,committedOnly/base9adf69a) refused native-start-retained-selection-candidate-mismatch,mutation_performed=false/mutation_outcome=none. No lineage created: do not status/advance inspect-proposed lineage. Provider nextaction plaininspect returned workspace intended-untracked selection, not committed domain range. Do not loop/replay START, review wrong workspace, ignore human files or reset/recover authority.
-
-Need explicit authorization for clean same-clone review worktree /home/saimoljimenez/Univercidad/GestionProyectos/AgenteGestionProyectos/.runtime/multirepo-review, or explicit stage1-native-review disposition/pause. T1 blocked on external choice;T2–T10pending. Config commit pending; full verified configuration guide restored unstaged. Passing proof55self,parent3,independentbounded3 unchanged. No native consent/verdict invented, no publication. A first bookkeeping script restored guide then failed an exact task-line match before tracking edits; repaired from current task line, no source changes.
+Mainroot committeddomain START refused native-start-retained-selection-candidate-mismatch,mutationfalse/no lineage;ambientselectiondidn'tbindcommittedrange. No replay/reset/statusproposedlineage/wrongworkspacereview. Human authorizedcleanrootL15;successL16. Bookkeepingmatchfailurehadno sourcechange. No consent/approval invented.
 
 ### L15 — Explicit review-worktree authorization
 
 Human selected 'Autorizar worktree limpio — recomendado' (authorize_multirepo_review_worktree): create/register /home/saimoljimenez/Univercidad/GestionProyectos/AgenteGestionProyectos/.runtime/multirepo-review in same clone for this task's commit reviews. Path authorization only, not native consent/verdict/publication. No secrets/runtime copied. T1 active again; prepare detached domain7220191 worktree, register, then fresh native root-bound operations; never reuse old workspace bindings.
 
-### L16 — Clean worktree assessment; no review due for domain unit
+### L16 — Domain native due decision
 
-Authorized worktree created/registered clean at domain7220191,common .git confirmed,no.env copied. Root-bound committed-range ASSESS(base9adf69a,committedOnly=true,item3) now succeeds:8paths/700changedlines,nativeRisk=medium,agent risk=high,reviewDue=false,reviewDueReason=under_budget,candidate.consumed=false,nativeReviewOutcome=unknown. Independent item3 requirement already covered by stage1 verification on identical source; no extra verifier or native START/capture is due. This is NOT native approval. Keep every later native call bound to authorized review root. Proceed separate configuration work-unit commit; native review only when provider says due.
+Clean authorizedreviewroot at722,no.env. Committedbase9ad:8paths/700lines,nativeRiskmedium,reviewDue=false/under_budget,consumedfalse/outcomeunknown. Item3independentrequirementalreadymet;no START/capture/approval. Rootexplicitonfuturecalls.
+
+### L17 — T1done; T2 dependency
+
+Configcb3f3bd5b47a0350f35c94fee03869437226367a:7files565add/37delete=602;whitespacepassed. Cleanreviewrootmoved722tocb3;committedbase722nativeRiskmedium/reviewDuefalse/under_budget,consumedfalse/unknown. T1doneonobservedproof/commits;fullbackend/UI/integrationfuture,noexternalwrites/defaultchange/publication. BoundedGetTransport JSON rejectsredirects;sharedbudgetfoundationT2beforebinaryT3/T4(notparallel,noscopecut). Boundedwriter mvb4cjwc-8-v4pq assigned scope;parentownsnotes/commits. Overescapedtrackingmatcherrejectedbeforemutation,fixed.
+
+### L18 — Partial T2 report and existing proof setup
+
+Worker mvb4cjwc-8-v4pq interaction_required hadunrecoverableoldRED/200;notverified. /dev/nullconfig exit1notdifferential. No siblingcheckout/CodeGraphauthorized/created. Existingauthorizedcleanbaselinecb3 reused; parentfocused19exit0/0.084s. Ownedfixture/tmp/gpgI2zRM/multirepo-fixture-proof.L3YKfe/fixture-source-check.yaml explicitfixture_1_standard/sourcesfixtures,no secrets. Providersgithub/github-actions/all. Repairedcontinuation9dispatchedbutcancelledL19,no finalproof. Draftnativeuntrackedassessmentnotapproval.
+
+### L19 — Explicit user pause (verbatim)
+
+pausa el voy a salir con el equipo
+
+Cancelled mvb5kdp0-9-rdec; no furtherimplementation/tests/commits/automaticcontinuation untilhumanresumeL20. HEADcb3/indexempty,T1done,T2partial/newbudgetfiles/humanlockpreserved;reviewbaselineclean. Parent19onlyknownthen,old200/REDunconfirmed/diffpending. No reset/cleanup/publication.
+
+### L20 — Explicit user resume (verbatim)
+
+ya puedes continuar
+
+Requiredmemory/file/Gitreconciliationmatchedpause;truncatedmirrorprefixmatchedcompletelocalfile,technicalnotescompacted/readbackrestoredwithoutuserquote/proofloss. Freshworker mvbcai4q-a-6us6 assigned fullT2scope/exactproof,minimalenv/socketdenial/readonlybaseline/ownedfixture/srcpathisolation/frozenclocks; no newcheckout/index oroldtaskrestart. T1done,T2active,restpending. OutcomesL21.
+
+### L21 — Current T2 proof
+
+Writer mvbcai4q-a-6us6 observed genuine correction RED, then24focused+200regression green/0skip; parent24exit0/.092s. Regression tests.*: source_collection,github,actions,sources_contracts,http_transport,multirepo_config,multirepo_domain,unified_runtime_config,settings. Fixturebasecb3/current github0,actions1(unpinned),all0 stdoutidentical/stderrempty. Independentmvbd5vix-b-djaz24+200green; validpin a×40/--commit Actionsboth0/1run/matchingSHA; unpinned+commitboth2. No realrepo evidence. Unconfirmedold200 remainsnotproof. T2draftnativeuntrackedunassessable,noauthority.
+
+### L22 — Original B1
+
+Independent originalB1: exactvalidJSON7 atproject/repocap no/invalidlength rejectedbeforeEOF; gzipencoded62/decoded4117 accepted{}prefix/receipt62; hugeheaderreject/exhaustedfalse. Cleanupheld. Scopedcorrectionmvbdp5fk-c-879b onlyledger/transport/streamtests/guide,notT3/T4.
+
+### L23 — First B1 correction
+
+RemoveContent-Lengthpreflight/EOFtrust,parseafterEOF,chargeobservedoverflowbytes,scope-specificexhaustion,optionalpositiveEOFprobe. REDnew6/12subtestfails exit1; GREEN6,focused30/regression200green,parent6exit0/.002s. Limitedrecheckmvbegs6h-d-hrt9 confirmsgzip42/decoded4100rejectafter84/noprefix,validgzip11,actual8/7charged8/scopeisolation/localcap/hugeheadercontrols,cleanup/deadline/boundedpositiveprobe. Exact7withoutempty passes no/7x/7header.
+
+### L24 — Same EOF still failing after empty chunk
+
+Limitedverifier6green but[b'{"x":1}',b'']thenEOF atproject7 yields7thenlimit_exceeded: emptyspentprobe(collection_budget305–318/http_transport291–298). SameoriginalB1,notnewfinding. AllowedSECOND/FINALsamecasecorrectionmvbeypwu-e-jd4y; no newfullsweep/thirdround.
+
+### L25 — Final scoped correction
+
+Zerochunksnotpositiveprobe; deadlinebeforeeveryiteratoradvance; pre-requestzero guard unchanged/no newAPI. GenuineRED9/4fail exit1(stdoutempty,stderrrunner),thenGREEN9. Finalself33exit0/.083s+200exit0/.244s,parent9exit0/.002s. Onlysamefourfiles changed. Positiveoverflowcharged/discarded,notretained; finiteemptyclocktimeout/cleanup.
+
+### L26 — B1 independently resolved
+
+Finalmvbfatn1-f-82e5:9green/0skip/exit0+publicprobes:project7+oneempty andrepo7+threeempty parse/count7/request1/onlycappedscopeexhausted;8thpositivecharged/rejected/no body/no laterpositive; expirytimeoutbeforeadvance; secondGETatcapblocked/callsstay1; allclosed/contextclear. Gzip/fullbody/localcap/receipt/unbudgetedcontrols retained. Boundedphysicaloverreadnotzero. No full233/CLI/newfindingaudit orsourceedits. SameB1technicalcheckclosed;NOTnativeapproval/fullfeatureacceptance. Config/transport/composition dependencyunits below retain allsource/testbytes.
+
+### L27 — T2 local unit boundaries
+
+Unit1 893872b88ae0a50ae29e98c6a8da4ea8e1042861 (basecb3):4paths/202add2delete=204,config/defaults+configtests+accuratefoundationguide;commitexit0/indexempty. Isolatedprefixchecks/nativeassessmentnext. Ordinarypartialdocs staging keptfinalworkingguide/sourceunchanged;humanlockexcluded. Deliveryauto-chain/feature-branch-chainretained,nopublication. Committool26796sinceorigin/mvp/real-sources isunrelated inheritedbasehint;trueunitbasecb3,notfeature scope. Boundaryrecordedbefore nextcommit.
+
+Unit1 isolated26exit0/.281s/OK withpackagepathassertion,reviewrootclean. Nativecommittedbasecb3:medium/reviewDue=false/under_budget/consumedfalse;item3independentcoveragealreadyobserved,noSTART/approval. Nextunitbudget/HTTPkeepssourceunchangedandstandalonestreamtests alongsidebehavior.
+
+Unit2 8b946a418572b469e2a1d4bc47dfd4c3fd61f8d1(base893872b):4paths/788add9delete=797,ledger+HTTP+all9streamtests+transportguide,commitexit0/indexempty. Cohesive~800unitretainsfullproof;400advisorynotomission. Unit2isolatedchecks/nativeassessmentnext;boundaryrecordedbeforecompositioncommit. Inheritedorigin/mvphintagainnotthisunit,deliverystrategyunchanged.
+
+Unit2isolated30stream/HTTPexit0/.017s/OK,packagepathasserted/rootclean. Nativebase893872b:medium/reviewDue=false/under_budget/consumedfalse,noSTART/approval; sharedcontractindependentproofalreadyobserved. Nextcompositionslice keepsfullrepo tests/sourcecohesive; no CIartifactcertificationclaimed.
+
+Unit3 af3d4ee30a1d8e01d9eeac6087cd7e7f1a6435fb(base8b946a4):7paths/1710add61delete=1771,repo pinning/composition/provenance/factory/ports+848testlines+finalguide;commitexit0/indexempty. Largercohesiveunitexplicitlysurfaced,nonewscope/omittedtests/sourcebehaviorchange. Prefixsourcechecks/nativeassessmentnext;boundaryrecordedbeforetrackingcommit. No fullstage2/CIartifactclaim.
+
+Unit3isolated85source/contractexit0/.115s/OK,packagepathasserted/rootclean. Nativebase8b946a4:medium/reviewDue=false/under_budget/consumedfalse;noSTART/approval. T2sourcecollectioncomplete onobservedsourceproof/threecommits; T3/T4CIartifacts/selection stillpending,notwholeStage2. Parentcapabilityprobe:jsonschema4.26.0,requests2.34.2,urllib32.8.0available;pyprojectcurrentlydoesn'tdeclarejsonschema,adddirectruntime dependencyifused,noinstallneeded. NextT3standaloneartifactcore undercontextbackstop,securityitem2(+5ifdependency),existingT2source/baselinereadonly. CompactclosedOWNtechnicalnotes only,userquotes unchanged.
