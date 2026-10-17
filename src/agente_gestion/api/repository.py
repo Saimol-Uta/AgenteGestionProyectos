@@ -10,6 +10,8 @@ import re
 import sqlite3
 from typing import Iterator
 from urllib.parse import urlsplit
+
+from pydantic import ValidationError
 from zoneinfo import ZoneInfo
 
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
@@ -20,6 +22,7 @@ from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.policies import RuleEvaluationStatus
 from agente_gestion.domain.report import FinalReport
+from agente_gestion.domain.repositories import RepositoryIdentity
 from agente_gestion.domain.run import RunStatus, StageStatus
 from agente_gestion.domain.snapshot import SnapshotCapture, WeeklySnapshot
 from agente_gestion.domain.task_comparison import TaskChange, TaskSnapshotComparison, compare_task_snapshots
@@ -40,7 +43,17 @@ from agente_gestion.api.schemas import (
     FindingDetail,
     FindingSummary,
     ProjectView,
+    ConfiguredRepositoryView,
     PoliciesSummary,
+    RepositoryArtifactValidationView,
+    RepositoryCIRunView,
+    RepositoryFindingView,
+    RepositoryHistoryView,
+    RepositoryIdentityView,
+    RepositoryMetricsView,
+    RepositoryResultsCollection,
+    RepositoryTestSuiteView,
+    RepositoryVerificationView,
     PolicyResult,
     QualitySummary,
     RunDetail,
@@ -63,6 +76,7 @@ from agente_gestion.api.security import (
     sanitize_text,
 )
 from agente_gestion.api.settings import ApiSettings, ProjectConfig
+from agente_gestion.domain.repository_history import RepositoryHistoryFilter, RepositoryHistoryRecord
 
 
 class DataIntegrityError(RuntimeError):
@@ -89,6 +103,15 @@ def _safe_finding_branch_url(value: object) -> str | None:
                 and parts[2] == "tree" and all(part and part not in {".", ".."} for part in parts[3:])):
             return value
     return None
+
+
+def _same_repository(left: RepositoryIdentity | None, right: RepositoryIdentity | None) -> bool:
+    return bool(
+        left is not None and right is not None
+        and left.id == right.id
+        and left.owner.casefold() == right.owner.casefold()
+        and left.repo.casefold() == right.repo.casefold()
+    )
 
 
 class SQLiteQueryRepository:
@@ -198,6 +221,366 @@ class SQLiteQueryRepository:
 
     def project_config(self, project_id: str) -> ProjectConfig | None:
         return next((project for project in self.settings.projects if project.id == project_id), None)
+
+    def _safe_dto_text(self, value: object, *, limit: int = 1200) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = sanitize_text(
+            value, secrets_to_redact=self._configured_secrets(), limit=limit,
+        )
+        cleaned = re.sub(r"(?<![A-Za-z0-9:])/(?:[^/\s]+/)+[^/\s,;]+", "[ruta local omitida]", cleaned)
+        cleaned = re.sub(r"(?i)\b[A-Z]:\\[^\s,;]+", "[ruta local omitida]", cleaned)
+        return cleaned
+
+    def _safe_repository_ref(self, value: str | None, *, limit: int = 512) -> str | None:
+        if (not isinstance(value, str) or len(value) > limit
+                or value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", value)
+                or "://" in value):
+            return None
+        return self._safe_dto_text(value, limit=limit)
+
+    def _configured_repository_views(self, project_id: str) -> list[ConfiguredRepositoryView]:
+        project = self.project_config(project_id)
+        if project is None:
+            return []
+        result: list[ConfiguredRepositoryView] = []
+        for repository in project.repositories:
+            if (safe_identifier(repository.id) is None
+                    or safe_repository(f"{repository.owner}/{repository.repo}") is None):
+                continue
+            workflow_path = safe_relative_path(repository.quality_workflow_path)
+            if workflow_path is not None and not workflow_path.startswith(".github/workflows/"):
+                workflow_path = None
+            workflow_path = self._safe_dto_text(workflow_path, limit=512)
+            result.append(ConfiguredRepositoryView(
+                repository_id=repository.id,
+                owner=repository.owner,
+                repo=repository.repo,
+                branch=self._safe_repository_ref(repository.branch),
+                configured_commit_sha=safe_commit_sha(repository.commit_sha),
+                quality_workflow_path=workflow_path,
+            ))
+        return result
+
+    @staticmethod
+    def _repository_identity_view(identity: RepositoryIdentity | None) -> RepositoryIdentityView | None:
+        if (identity is None or safe_identifier(identity.id) is None
+                or safe_repository(f"{identity.owner}/{identity.repo}") is None):
+            return None
+        return RepositoryIdentityView(
+            repository_id=identity.id, owner=identity.owner, repo=identity.repo,
+        )
+
+    @staticmethod
+    def _status_value(value: object, allowed: set[str]) -> str | None:
+        raw = value.value if hasattr(value, "value") else value
+        return raw if isinstance(raw, str) and raw in allowed else None
+
+    def _repository_metrics(self, values: object) -> RepositoryMetricsView | None:
+        if values is None:
+            return None
+        suites: dict[str, RepositoryTestSuiteView | None] = {}
+        for name, suite in (values.test_suites or {}).items():
+            safe_name = safe_identifier(name)
+            if safe_name is None:
+                continue
+            suites[safe_name] = None if suite is None else RepositoryTestSuiteView(
+                tests=suite.tests,
+                failed=suite.failed,
+                passed=suite.passed,
+                cancelled=suite.cancelled,
+                skipped=suite.skipped,
+                todo=suite.todo,
+                success=suite.success,
+            )
+        return RepositoryMetricsView(
+            total_tests=values.total_tests,
+            failed_tests=values.failed_tests,
+            coverage_percentage=values.coverage_percentage,
+            coverage_metric=self._safe_dto_text(values.coverage_metric, limit=120),
+            coverage_basis=self._safe_dto_text(values.coverage_basis, limit=500),
+            test_suites=suites if values.test_suites is not None else None,
+            e2e_status=self._safe_dto_text(values.e2e_status, limit=120),
+        )
+
+    def _artifact_validation_view(self, metadata: object) -> RepositoryArtifactValidationView | None:
+        if metadata is None:
+            return None
+        source_metrics = (
+            self._repository_metrics(metadata.metrics)
+            if metadata.certifies_metrics is True else None
+        )
+        return RepositoryArtifactValidationView(
+            outcome=self._safe_dto_text(str(metadata.outcome), limit=80) or "unknown",
+            source_metrics_certified=bool(metadata.certifies_metrics),
+            schema_valid=bool(metadata.schema_valid),
+            semantics_valid=bool(metadata.semantics_valid),
+            identity_bound=bool(metadata.identity_bound),
+            workflow_status_matches=bool(metadata.workflow_status_matches),
+            reason=self._safe_dto_text(metadata.reason, limit=1000),
+            artifact_name=self._safe_repository_ref(metadata.artifact_name, limit=128),
+            source_document_metrics=source_metrics,
+        )
+
+    def _repository_ci_view(
+        self,
+        source_ci: object | None,
+        report_ci: object | None,
+        identity: RepositoryIdentity | None,
+    ) -> RepositoryCIRunView | None:
+        ci = source_ci or report_ci
+        if ci is None:
+            return None
+        run_id = safe_identifier(ci.id)
+        if run_id is None:
+            return None
+        source_metadata = source_ci.metrics_artifact if source_ci is not None else None
+        report_metadata = report_ci.metrics_artifact if report_ci is not None else None
+        report_metrics = None
+        report_eligible = None
+        if report_metadata is not None:
+            report_eligible = bool(report_metadata.certifies_metrics)
+            if report_eligible is True:
+                report_metrics = self._repository_metrics(report_metadata.metrics)
+        status = self._safe_dto_text(str(ci.status), limit=80) or "unknown"
+        if status.casefold() not in {
+            "success", "failure", "completed", "in_progress", "queued", "cancelled", "neutral", "unknown",
+        }:
+            status = "unknown"
+        return RepositoryCIRunView(
+            run_id=run_id,
+            workflow_name=self._safe_dto_text(ci.workflow_name, limit=120) or "unknown",
+            workflow_path=(
+                self._safe_dto_text(safe_relative_path(ci.workflow_path), limit=512)
+                if isinstance(ci.workflow_path, str)
+                and ci.workflow_path.startswith(".github/workflows/") else None
+            ),
+            commit_sha=safe_commit_sha(ci.commit_sha),
+            status=status,
+            actual_attempt=(ci.run_attempt if isinstance(ci.run_attempt, int)
+                            and not isinstance(ci.run_attempt, bool) and ci.run_attempt >= 1 else None),
+            artifact_id=safe_identifier(ci.artifact_id),
+            artifact_name=self._safe_repository_ref(ci.artifact_name, limit=128),
+            timestamp=self._normalize_datetime(ci.timestamp) if ci.timestamp else None,
+            repository=self._repository_identity_view(identity),
+            source_artifact_validation=self._artifact_validation_view(source_metadata),
+            report_metrics_eligible=report_eligible,
+            report_metrics=report_metrics,
+            report_artifact_outcome=(
+                self._safe_dto_text(str(report_metadata.outcome), limit=80)
+                if report_metadata is not None else None
+            ),
+            report_artifact_reason=(
+                self._safe_dto_text(report_metadata.reason, limit=1000)
+                if report_metadata is not None else None
+            ),
+        )
+
+    def _repository_history_view(self, record: RepositoryHistoryRecord) -> RepositoryHistoryView:
+        source = record.repository_result
+        report = record.report_result
+        state = source.repository_state if source is not None else None
+        identity = record.repository_identity
+        code_diffs = source.code_diffs if source is not None else record.legacy_code_diffs
+        source_ci_runs = source.ci_runs if source is not None else record.legacy_ci_runs
+        report_ci = report.ci_result if report is not None else None
+        report_metrics = (
+            report_ci.metrics_artifact.metrics
+            if report_ci is not None and report_ci.metrics_artifact is not None
+            and report_ci.metrics_artifact.certifies_metrics is True else None
+        )
+        ci_views: list[RepositoryCIRunView] = []
+        report_ci_used = False
+        for source_ci in source_ci_runs:
+            matches_report = bool(
+                report_ci is not None
+                and source_ci.id == report_ci.id
+                and source_ci.commit_sha.lower() == report_ci.commit_sha.lower()
+                and source_ci.run_attempt == report_ci.run_attempt
+                and (identity is None or (
+                    (source_ci.repository_identity is None or _same_repository(source_ci.repository_identity, identity))
+                    and (report_ci.repository_identity is None or _same_repository(report_ci.repository_identity, identity))
+                ))
+            )
+            view = self._repository_ci_view(
+                source_ci, report_ci if matches_report else None, identity,
+            )
+            if view is not None:
+                ci_views.append(view)
+            report_ci_used = report_ci_used or matches_report
+        if report_ci is not None and not report_ci_used:
+            view = self._repository_ci_view(None, report_ci, identity)
+            if view is not None:
+                ci_views.append(view)
+
+        verifications_by_finding = {
+            item.finding_id: item for item in report.verifications
+        } if report is not None else {}
+        finding_groups = (
+            ("confirmed", report.confirmed_findings),
+            ("rejected", report.rejected_findings),
+            ("insufficient", report.insufficient_findings),
+            ("pending", report.pending_findings),
+        ) if report is not None else ()
+        findings: list[RepositoryFindingView] = []
+        verification_views: list[RepositoryVerificationView] = []
+        for group_status, candidates in finding_groups:
+            for candidate in candidates:
+                finding_id = safe_identifier(candidate.id)
+                if finding_id is None:
+                    continue
+                verification = verifications_by_finding.get(candidate.id)
+                verification_status = (
+                    verification.verdict.value if verification is not None else group_status
+                )
+                findings.append(RepositoryFindingView(
+                    finding_id=finding_id,
+                    repository_id=identity.id if identity is not None else "unknown",
+                    commit_sha=safe_commit_sha(candidate.commit_sha),
+                    category=self._safe_dto_text(candidate.category, limit=100),
+                    severity=(candidate.severity.value if hasattr(candidate.severity, "value")
+                              else self._safe_dto_text(str(candidate.severity), limit=40)),
+                    rule_id=safe_identifier(candidate.rule_id) if candidate.rule_id else None,
+                    file_path=safe_relative_path(candidate.file_path),
+                    line=(candidate.line if isinstance(candidate.line, int)
+                          and not isinstance(candidate.line, bool) and candidate.line > 0 else None),
+                    confidence=(float(candidate.confidence) if isinstance(candidate.confidence, (int, float))
+                                and not isinstance(candidate.confidence, bool)
+                                and 0 <= float(candidate.confidence) <= 1 else None),
+                    claim=self._safe_dto_text(candidate.claim, limit=2000) or "",
+                    improvement_summary=self._safe_dto_text(candidate.improvement_summary, limit=1200) or "",
+                    verification_status=verification_status,
+                ))
+                if verification is not None:
+                    verification_views.append(RepositoryVerificationView(
+                        finding_id=finding_id,
+                        verdict=verification.verdict.value,
+                        reason=self._safe_dto_text(verification.reason, limit=1200) or "",
+                        verified_by=self._safe_dto_text(verification.verified_by, limit=120) or "unknown",
+                        evidence_ids=[
+                            value for item in verification.evidence_ids
+                            if (value := safe_identifier(item)) is not None
+                        ],
+                    ))
+
+        source_problems = []
+        if report is not None:
+            source_problems.extend(
+                text for item in report.source_problems
+                if (text := self._safe_dto_text(item, limit=1000))
+            )
+        incomplete_reason = source.incomplete_reason if source is not None else None
+        safe_incomplete_reason = self._safe_dto_text(incomplete_reason, limit=1000)
+        if safe_incomplete_reason and safe_incomplete_reason not in source_problems:
+            source_problems.append(safe_incomplete_reason)
+        source_complete = (
+            report.source_is_complete if report is not None else source.is_complete if source is not None else None
+        )
+        return RepositoryHistoryView(
+            capture_id=safe_identifier(record.capture_id) or "unknown",
+            snapshot_id=safe_identifier(record.snapshot_id) or "unknown",
+            source_scope=record.source_scope,
+            source_item_key=self._safe_dto_text(record.source_item_key, limit=512),
+            analysis_run_id=safe_identifier(record.analysis_run_id),
+            report_id=safe_identifier(record.report_id),
+            repository=self._repository_identity_view(identity),
+            branch=self._safe_repository_ref(state.branch) if state is not None else None,
+            target_commit_sha=safe_commit_sha(record.target_commit_sha),
+            commit_resolution_status=(
+                self._status_value(state.commit_resolution_status, {"pending", "resolved", "failed"})
+                if state is not None else "unknown"
+            ),
+            access_status=(
+                self._status_value(state.access_status, {"unknown", "allowed", "denied"})
+                if state is not None else "unknown"
+            ),
+            availability_status=(
+                self._status_value(state.availability_status, {"unknown", "available", "unavailable"})
+                if state is not None else "unknown"
+            ),
+            source_complete=source_complete,
+            incomplete_reason=safe_incomplete_reason,
+            code_diff_count=len(code_diffs),
+            coverage_percentage=(report_metrics.coverage_percentage if report_metrics is not None else None),
+            coverage_basis=(
+                self._safe_dto_text(report_metrics.coverage_basis, limit=500)
+                if report_metrics is not None else None
+            ),
+            ci_runs=ci_views,
+            source_problems=source_problems,
+            quality_status=(
+                self._status_value(report.quality_status, self._STAGE_STATUSES)
+                if report is not None and report.quality_status is not None else None
+            ),
+            quality_reason=(
+                self._safe_dto_text(report.quality_reason, limit=1200)
+                if report is not None else None
+            ),
+            verification_status=(
+                self._status_value(report.verification_status, self._STAGE_STATUSES)
+                if report is not None and report.verification_status is not None else None
+            ),
+            verification_reason=(
+                self._safe_dto_text(report.verification_reason, limit=1200)
+                if report is not None else None
+            ),
+            evaluation_status=(
+                self._status_value(report.evaluation_status, self._STAGE_STATUSES)
+                if report is not None and report.evaluation_status is not None else None
+            ),
+            evaluation_reason=(
+                self._safe_dto_text(report.evaluation_reason, limit=1200)
+                if report is not None else None
+            ),
+            findings=findings,
+            verifications=verification_views,
+        )
+
+    def repository_results(
+        self,
+        project_id: str,
+        filters: RepositoryHistoryFilter,
+        page: int,
+        page_size: int,
+    ) -> RepositoryResultsCollection:
+        self._ensure_project(project_id)
+        query = RepositoryHistoryFilter.model_validate(filters)
+        if query.project_id != project_id:
+            raise ValueError("invalid_repository_history_project_scope")
+        repositories = self._configured_repository_views(project_id)
+        adapter = self._adapter()
+        query_history = getattr(adapter, "query_repository_history", None) if adapter is not None else None
+        if not callable(query_history):
+            return RepositoryResultsCollection(
+                project_id=project_id,
+                availability="unknown",
+                message="El historial MultiRepo no está disponible; esta consulta no crea ni migra la base de datos.",
+                repositories=repositories,
+                items=[], total=0, page=page, page_size=page_size,
+            )
+        try:
+            records = query_history(query)
+        except NotImplementedError:
+            return RepositoryResultsCollection(
+                project_id=project_id,
+                availability="unknown",
+                message="El historial MultiRepo requiere una base con la capacidad T6; esta consulta no realiza migraciones.",
+                repositories=repositories,
+                items=[], total=0, page=page, page_size=page_size,
+            )
+        scoped_records = [record for record in records if record.project_id == project_id]
+        items = [self._repository_history_view(record) for record in scoped_records]
+        total = len(items)
+        start = (page - 1) * page_size
+        return RepositoryResultsCollection(
+            project_id=project_id,
+            availability="available",
+            repositories=repositories,
+            items=items[start:start + page_size],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
     def latest_run(self, project_id: str) -> tuple[str | None, str | None]:
         with self._connect() as connection:
@@ -794,6 +1177,7 @@ class SQLiteQueryRepository:
 
     @staticmethod
     def _report_findings(report: FinalReport | None) -> dict[str, CandidateFinding]:
+        """Return only legacy top-level candidates used by existing action flows."""
         result: dict[str, CandidateFinding] = {}
         if report is None:
             return result
@@ -805,6 +1189,63 @@ class SQLiteQueryRepository:
             for finding in collection:
                 result[finding.id] = finding
         return result
+
+    @staticmethod
+    def _api_report_findings(report: FinalReport | None) -> dict[str, CandidateFinding]:
+        """Project all findings for read-only API views without changing action lookup."""
+        result: dict[str, CandidateFinding] = {}
+        ambiguous: set[str] = set()
+        if report is None:
+            return result
+        collections = [
+            report.candidate_findings, report.confirmed_findings, report.rejected_findings,
+            report.insufficient_findings, report.pending_findings,
+        ]
+        for repository in report.repository_results:
+            collections.extend((
+                repository.confirmed_findings, repository.rejected_findings,
+                repository.insufficient_findings, repository.pending_findings,
+            ))
+        for collection in collections:
+            for finding in collection:
+                if finding.id in ambiguous:
+                    continue
+                previous = result.get(finding.id)
+                if previous is not None and previous != finding:
+                    result.pop(finding.id, None)
+                    ambiguous.add(finding.id)
+                else:
+                    result[finding.id] = finding
+        return result
+
+    @staticmethod
+    def _finding_identity(
+        report: FinalReport | None, finding_id: str, candidate: CandidateFinding | None,
+    ) -> RepositoryIdentity | None:
+        identities = {
+            (item.repository_state.identity.id, item.repository_state.identity.owner.casefold(),
+             item.repository_state.identity.repo.casefold()): item.repository_state.identity
+            for item in (report.repository_results if report is not None else ())
+            if any(finding.id == finding_id for finding in (
+                *item.confirmed_findings, *item.rejected_findings,
+                *item.insufficient_findings, *item.pending_findings,
+            ))
+        }
+        if len(identities) > 1:
+            return None
+        candidate_identity = (
+            candidate.repository_identity or (
+                candidate.provenance.repository_identity if candidate.provenance is not None else None
+            )
+            if candidate is not None else None
+        )
+        if identities:
+            scoped_identity = next(iter(identities.values()))
+            if (candidate_identity is not None
+                    and not _same_repository(scoped_identity, candidate_identity)):
+                return None
+            return scoped_identity
+        return candidate_identity
 
     def _verification_rows(self, run_id: str) -> dict[str, dict[str, object]]:
         with self._connect() as connection:
@@ -838,7 +1279,9 @@ class SQLiteQueryRepository:
             evidence_ids=evidence_ids,
         )
 
-    def _evidence_items(self, run_id: str) -> tuple[bool, list[EvidenceSummary], dict[str, EvidenceItem]]:
+    def _evidence_items(
+        self, run_id: str, project_id: str,
+    ) -> tuple[bool, list[EvidenceSummary], dict[str, EvidenceItem]]:
         with self._connect() as connection:
             if connection is None or "evidence" not in self._tables(connection):
                 return False, [], {}
@@ -854,7 +1297,8 @@ class SQLiteQueryRepository:
                 continue
             provenance = item.provenance
             evidence_id = safe_identifier(provenance.id)
-            if evidence_id is None or safe_identifier(provenance.project_id) is None:
+            if (evidence_id is None or safe_identifier(provenance.project_id) is None
+                    or provenance.project_id != project_id):
                 continue
             summary = EvidenceSummary(
                 id=evidence_id,
@@ -875,21 +1319,114 @@ class SQLiteQueryRepository:
         return True, summaries, items_by_id
 
     def evidence_page(self, run_id: str, page: int, page_size: int) -> tuple[list[EvidenceSummary], int]:
-        self._run_row(run_id)
-        _available, summaries, _items = self._evidence_items(run_id)
+        run_row = self._run_row(run_id)
+        project_id = safe_identifier(run_row.get("project_id"))
+        if project_id is None:
+            raise DataIntegrityError("Stored run project identifier is unsafe")
+        _available, summaries, _items = self._evidence_items(run_id, project_id)
         total = len(summaries)
         start = (page - 1) * page_size
         return summaries[start:start + page_size], total
 
-    def findings(self, run_id: str, page: int, page_size: int) -> tuple[list[FindingSummary], int]:
+    def findings(
+        self,
+        run_id: str,
+        page: int,
+        page_size: int,
+        *,
+        repository_id: str | None = None,
+        repository_owner: str | None = None,
+        repository_name: str | None = None,
+        commit_sha: str | None = None,
+        ci_run_id: str | None = None,
+        attempt: int | None = None,
+    ) -> tuple[list[FindingSummary], int]:
         run_row = self._run_row(run_id)
+        project_id = safe_identifier(run_row.get("project_id"))
+        if project_id is None:
+            raise DataIntegrityError("Stored run project identifier is unsafe")
+        try:
+            filters = RepositoryHistoryFilter(
+                project_id=project_id,
+                repository_id=repository_id,
+                repository_owner=repository_owner,
+                repository_name=repository_name,
+                commit_sha=commit_sha,
+                ci_run_id=ci_run_id,
+                attempt=attempt,
+            )
+        except ValidationError:
+            raise ValueError("invalid_repository_history_filter") from None
         rows = self._finding_rows(run_id)
-        report_findings = self._report_findings(self._report_for_run(run_row))
+        report = self._report_for_run(run_row)
+        report_findings = self._api_report_findings(report)
         verifications = self._verification_rows(run_id)
-        views = [self._finding_summary(run_id, row, report_findings, verifications) for row in rows]
+        views: list[FindingSummary] = []
+        for row in rows:
+            finding_id = safe_identifier(row.get("finding_id", row.get("id")))
+            if finding_id is None:
+                raise DataIntegrityError("Stored finding identifier is unsafe")
+            candidate = report_findings.get(finding_id)
+            identity = self._finding_identity(report, finding_id, candidate)
+            if not self._finding_matches_filters(candidate, identity, report, filters):
+                continue
+            views.append(self._finding_summary(
+                run_id, row, report_findings, verifications, identity,
+            ))
         total = len(views)
         start = (page - 1) * page_size
         return views[start:start + page_size], total
+
+    @staticmethod
+    def _finding_matches_filters(
+        candidate: CandidateFinding | None,
+        identity: RepositoryIdentity | None,
+        report: FinalReport | None,
+        filters: RepositoryHistoryFilter,
+    ) -> bool:
+        if candidate is None:
+            return not any((
+                filters.repository_id, filters.repository_owner, filters.commit_sha,
+                filters.ci_run_id, filters.attempt,
+            ))
+        if filters.repository_id is not None and (
+            identity is None or identity.id != filters.repository_id
+        ):
+            return False
+        if filters.repository_owner is not None and (
+            identity is None
+            or identity.owner.casefold() != filters.repository_owner.casefold()
+            or identity.repo.casefold() != str(filters.repository_name).casefold()
+        ):
+            return False
+        if (filters.commit_sha is not None
+                and candidate.commit_sha.lower() != filters.commit_sha):
+            return False
+        if filters.ci_run_id is None and filters.attempt is None:
+            return True
+        if report is None:
+            return False
+
+        def matches_ci(ci_run: object | None, scope_identity: RepositoryIdentity | None) -> bool:
+            if ci_run is None or ci_run.commit_sha.lower() != candidate.commit_sha.lower():
+                return False
+            if filters.ci_run_id is not None and ci_run.id != filters.ci_run_id:
+                return False
+            if filters.attempt is not None and ci_run.run_attempt != filters.attempt:
+                return False
+            if report.repository_results:
+                return identity is not None and _same_repository(identity, scope_identity)
+            if filters.repository_id is not None or filters.repository_owner is not None:
+                return _same_repository(identity, scope_identity)
+            return True
+
+        if report.repository_results:
+            return any(
+                matches_ci(repository.ci_result, repository.repository_state.identity)
+                for repository in report.repository_results
+            )
+        return matches_ci(report.ci_result, report.ci_result.repository_identity
+                          if report.ci_result is not None else None)
 
     def _finding_summary(
         self,
@@ -897,6 +1434,7 @@ class SQLiteQueryRepository:
         row: dict[str, object],
         report_findings: dict[str, CandidateFinding],
         verifications: dict[str, dict[str, object]],
+        repository_identity: RepositoryIdentity | None = None,
     ) -> FindingSummary:
         finding_id = safe_identifier(row.get("finding_id", row.get("id")))
         if finding_id is None:
@@ -939,9 +1477,18 @@ class SQLiteQueryRepository:
         branch_name = row.get("branch_name")
         branch_url = row.get("branch_url")
         commit_sha_applied = row.get("commit_sha_applied")
+        identity = repository_identity
+        if identity is None and candidate is not None:
+            identity = candidate.repository_identity or (
+                candidate.provenance.repository_identity if candidate.provenance is not None else None
+            )
+        repository_view = self._repository_identity_view(identity)
         return FindingSummary(
             finding_id=finding_id,
             run_id=run_id,
+            repository_id=repository_view.repository_id if repository_view is not None else None,
+            repository_owner=repository_view.owner if repository_view is not None else None,
+            repository_name=repository_view.repo if repository_view is not None else None,
             category=category,
             severity=severity,
             rule_id=rule_id,
@@ -1048,18 +1595,46 @@ class SQLiteQueryRepository:
         row = next((item for item in rows if item.get("id") == finding_id), None)
         if row is None:
             raise LookupError("finding_not_found")
-        report_findings = self._report_findings(self._report_for_run(run_row))
+        report = self._report_for_run(run_row)
+        report_findings = self._api_report_findings(report)
         candidate = report_findings.get(finding_id)
+        repository_identity = self._finding_identity(report, finding_id, candidate)
         verification_row = self._verification_rows(run_id).get(finding_id)
-        summary = self._finding_summary(run_id, row, report_findings,
-                                        {finding_id: verification_row} if verification_row else {})
-        evidence_available, evidence, evidence_items = self._evidence_items(run_id)
+        summary = self._finding_summary(
+            run_id, row, report_findings,
+            {finding_id: verification_row} if verification_row else {},
+            repository_identity,
+        )
+        project_id = safe_identifier(run_row.get("project_id"))
+        if project_id is None:
+            raise DataIntegrityError("Stored run project identifier is unsafe")
+        evidence_available, evidence, evidence_items = self._evidence_items(run_id, project_id)
         evidence_ids: list[str] | None = None
         if candidate is not None:
             evidence_ids = [value for item in candidate.evidence_ids
                             if (value := safe_identifier(item)) is not None]
+            if repository_identity is not None:
+                expected_repository = f"{repository_identity.owner}/{repository_identity.repo}".casefold()
+                expected_commit = safe_commit_sha(candidate.commit_sha)
+                expected_path = safe_relative_path(candidate.file_path)
+                evidence_ids = [
+                    evidence_id for evidence_id in evidence_ids
+                    if (item := evidence_items.get(evidence_id)) is not None
+                    and item.provenance.project_id == project_id
+                    and safe_repository(item.provenance.repository) is not None
+                    and safe_repository(item.provenance.repository).casefold() == expected_repository
+                    and safe_commit_sha(item.provenance.commit_sha) == expected_commit
+                    and safe_relative_path(item.provenance.file_path) == expected_path
+                    and (candidate.line is None or (
+                        safe_lines(item.provenance.lines) is not None
+                        and candidate.line in safe_lines(item.provenance.lines)
+                    ))
+                ]
         verification = self._verification_view(verification_row)
-        code_excerpt = self._code_excerpt(run_row, candidate, evidence_items) if candidate else None
+        code_excerpt = (
+            self._code_excerpt(run_row, candidate, evidence_items, repository_identity)
+            if candidate else None
+        )
         return FindingDetail(
             **summary.model_dump(),
             claim=sanitize_text(candidate.claim, secrets_to_redact=self._configured_secrets(), limit=2000)
@@ -1081,20 +1656,55 @@ class SQLiteQueryRepository:
         run_row: dict[str, object],
         candidate: CandidateFinding,
         evidence_items: dict[str, EvidenceItem],
+        repository_identity: RepositoryIdentity | None = None,
     ) -> CodeExcerpt | None:
-        evidence_id = next((safe_identifier(item) for item in candidate.evidence_ids
-                            if safe_identifier(item) in evidence_items), None)
-        if evidence_id is None:
-            return None
-        evidence = evidence_items[evidence_id]
-        provenance = evidence.provenance
         file_path = safe_relative_path(candidate.file_path)
         commit_sha = safe_commit_sha(candidate.commit_sha)
         finding_line = candidate.line
-        if (file_path is None or commit_sha is None or provenance.commit_sha != commit_sha
-                or safe_relative_path(provenance.file_path) != file_path
-                or not safe_lines(provenance.lines) or finding_line not in provenance.lines):
+        project_id = safe_identifier(run_row.get("project_id"))
+        if file_path is None or commit_sha is None or project_id is None:
             return None
+        candidate_identity = candidate.repository_identity or (
+            candidate.provenance.repository_identity if candidate.provenance is not None else None
+        )
+        if (repository_identity is not None and candidate_identity is not None
+                and not _same_repository(repository_identity, candidate_identity)):
+            return None
+        expected_identity = repository_identity or candidate_identity
+        expected_label = (
+            f"{expected_identity.owner}/{expected_identity.repo}"
+            if expected_identity is not None else None
+        )
+
+        eligible_evidence: list[tuple[str, str | None]] = []
+        for raw_id in candidate.evidence_ids:
+            evidence_id = safe_identifier(raw_id)
+            evidence = evidence_items.get(evidence_id) if evidence_id is not None else None
+            if evidence is None:
+                continue
+            provenance = evidence.provenance
+            if (provenance.project_id != project_id
+                    or safe_commit_sha(provenance.commit_sha) != commit_sha
+                    or safe_relative_path(provenance.file_path) != file_path
+                    or not safe_lines(provenance.lines) or finding_line not in provenance.lines):
+                continue
+            evidence_label = safe_repository(provenance.repository)
+            if (expected_label is not None and evidence_label is not None
+                    and evidence_label.casefold() != expected_label.casefold()):
+                continue
+            if evidence_label is None:
+                continue
+            proof_label = expected_label or evidence_label
+            eligible_evidence.append((evidence_id, proof_label))
+        if not eligible_evidence:
+            return None
+        if expected_identity is None:
+            labels = {label.casefold(): label for _, label in eligible_evidence if label is not None}
+            if len(labels) != 1:
+                return None
+            expected_label = next(iter(labels.values()))
+        selected_evidence_id = eligible_evidence[0][0]
+
         snapshot_id = safe_identifier(run_row.get("snapshot_id"))
         if snapshot_id is None:
             return None
@@ -1105,53 +1715,100 @@ class SQLiteQueryRepository:
             snapshot = adapter.get_snapshot(snapshot_id)
         except (ValueError, TypeError, KeyError):
             return None
-        if snapshot is None or snapshot.project_id != run_row.get("project_id"):
+        if snapshot is None or snapshot.project_id != project_id:
             return None
-        for raw_snippet in snapshot.code_diffs:
+
+        scoped_snippets: list[CodeDiffSnippet] = []
+        sources = [
+            (raw, result.repository_state.identity)
+            for result in snapshot.repository_results for raw in result.code_diffs
+        ]
+        sources.extend((raw, None) for raw in snapshot.code_diffs)
+        for raw_snippet, scope_identity in sources:
             try:
                 snippet = raw_snippet if isinstance(raw_snippet, CodeDiffSnippet) else CodeDiffSnippet.model_validate(raw_snippet)
             except (ValueError, TypeError):
                 continue
-            if (snippet.commit_sha != commit_sha or safe_relative_path(snippet.file_path) != file_path
+            snippet_identity = snippet.repository_identity
+            if (scope_identity is not None and snippet_identity is not None
+                    and not _same_repository(scope_identity, snippet_identity)):
+                continue
+            source_identity = snippet_identity or scope_identity
+            source_label = safe_repository(snippet.repository)
+            if source_identity is not None:
+                identity_label = f"{source_identity.owner}/{source_identity.repo}"
+                if source_label is not None and source_label.casefold() != identity_label.casefold():
+                    continue
+                source_label = identity_label
+            if expected_identity is not None and source_identity is not None:
+                if not _same_repository(expected_identity, source_identity):
+                    continue
+            elif expected_identity is not None and source_label is None:
+                continue
+            if (expected_label is None or source_label is None
+                    or source_label.casefold() != expected_label.casefold()):
+                continue
+            if (safe_commit_sha(snippet.commit_sha) != commit_sha
+                    or safe_relative_path(snippet.file_path) != file_path
                     or finding_line not in snippet.lines):
                 continue
-            content_lines = snippet.content.splitlines()
-            if len(content_lines) != len(snippet.lines):
+            if len(snippet.content.splitlines()) != len(snippet.lines):
                 continue
-            index = snippet.lines.index(finding_line)
-            complete_source = (snippet.evidence_scope == "full_file" and snippet.is_complete
-                               and not snippet.truncated)
-            if complete_source and len(content_lines) <= 21:
-                selected_numbers = snippet.lines
-                selected_content = content_lines
-                scope = "full_file"
-                is_partial = False
-            else:
-                start = max(0, index - 5)
-                end = min(len(content_lines), index + 6)
-                selected_numbers = snippet.lines[start:end]
-                selected_content = content_lines[start:end]
-                scope = "truncated" if snippet.truncated or snippet.evidence_scope == "truncated" else (
-                    snippet.evidence_scope if snippet.evidence_scope in {"snippet", "diff"} else "snippet"
-                )
-                is_partial = True
-            original = "\n".join(selected_content)
-            cleaned = sanitize_text(
-                original, secrets_to_redact=self._configured_secrets(), limit=4000,
-            ) or ""
-            if len(cleaned) > 4000:
-                cleaned = cleaned[:4000]
-                scope, is_partial = "truncated", True
-            return CodeExcerpt(
-                evidence_id=evidence_id,
-                file_path=file_path,
-                lines=selected_numbers,
-                content=cleaned,
-                evidence_scope=scope,
-                is_partial=is_partial,
-                redacted=cleaned != original,
+            scoped_snippets.append(snippet)
+        if not scoped_snippets:
+            return None
+
+        unique_snippets = {
+            (snippet.content, tuple(snippet.lines), snippet.evidence_scope,
+             snippet.is_complete, snippet.truncated): snippet
+            for snippet in scoped_snippets
+        }
+        complete_snippets = [
+            snippet for snippet in unique_snippets.values()
+            if snippet.evidence_scope == "full_file" and snippet.is_complete and not snippet.truncated
+        ]
+        if len(complete_snippets) > 1:
+            return None
+        if len(complete_snippets) == 1:
+            snippet = complete_snippets[0]
+        elif len(unique_snippets) == 1:
+            snippet = next(iter(unique_snippets.values()))
+        else:
+            return None
+        content_lines = snippet.content.splitlines()
+        index = snippet.lines.index(finding_line)
+        complete_source = (snippet.evidence_scope == "full_file" and snippet.is_complete
+                           and not snippet.truncated)
+        if complete_source and len(content_lines) <= 21:
+            selected_numbers = snippet.lines
+            selected_content = content_lines
+            scope = "full_file"
+            is_partial = False
+        else:
+            start = max(0, index - 5)
+            end = min(len(content_lines), index + 6)
+            selected_numbers = snippet.lines[start:end]
+            selected_content = content_lines[start:end]
+            scope = "truncated" if snippet.truncated or snippet.evidence_scope == "truncated" else (
+                snippet.evidence_scope if snippet.evidence_scope in {"snippet", "diff"} else "snippet"
             )
-        return None
+            is_partial = True
+        original = "\n".join(selected_content)
+        cleaned = sanitize_text(
+            original, secrets_to_redact=self._configured_secrets(), limit=4000,
+        ) or ""
+        if len(cleaned) > 4000:
+            cleaned = cleaned[:4000]
+            scope, is_partial = "truncated", True
+        return CodeExcerpt(
+            evidence_id=selected_evidence_id,
+            file_path=file_path,
+            lines=selected_numbers,
+            content=cleaned,
+            evidence_scope=scope,
+            is_partial=is_partial,
+            redacted=cleaned != original,
+        )
 
     def _report_for_project(self, project_id: str) -> tuple[FinalReport, str, str | None] | None:
         with self._connect() as connection:
@@ -1240,12 +1897,17 @@ class SQLiteQueryRepository:
         available = stage is not None or bool(findings)
         counts = None
         if available and self._finding_storage_available():
-            report_findings = self._report_findings(report)
+            report_findings = self._api_report_findings(report)
             verification_rows = self._verification_rows(run_id)
             status_counts = {"candidate": 0, "confirmed": 0, "rejected": 0,
                              "insufficient": 0, "pending": 0, "unknown": 0}
             for finding_row in findings:
-                view = self._finding_summary(run_id, finding_row, report_findings, verification_rows)
+                finding_id = safe_identifier(finding_row.get("finding_id", finding_row.get("id")))
+                candidate = report_findings.get(finding_id) if finding_id is not None else None
+                view = self._finding_summary(
+                    run_id, finding_row, report_findings, verification_rows,
+                    self._finding_identity(report, finding_id, candidate) if finding_id else None,
+                )
                 status_counts["candidate"] += 1
                 status_counts[view.verification_status] += 1
             counts = FindingCounts(**status_counts)

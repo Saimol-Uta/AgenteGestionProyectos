@@ -116,6 +116,30 @@ Artifact identities are keyed by project, repository ID and owner/name, full com
 
 Writable SQLite initialization adds artifact-identity/observation tables and indexes, then indexes only complete, validated provenance already explicit in immutable captures. It does not rewrite snapshots, reports, findings, evidence, verifications, or decision rows, and never fills historical identity from present project settings. Read-only initialization performs no migration or directory creation. On a pre-T6 schema, `query_repository_history` raises `NotImplementedError` explaining that a writable SQLite migration is required; existing snapshot/report reads remain available. Historical records without an unambiguous validated repository identity are returned with identity `None`, not assigned a synthetic primary repository.
 
+## API history, filters, and preparation (T7)
+
+The versioned API adds a project-scoped repository-history view without changing the existing monorepository payloads:
+
+| Method and path | Access | Behavior |
+|---|---|---|
+| `GET /api/v1/projects/{project_id}/repository-results` | Operator session with `audit:read` and project scope | Returns the currently configured repository collection plus paginated persisted history. |
+| `GET /api/v1/runs/{run_id}/findings` | Existing public read access | Keeps the existing paginated findings view and accepts optional repository/commit/CI filters. |
+
+Both routes accept the AND-combined filters `repository_id`, the paired `repository_owner` and `repository_name`, full `commit_sha` (40 or 64 hexadecimal characters), `ci_run_id`, and positive `attempt`. They also accept `page` (default 1, minimum 1) and `page_size` (default 25, range 1–100). CI run and attempt filters refer to the same stored run and use its actual attempt. Supplying only one owner/name field, or any invalid filter, returns HTTP 422; the repository-history route uses `filtros_multirepo_invalidos` for filter-shape errors. Missing project scope returns 403; a missing configured project returns 404.
+
+The repository-history response keeps `repositories` (current safe configuration) separate from `items` (historical observations). Each item retains its exact project/capture/repository identity when known, commit-resolution/access/availability states, CI attempts, source problems, findings, and verification state. Source artifact validation and report eligibility remain separate: report metrics and coverage are exposed only when the report-side artifact certifies them. Uncertified or unavailable values stay `null`; known zeroes stay zero. Unknown legacy origin stays unknown, and no configured repository is selected as a historical primary.
+
+If the existing read-only storage adapter does not expose the T6 history capability, the route still returns HTTP 200 with `availability: "unknown"`, an explanatory `message`, and an empty history page. It does not create a database, migrate a legacy database, or write during GET. Unauthenticated requests return 401; sessions without project scope return 403. Public findings preserve their existing access contract; repository fields are included only when origin is recoverable. Evidence and code excerpts are filtered to the finding's project, repository, commit, path, and line where those values are available.
+
+Example filters:
+
+```text
+GET /api/v1/projects/HORMIGESTION/repository-results?repository_id=frontend&ci_run_id=38833954051&attempt=2
+GET /api/v1/runs/run-123/findings?repository_owner=Josu-F1&repository_name=hormigestion-backend&commit_sha=<full-sha>
+```
+
+Analysis preparation keeps the existing session, expiry, remote-consent, idempotency, and audit controls. Its per-repository preflight lists configured identity, branch, configured (not resolved) SHA, workflow selector, credential presence, and the explicit initial states `commit_resolution_status: pending`, `access_status: unknown`, and `availability_status: unknown`; it performs no repository access check. The configuration fingerprint includes the complete ordered repository collection and every repository selector. Changing a sibling repository, branch, pin, or workflow therefore invalidates the prepared configuration; confirmation returns HTTP 409 (`configuracion_cambiada`) and cannot use a fingerprint for another repository. No credential or private filesystem path is returned.
+
 ## Verification and next stage
 
 The focused deterministic tests use fake JSON and binary GET transports, synthetic producer-shaped ZIP fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. The artifact validator's binary port is wrapped by the existing `BudgetedHttpGetTransport`/`CollectionBudgetLedger`; each bounded request/redirect hop and observed byte is charged without resetting repository counters or relaxing JSON GET checks. Review the public integration test through `create_analysis_composite_source` and `SourceCollectionResult.repository_results`, then use the focused T4 selection/pagination tests and retained T3/T2 suites.

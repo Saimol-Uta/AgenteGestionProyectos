@@ -168,6 +168,9 @@ class WebApiAnalysisJobTests(unittest.TestCase):
 
     def test_partial_credentials_select_mixed_mode_and_remote_components_require_consent(self) -> None:
         self._install_real_mode_client(
+            "project:\n"
+            f"  id: {PROJECT_ID}\n"
+            "  name: Synthetic isolated analysis project\n"
             "source_mode: real\n"
             "allow_remote_ai: true\n"
             "quality_provider: groq\n"

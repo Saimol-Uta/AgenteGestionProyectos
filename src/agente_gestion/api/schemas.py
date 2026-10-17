@@ -47,6 +47,139 @@ class ProjectView(ApiModel):
     summary: TaskPlanSummary | None = None
 
 
+class ConfiguredRepositoryView(ApiModel):
+    repository_id: str
+    owner: str
+    repo: str
+    branch: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    configured_commit_sha: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    quality_workflow_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class RepositoryIdentityView(ApiModel):
+    repository_id: str
+    owner: str
+    repo: str
+
+
+class RepositoryTestSuiteView(ApiModel):
+    tests: int | None = None
+    failed: int | None = None
+    passed: int | None = None
+    cancelled: int | None = None
+    skipped: int | None = None
+    todo: int | None = None
+    success: bool | None = None
+
+
+class RepositoryMetricsView(ApiModel):
+    total_tests: int | None = None
+    failed_tests: int | None = None
+    coverage_percentage: float | None = None
+    coverage_metric: str | None = None
+    coverage_basis: str | None = None
+    test_suites: dict[str, RepositoryTestSuiteView | None] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+    e2e_status: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class RepositoryArtifactValidationView(ApiModel):
+    outcome: str
+    source_metrics_certified: bool
+    schema_valid: bool
+    semantics_valid: bool
+    identity_bound: bool
+    workflow_status_matches: bool
+    reason: str | None = None
+    artifact_name: str | None = None
+    source_document_metrics: RepositoryMetricsView | None = None
+
+
+class RepositoryCIRunView(ApiModel):
+    run_id: str
+    workflow_name: str
+    workflow_path: str | None = None
+    commit_sha: str | None = None
+    status: str
+    actual_attempt: int | None = None
+    artifact_id: str | None = None
+    artifact_name: str | None = None
+    timestamp: datetime | None = None
+    repository: RepositoryIdentityView | None = None
+    source_artifact_validation: RepositoryArtifactValidationView | None = None
+    report_metrics_eligible: bool | None = None
+    report_metrics: RepositoryMetricsView | None = None
+    report_artifact_outcome: str | None = None
+    report_artifact_reason: str | None = None
+
+
+class RepositoryFindingView(ApiModel):
+    finding_id: str
+    repository_id: str
+    commit_sha: str | None = None
+    category: str | None = None
+    severity: str | None = None
+    rule_id: str | None = None
+    file_path: str | None = None
+    line: int | None = None
+    confidence: float | None = None
+    claim: str
+    improvement_summary: str
+    verification_status: Literal[
+        "pending", "confirmed", "rejected", "insufficient", "unknown",
+    ] = "unknown"
+
+
+class RepositoryVerificationView(ApiModel):
+    finding_id: str
+    verdict: Literal["confirmed", "rejected", "insufficient"]
+    reason: str
+    verified_by: str
+    evidence_ids: list[str]
+
+
+class RepositoryHistoryView(ApiModel):
+    capture_id: str
+    snapshot_id: str
+    source_scope: Literal["repository", "legacy", "unknown"]
+    source_item_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    analysis_run_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    report_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    repository: RepositoryIdentityView | None = None
+    branch: str | None = None
+    target_commit_sha: str | None = None
+    commit_resolution_status: Literal["pending", "resolved", "failed", "unknown"]
+    access_status: Literal["unknown", "allowed", "denied"]
+    availability_status: Literal["unknown", "available", "unavailable"]
+    source_complete: bool | None = None
+    incomplete_reason: str | None = None
+    code_diff_count: int = Field(ge=0)
+    coverage_percentage: float | None = None
+    coverage_basis: str | None = None
+    ci_runs: list[RepositoryCIRunView]
+    source_problems: list[str]
+    quality_status: StageStatusValue | None = None
+    quality_reason: str | None = None
+    verification_status: StageStatusValue | None = None
+    verification_reason: str | None = None
+    evaluation_status: StageStatusValue | None = None
+    evaluation_reason: str | None = None
+    findings: list[RepositoryFindingView]
+    verifications: list[RepositoryVerificationView]
+
+
+class RepositoryResultsCollection(ApiModel):
+    project_id: str
+    availability: Literal["available", "unknown"]
+    message: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    repositories: list[ConfiguredRepositoryView]
+    items: list[RepositoryHistoryView]
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+
+
 class CaptureHistoryView(ApiModel):
     capture_id: str
     captured_at: datetime
@@ -155,6 +288,9 @@ class RunStages(ApiModel):
 class FindingSummary(ApiModel):
     finding_id: str
     run_id: str
+    repository_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    repository_owner: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    repository_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
     category: str | None = None
     severity: str | None = None
     rule_id: str | None = None
@@ -365,6 +501,20 @@ class ProviderPreflight(ApiModel):
     model: str
     transport: Literal["local", "remote", "unknown"]
     credential_status: Literal["configured", "missing", "not_required"]
+    repository_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class RepositoryPreflight(ApiModel):
+    repository_id: str
+    owner: str
+    repo: str
+    branch: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    configured_commit_sha: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    quality_workflow_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    credential_status: Literal["configured", "missing"]
+    commit_resolution_status: Literal["pending"] = "pending"
+    access_status: Literal["unknown"] = "unknown"
+    availability_status: Literal["unknown"] = "unknown"
 
 
 class RemotePreflight(ApiModel):
@@ -378,6 +528,9 @@ class AnalysisPreflight(ApiModel):
     source_mode: str
     configuration_status: Literal["ready", "incomplete", "unknown"]
     checks: list[PreflightCheck]
+    repositories: list[RepositoryPreflight] = Field(
+        default_factory=list, exclude_if=lambda value: not value,
+    )
 
 
 class AnalysisPreparation(ApiModel):

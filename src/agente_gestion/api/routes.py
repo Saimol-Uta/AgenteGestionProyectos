@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Header, Path, Query, Request, Response
+from pydantic import ValidationError
 
 from agente_gestion.api.control_plane import ControlPlaneRepository
 from agente_gestion.api.control_schemas import (
@@ -50,6 +51,7 @@ from agente_gestion.api.schemas import (
     RunDetail,
     RunStages,
     RunSummary,
+    RepositoryResultsCollection,
     SystemHealth,
     TaskDetailResponse,
     EvidenceSummary,
@@ -57,6 +59,7 @@ from agente_gestion.api.schemas import (
 from agente_gestion.api.security import OperatorSession, OperatorSessionStore, sanitize_text
 from agente_gestion.api.settings import ApiSettings, IDENTIFIER_PATTERN
 from agente_gestion.application.tasks_query import TaskDetailView, TaskPlanSummary
+from agente_gestion.domain.repository_history import RepositoryHistoryFilter
 from agente_gestion.domain.task_comparison import TaskSnapshotComparison
 from agente_gestion.domain.tasks import TaskState
 
@@ -370,6 +373,48 @@ def project_history(
     return Page(items=selected, total=total, page=page, page_size=page_size)
 
 
+@router.get(
+    "/projects/{project_id}/repository-results",
+    response_model=RepositoryResultsCollection,
+    tags=["Historial"],
+)
+def project_repository_results(
+    request: Request,
+    project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
+    repository_id: Annotated[str | None, Query(pattern=_ID, max_length=128)] = None,
+    repository_owner: Annotated[str | None, Query(max_length=100)] = None,
+    repository_name: Annotated[str | None, Query(max_length=100)] = None,
+    commit_sha: Annotated[str | None, Query(pattern=r"^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$")] = None,
+    ci_run_id: Annotated[str | None, Query(pattern=_ID, max_length=128)] = None,
+    attempt: Annotated[int | None, Query(ge=1)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> RepositoryResultsCollection:
+    _require_project_capability(request, project_id, "audit:read", mutation=False)
+    try:
+        filters = RepositoryHistoryFilter(
+            project_id=project_id,
+            repository_id=repository_id,
+            repository_owner=repository_owner,
+            repository_name=repository_name,
+            commit_sha=commit_sha,
+            ci_run_id=ci_run_id,
+            attempt=attempt,
+        )
+    except ValidationError:
+        raise ApiProblem(
+            422, "filtros_multirepo_invalidos", "Los filtros del historial de repositorios no son válidos.",
+        ) from None
+    try:
+        return _repository(request).repository_results(project_id, filters, page, page_size)
+    except LookupError as exc:
+        _raise_lookup(exc)
+    except ValueError as exc:
+        if str(exc) == "invalid_repository_history_project_scope":
+            raise ApiProblem(422, "filtros_multirepo_invalidos", "Los filtros del historial no son válidos.") from None
+        raise
+
+
 @router.get("/projects/{project_id}/compare", response_model=TaskSnapshotComparison, tags=["Historial"])
 def compare_project_captures(
     request: Request,
@@ -456,13 +501,27 @@ def get_run_stages(
 def list_run_findings(
     request: Request,
     run_id: Annotated[str, Path(pattern=_ID, max_length=128)],
+    repository_id: Annotated[str | None, Query(pattern=_ID, max_length=128)] = None,
+    repository_owner: Annotated[str | None, Query(max_length=100)] = None,
+    repository_name: Annotated[str | None, Query(max_length=100)] = None,
+    commit_sha: Annotated[str | None, Query(pattern=r"^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$")] = None,
+    ci_run_id: Annotated[str | None, Query(pattern=_ID, max_length=128)] = None,
+    attempt: Annotated[int | None, Query(ge=1)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> Page[FindingSummary]:
     try:
-        items, total = _repository(request).findings(run_id, page, page_size)
+        items, total = _repository(request).findings(
+            run_id, page, page_size, repository_id=repository_id,
+            repository_owner=repository_owner, repository_name=repository_name,
+            commit_sha=commit_sha, ci_run_id=ci_run_id, attempt=attempt,
+        )
     except LookupError as exc:
         _raise_lookup(exc)
+    except ValueError as exc:
+        if str(exc) == "invalid_repository_history_filter":
+            raise ApiProblem(422, "filtros_multirepo_invalidos", "Los filtros de hallazgos no son válidos.") from None
+        raise
     return Page(items=items, total=total, page=page, page_size=page_size)
 
 

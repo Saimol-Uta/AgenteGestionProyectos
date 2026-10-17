@@ -512,6 +512,7 @@ class WebApiGovernanceTests(unittest.TestCase):
         self.client.close()
         config = Path(self.temp.name) / "safe-analysis-config.yaml"
         config.write_text(
+            f"project_id: {PROJECT_ID}\n"
             "sources:\n  mode: real\n"
             "  trello:\n    board_id: BOARD-H5\n    api_key: fixture-private-key-value\n"
             "    token: fixture-private-token-value\n"

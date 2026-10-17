@@ -25,6 +25,7 @@ from agente_gestion.api.schemas import (
     PreflightCheck,
     ProviderPreflight,
     RemotePreflight,
+    RepositoryPreflight,
 )
 from agente_gestion.api.security import safe_identifier, sanitize_text
 from agente_gestion.api.settings import ApiSettings
@@ -73,6 +74,11 @@ def _transport(provider: str) -> str:
     return "unknown"
 
 
+def _repository_config_fingerprint(repositories: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Keep configured repository order and every source selector in the digest."""
+    return [repository.model_dump(mode="json") for repository in repositories]
+
+
 def _fingerprint(api_settings: ApiSettings, engine: EngineSettings | None, project_id: str) -> str:
     effective: dict[str, Any] = {
         "project_id": project_id,
@@ -80,18 +86,59 @@ def _fingerprint(api_settings: ApiSettings, engine: EngineSettings | None, proje
         "runs_dir": api_settings.runs_dir,
         "analysis_enabled": api_settings.analysis_enabled,
     }
+    project = next((item for item in api_settings.projects if item.id == project_id), None)
+    if project is not None and project.repositories:
+        effective["api_repository_collection"] = _repository_config_fingerprint(project.repositories)
     if engine is not None:
         engine_values: dict[str, Any] = {}
         for name in EngineSettings.model_fields:
             value = getattr(engine, name)
             if isinstance(value, SecretStr):
                 value = hashlib.sha256(value.get_secret_value().encode("utf-8")).hexdigest()
+            elif name == "github_repositories" and value is not None:
+                value = _repository_config_fingerprint(value)
             elif hasattr(value, "model_dump"):
                 value = value.model_dump(mode="json")
             engine_values[name] = value
         effective["engine"] = engine_values
     data = json.dumps(effective, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def _safe_repository_field(value: str | None, secrets_to_redact: tuple[str, ...]) -> str | None:
+    if value is None:
+        return None
+    if (value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", value)
+            or "://" in value):
+        return None
+    cleaned = sanitize_text(value, secrets_to_redact=secrets_to_redact, limit=512)
+    cleaned = re.sub(r"(?<![A-Za-z0-9:])/(?:[^/\s]+/)+[^/\s,;]+", "[local path omitted]", cleaned)
+    cleaned = re.sub(r"(?i)\b[A-Z]:\\[^\s,;]+", "[local path omitted]", cleaned)
+    return cleaned
+
+
+def _repository_preflight(
+    repositories: tuple[Any, ...], token: SecretStr | None,
+) -> list[RepositoryPreflight]:
+    secrets_to_redact = (token.get_secret_value(),) if token is not None else ()
+    credential_status = "configured" if token and token.get_secret_value() else "missing"
+    return [
+        RepositoryPreflight(
+            repository_id=repository.id,
+            owner=repository.owner,
+            repo=repository.repo,
+            branch=_safe_repository_field(repository.branch, secrets_to_redact),
+            configured_commit_sha=repository.commit_sha,
+            quality_workflow_path=_safe_repository_field(
+                repository.quality_workflow_path, secrets_to_redact,
+            ),
+            credential_status=credential_status,
+            commit_resolution_status="pending",
+            access_status="unknown",
+            availability_status="unknown",
+        )
+        for repository in repositories
+    ]
 
 
 def _unavailable_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRuntimePlan:
@@ -102,6 +149,8 @@ def _unavailable_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRun
             source_mode=project.source_mode if project else "unknown",
             configuration_status="incomplete",
             checks=[PreflightCheck(code="configuration_unavailable", status="incomplete")],
+            repositories=_repository_preflight(project.repositories, api_settings.github_token)
+            if project else [],
         ),
         remote=RemotePreflight(
             required=False, server_allowed=False, providers=[],
@@ -151,9 +200,24 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
             overrides=overrides,
             _env_file=api_settings.analysis_env_file,
         )
+        project_repositories = project.repositories if project is not None else ()
+        if project_repositories and engine.github_repositories is None:
+            # Directly supplied API settings use the already-normalized project collection.
+            overrides["github_repositories"] = project_repositories
+            engine = EngineSettings.from_env_and_file(
+                config_path=config_path,
+                overrides=overrides,
+                _env_file=api_settings.analysis_env_file,
+            )
+        repository_collection_mismatch = bool(
+            project_repositories and engine.github_repositories is not None
+            and tuple(project_repositories) != tuple(engine.github_repositories)
+        )
     except Exception:
         return _unavailable_plan(api_settings, project_id)
 
+    configured_repositories = tuple(project_repositories or engine.github_repositories or ())
+    repository_preflights = _repository_preflight(configured_repositories, engine.github_token)
     providers: list[ProviderPreflight] = []
     fallback_reasons: list[str] = []
     remote_used = False
@@ -192,6 +256,11 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
     add_model("report", "gemini", engine.gemini_report_model, engine.gemini_api_key)
 
     checks: list[PreflightCheck] = []
+    if configured_repositories:
+        checks.append(PreflightCheck(
+            code="repository_collection_configuration",
+            status="incomplete" if repository_collection_mismatch else "ready",
+        ))
     source_remote_ready = False
     source_needs_fixture = False
     if engine.source_mode == "fixtures":
@@ -223,9 +292,41 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
                 credential_status="configured" if configured else "missing",
             ))
 
+        def add_repository_source(stage: str, provider: str, repository_id: str) -> None:
+            nonlocal source_remote_ready, source_needs_fixture
+            credential_configured = bool(
+                engine.github_token and engine.github_token.get_secret_value()
+            )
+            if remote_permission and credential_configured:
+                source_remote_ready = True
+                providers.append(ProviderPreflight(
+                    stage=stage, provider=provider, model="not_applicable",
+                    transport="remote", credential_status="configured",
+                    repository_id=repository_id,
+                ))
+                return
+            source_needs_fixture = True
+            if engine.is_fake:
+                reason = f"{stage} ({repository_id}): explicit fake mode selects the deterministic sandbox."
+            elif not engine.allow_remote_ai:
+                reason = f"{stage} ({repository_id}): ALLOW_REMOTE_AI is false; local fixture source selected."
+            else:
+                reason = f"{stage} ({repository_id}): GitHub credentials are missing; local fixture source selected."
+            fallback_reasons.append(reason)
+            providers.append(ProviderPreflight(
+                stage=stage, provider="sandbox", model="fixture-source", transport="local",
+                credential_status="configured" if credential_configured else "missing",
+                repository_id=repository_id,
+            ))
+
         add_source("task_source", "trello", task_ready, bool(engine.trello_api_key and engine.trello_token))
-        add_source("code_source", "github", repo_ready, bool(engine.github_owner and engine.github_repo and engine.github_token))
-        add_source("ci_source", "github_actions", ci_ready, bool(engine.github_token and engine.github_commit_sha))
+        if configured_repositories:
+            for repository in configured_repositories:
+                add_repository_source("code_source", "github", repository.id)
+                add_repository_source("ci_source", "github_actions", repository.id)
+        else:
+            add_source("code_source", "github", repo_ready, bool(engine.github_owner and engine.github_repo and engine.github_token))
+            add_source("ci_source", "github_actions", ci_ready, bool(engine.github_token and engine.github_commit_sha))
 
         policy_ready = Path(engine.policies_path).is_file()
         if not policy_ready:
@@ -271,6 +372,7 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
             source_mode=engine.source_mode,
             configuration_status=configuration_status,
             checks=checks,
+            repositories=repository_preflights,
         ),
         remote=remote,
         execution_mode=execution_mode,

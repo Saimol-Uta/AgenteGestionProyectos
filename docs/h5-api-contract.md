@@ -1,5 +1,20 @@
 # Índice del contrato REST
 
-El catálogo autoritativo de rutas, accesos, preparación de análisis, trabajos, propuestas, informes, programación, correo y auditoría está en [docs/02-backend-arquitectura-y-api.md](02-backend-arquitectura-y-api.md).
+El catálogo base de rutas, accesos, preparación de análisis, trabajos, propuestas, informes, programación, correo y auditoría está en [docs/02-backend-arquitectura-y-api.md](02-backend-arquitectura-y-api.md). Esta página registra la extensión REST MultiRepo T7; el detalle de compatibilidad y los ejemplos están en [docs/multirepo.md](multirepo.md).
+
+## Historial y filtros MultiRepo (T7)
+
+| Método y ruta | Acceso | Contrato |
+|---|---|---|
+| `GET /api/v1/projects/{project_id}/repository-results` | Sesión de operador, capability `audit:read` y alcance del proyecto | Lista la colección configurada y el historial persistido paginado por proyecto. |
+| `GET /api/v1/runs/{run_id}/findings` | Conserva el acceso público de lectura existente | Conserva la página de hallazgos y admite filtros opcionales de repositorio, commit y CI. |
+
+Ambas rutas aceptan filtros AND: `repository_id`; `repository_owner` junto con `repository_name`; `commit_sha` hexadecimal completo de 40 o 64 caracteres; `ci_run_id`; e `attempt` positivo. La paginación usa `page` (predeterminado 1, mínimo 1) y `page_size` (predeterminado 25, rango 1–100). El intento es el intento real de `CIRunResult` y los filtros de CI/commit deben coincidir dentro del mismo registro. Omitir uno de los dos campos owner/name o enviar una combinación de filtros inválida produce HTTP 422; el error de forma de filtro del historial es `filtros_multirepo_invalidos`.
+
+El historial usa la capacidad T6 en modo de solo lectura. Si esa capacidad no está disponible, responde HTTP 200 con `availability: "unknown"`, un `message` explicativo y una página vacía; un `GET` no crea ni migra la base. La ruta requiere sesión (401 sin sesión); un proyecto fuera del alcance de la sesión devuelve 403 y un proyecto no configurado devuelve 404. La lista de hallazgos mantiene su autorización pública anterior. Procedencia histórica desconocida permanece desconocida y métricas de informe no certificadas permanecen `null`.
+
+La preparación existente (`POST /api/v1/projects/{project_id}/analysis/prepare`) informa el preflight por repositorio sin consultar GitHub: identidad, rama, SHA configurado, workflow, presencia de credencial y estados iniciales pendiente/desconocido. El fingerprint cubre la colección ordenada completa y sus selectores; cambiar un repositorio hermano invalida una preparación anterior (`409 configuracion_cambiada`). Se conservan sesión, expiración, autorización, consentimiento remoto, idempotencia y auditoría existentes. No se publican credenciales ni rutas privadas.
+
+Para las reglas de compatibilidad con almacenamiento histórico, estados, métricas y evidencia, consulta [docs/multirepo.md](multirepo.md#api-history-filters-and-preparation-t7).
 
 Para la sesión y experiencia del Gestor, consulta la [guía web](01-frontend-guia-y-estado.md). Para la verificación actual, consulta [INFORME_PRUEBAS.md](../INFORME_PRUEBAS.md).
