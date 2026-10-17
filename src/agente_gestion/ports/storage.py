@@ -12,6 +12,7 @@ from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.action_proposal import ActionProposal
 from agente_gestion.domain.proposal_review import DecisionEvent, Projection
 from agente_gestion.domain.proposal_dry_run import DryRunRequest, DryRunResult
+from agente_gestion.domain.repository_history import RepositoryHistoryFilter, RepositoryHistoryRecord
 
 
 class StoragePort(ABC):
@@ -65,6 +66,12 @@ class StoragePort(ABC):
     def get_snapshot_capture(self, capture_id: str) -> Optional[SnapshotCapture]:
         """Retrieve a capture by exact JSON hash; optional storage capability."""
         raise NotImplementedError("Snapshot history unavailable")
+
+    def query_repository_history(
+        self, filters: RepositoryHistoryFilter,
+    ) -> list[RepositoryHistoryRecord]:
+        """Query persisted repository results by exact identity; optional capability."""
+        raise NotImplementedError("Repository history queries unavailable")
 
     def save_action_proposal(self, proposal: ActionProposal,
                              supporting_evidence: list[EvidenceItem]) -> None:

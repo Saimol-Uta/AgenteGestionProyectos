@@ -92,6 +92,30 @@ When `WeeklySnapshot.repository_results` is nonempty, the orchestrator analyzes 
 
 The MultiRepo analysis shares the existing run-level call coordinator. Per-repository requests are sequential; quality/verifier output reservations are divided from their existing stage caps, and each prompt retains the existing context-window and timeout bounds. Context estimates and provider-measured token usage remain distinct telemetry; this is not a provider tokenizer guarantee. A budget-exhausted repository is explicitly marked for attention while already collected analysis remains reportable.
 
+## Persisted repository history (T6)
+
+`StoragePort.query_repository_history(RepositoryHistoryFilter(...))` is an optional storage capability; it does not make non-SQLite `StoragePort` implementations abstract. SQLite returns one record per captured repository result. Legacy items with explicit identity are grouped by repository identity; items without identity remain separate unknown records. Records include capture ID, fixed SHA when available, exact analysis-run/report references when recoverable, source artifacts, scoped report results, and explicitly attributable evidence. Use `get_snapshot_capture(capture_id)` and `get_report(report_id)` for the original capture/report and human-decision state.
+
+Filters are AND-combined: `project_id`, `repository_id`, a paired `repository_owner`/`repository_name`, full `commit_sha`, `ci_run_id`, and/or `attempt`. At least one filter is required. Run and attempt filters match the same stored Actions run; `attempt` is the actual `CIRunResult.run_attempt`, never an optional attempt copied from the producer document. Example:
+
+```python
+from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+from agente_gestion.domain.repository_history import RepositoryHistoryFilter
+
+store = SQLiteStorageAdapter("path/to/an-existing-migrated.sqlite", read_only=True)
+rows = store.query_repository_history(RepositoryHistoryFilter(
+    project_id="Hormigestion",
+    repository_id="backend",
+    commit_sha="<full-40-or-64-character-sha>",
+    ci_run_id="38833954051",
+    attempt=2,
+))
+```
+
+Artifact identities are keyed by project, repository ID and owner/name, full commit SHA, Actions run ID, actual attempt, artifact ID, and the validated artifact name. Re-saving the same capture/artifact is idempotent; distinct captures and analysis runs remain distinct, and re-observations link to each capture without overwriting prior evidence or human decisions. Raw source artifact validation is indexed separately from T5 report eligibility: a source document that validated cannot upgrade a report projection that was rejected. Partial repository states and unknown metrics remain scoped and nullable.
+
+Writable SQLite initialization adds artifact-identity/observation tables and indexes, then indexes only complete, validated provenance already explicit in immutable captures. It does not rewrite snapshots, reports, findings, evidence, verifications, or decision rows, and never fills historical identity from present project settings. Read-only initialization performs no migration or directory creation. On a pre-T6 schema, `query_repository_history` raises `NotImplementedError` explaining that a writable SQLite migration is required; existing snapshot/report reads remain available. Historical records without an unambiguous validated repository identity are returned with identity `None`, not assigned a synthetic primary repository.
+
 ## Verification and next stage
 
 The focused deterministic tests use fake JSON and binary GET transports, synthetic producer-shaped ZIP fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. The artifact validator's binary port is wrapped by the existing `BudgetedHttpGetTransport`/`CollectionBudgetLedger`; each bounded request/redirect hop and observed byte is charged without resetting repository counters or relaxing JSON GET checks. Review the public integration test through `create_analysis_composite_source` and `SourceCollectionResult.repository_results`, then use the focused T4 selection/pagination tests and retained T3/T2 suites.

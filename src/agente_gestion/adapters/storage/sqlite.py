@@ -18,8 +18,22 @@ from agente_gestion.domain.run import (
     StageStatus,
     compute_sha256,
 )
-from agente_gestion.domain.snapshot import SnapshotCapture, WeeklySnapshot
-from agente_gestion.domain.report import FinalReport, HumanDecisionState
+from agente_gestion.domain.snapshot import SnapshotCapture, WeeklySnapshot, RepositorySnapshotResult
+from agente_gestion.domain.report import FinalReport, HumanDecisionState, RepositoryReportResult
+from agente_gestion.domain.repository_history import (
+    RepositoryArtifactIdentity,
+    RepositoryArtifactObservation,
+    RepositoryHistoryFilter,
+    RepositoryHistoryRecord,
+)
+from agente_gestion.adapters.storage.repository_history import (
+    RepositorySourceScope,
+    artifact_identity_key,
+    extract_artifact_observations,
+    iter_repository_source_scopes,
+    project_source_scope,
+    scope_matches_filters,
+)
 from agente_gestion.domain.findings import (
     CandidateFinding,
     FindingVerification,
@@ -235,6 +249,54 @@ class SQLiteStorageAdapter(StoragePort):
                                 ON snapshot_captures(project_id, captured_at, capture_id)""")
                 for row in conn.execute("SELECT data_json FROM snapshots"):
                     self._insert_capture(conn, row["data_json"])
+            # Repository artifacts are an additive index over immutable captures.
+            # Source validation lives here; report eligibility remains in each saved report.
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""CREATE TABLE IF NOT EXISTS repository_artifacts (
+                    artifact_key TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    repository_id TEXT NOT NULL,
+                    repository_owner TEXT NOT NULL,
+                    repository_name TEXT NOT NULL,
+                    commit_sha TEXT NOT NULL,
+                    ci_run_id TEXT NOT NULL,
+                    actual_attempt INTEGER NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    artifact_name TEXT NOT NULL,
+                    UNIQUE(project_id, repository_id, repository_owner, repository_name,
+                           commit_sha, ci_run_id, actual_attempt, artifact_id, artifact_name)
+                )""")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_repository_artifacts_lookup
+                    ON repository_artifacts(project_id, repository_id, commit_sha, ci_run_id, actual_attempt)""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS repository_artifact_observations (
+                    artifact_key TEXT NOT NULL,
+                    capture_id TEXT NOT NULL,
+                    identity_json TEXT NOT NULL,
+                    source_metadata_sha256 TEXT,
+                    source_outcome TEXT,
+                    source_certifies_metrics INTEGER,
+                    source_schema_valid INTEGER,
+                    source_semantics_valid INTEGER,
+                    source_identity_bound INTEGER,
+                    source_workflow_status_matches INTEGER,
+                    PRIMARY KEY(artifact_key, capture_id)
+                )""")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_repository_artifact_observations_capture
+                    ON repository_artifact_observations(capture_id, artifact_key)""")
+                for row in conn.execute("SELECT * FROM snapshot_captures"):
+                    try:
+                        capture = self._parse_capture(row)
+                        observations = extract_artifact_observations(
+                            capture.snapshot, tolerate_unindexed_historical_data=True,
+                        )
+                    except (TypeError, ValueError, KeyError, OverflowError):
+                        # Historical provenance is indexed only when it can be validated.
+                        continue
+                    for observation in observations:
+                        self._insert_repository_artifact_observation(
+                            conn, capture.capture_id, observation,
+                        )
             # Catalogue migration is writer-only and independent of history backfill.
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
@@ -476,6 +538,360 @@ class SQLiteStorageAdapter(StoragePort):
             row = conn.execute("SELECT * FROM snapshot_captures WHERE capture_id = ?",
                                (capture_id,)).fetchone()
             return self._parse_capture(row) if row else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _repository_identity_matches(left: Any, right: Any) -> bool:
+        return bool(
+            left is not None and right is not None
+            and left.id == right.id
+            and left.owner.casefold() == right.owner.casefold()
+            and left.repo.casefold() == right.repo.casefold()
+        )
+
+    @staticmethod
+    def _artifact_observation_row(
+        observation: RepositoryArtifactObservation, capture_id: str,
+    ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+        identity = observation.identity
+        repository = identity.repository_identity
+        artifact_key = artifact_identity_key(identity)
+        artifact_row = (
+            artifact_key, identity.project_id, repository.id, repository.owner.casefold(),
+            repository.repo.casefold(), identity.commit_sha, identity.ci_run_id,
+            identity.actual_attempt, identity.artifact_id, identity.artifact_name,
+        )
+        metadata = observation.source_metrics_artifact
+        if metadata is None:
+            metadata_row = (None, None, None, None, None, None, None)
+        else:
+            metadata_row = (
+                hashlib.sha256(metadata.model_dump_json().encode("utf-8")).hexdigest(),
+                metadata.outcome.value,
+                int(metadata.certifies_metrics), int(metadata.schema_valid),
+                int(metadata.semantics_valid), int(metadata.identity_bound),
+                int(metadata.workflow_status_matches),
+            )
+        observation_row = (
+            artifact_key, capture_id,
+            identity.model_dump_json(), *metadata_row,
+        )
+        return artifact_row, observation_row
+
+    @classmethod
+    def _insert_repository_artifact_observation(
+        cls,
+        conn: sqlite3.Connection,
+        capture_id: str,
+        observation: RepositoryArtifactObservation,
+    ) -> None:
+        artifact_row, observation_row = cls._artifact_observation_row(observation, capture_id)
+        conn.execute(
+            """INSERT INTO repository_artifacts (
+                artifact_key, project_id, repository_id, repository_owner, repository_name,
+                commit_sha, ci_run_id, actual_attempt, artifact_id, artifact_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(artifact_key) DO NOTHING""",
+            artifact_row,
+        )
+        stored_artifact = conn.execute(
+            "SELECT artifact_key, project_id, repository_id, repository_owner, repository_name, "
+            "commit_sha, ci_run_id, actual_attempt, artifact_id, artifact_name "
+            "FROM repository_artifacts WHERE artifact_key = ?",
+            (artifact_row[0],),
+        ).fetchone()
+        if stored_artifact is None or tuple(stored_artifact) != artifact_row:
+            raise ValueError("Conflicting repository artifact identity.")
+
+        conn.execute(
+            """INSERT INTO repository_artifact_observations (
+                artifact_key, capture_id, identity_json, source_metadata_sha256,
+                source_outcome, source_certifies_metrics, source_schema_valid,
+                source_semantics_valid, source_identity_bound, source_workflow_status_matches
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(artifact_key, capture_id) DO NOTHING""",
+            observation_row,
+        )
+        stored_observation = conn.execute(
+            """SELECT artifact_key, capture_id, identity_json, source_metadata_sha256,
+                source_outcome, source_certifies_metrics, source_schema_valid,
+                source_semantics_valid, source_identity_bound, source_workflow_status_matches
+            FROM repository_artifact_observations WHERE artifact_key = ? AND capture_id = ?""",
+            (observation_row[0], capture_id),
+        ).fetchone()
+        if stored_observation is None or tuple(stored_observation) != observation_row:
+            raise ValueError("Conflicting source artifact observation for one snapshot capture.")
+
+    @classmethod
+    def _load_repository_artifact_observations(
+        cls,
+        conn: sqlite3.Connection,
+        capture_id: str,
+        source_observations: dict[str, RepositoryArtifactObservation],
+    ) -> list[RepositoryArtifactObservation]:
+        rows = conn.execute(
+            """SELECT a.*, o.identity_json, o.source_metadata_sha256, o.source_outcome,
+                o.source_certifies_metrics, o.source_schema_valid, o.source_semantics_valid,
+                o.source_identity_bound, o.source_workflow_status_matches
+            FROM repository_artifact_observations AS o
+            JOIN repository_artifacts AS a ON a.artifact_key = o.artifact_key
+            WHERE o.capture_id = ? ORDER BY a.artifact_key""",
+            (capture_id,),
+        )
+        result: list[RepositoryArtifactObservation] = []
+        indexed_keys: set[str] = set()
+        for row in rows:
+            try:
+                identity = RepositoryArtifactIdentity.model_validate_json(row["identity_json"])
+                if artifact_identity_key(identity) != row["artifact_key"]:
+                    raise ValueError("Artifact identity key mismatch")
+                repository = identity.repository_identity
+                expected_artifact = (
+                    row["artifact_key"], identity.project_id, repository.id,
+                    repository.owner.casefold(), repository.repo.casefold(), identity.commit_sha,
+                    identity.ci_run_id, identity.actual_attempt, identity.artifact_id,
+                    identity.artifact_name,
+                )
+                stored_artifact = tuple(row[key] for key in (
+                    "artifact_key", "project_id", "repository_id", "repository_owner",
+                    "repository_name", "commit_sha", "ci_run_id", "actual_attempt",
+                    "artifact_id", "artifact_name",
+                ))
+                if expected_artifact != stored_artifact:
+                    raise ValueError("Artifact identity index mismatch")
+
+                source_observation = source_observations.get(row["artifact_key"])
+                if source_observation is None or source_observation.identity != identity:
+                    raise ValueError("Indexed artifact is not present in its validated source capture")
+                metadata = source_observation.source_metrics_artifact
+                if metadata is None:
+                    expected_status = (None, None, None, None, None, None)
+                    expected_hash = None
+                else:
+                    expected_status = (
+                        metadata.outcome.value, int(metadata.certifies_metrics),
+                        int(metadata.schema_valid), int(metadata.semantics_valid),
+                        int(metadata.identity_bound), int(metadata.workflow_status_matches),
+                    )
+                    expected_hash = hashlib.sha256(
+                        metadata.model_dump_json().encode("utf-8")
+                    ).hexdigest()
+                stored_status = tuple(row[key] for key in (
+                    "source_outcome", "source_certifies_metrics", "source_schema_valid",
+                    "source_semantics_valid", "source_identity_bound",
+                    "source_workflow_status_matches",
+                ))
+                if expected_hash != row["source_metadata_sha256"] or expected_status != stored_status:
+                    raise ValueError("Source metadata index mismatch")
+                result.append(source_observation)
+                indexed_keys.add(row["artifact_key"])
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ValueError("Stored repository artifact provenance is invalid.") from exc
+        if indexed_keys != set(source_observations):
+            raise ValueError("Stored repository artifact index is incomplete for its source capture.")
+        return result
+
+    @staticmethod
+    def _report_result_for_scope(
+        report: FinalReport, scope: RepositorySourceScope,
+    ) -> Optional[RepositoryReportResult]:
+        source = scope.repository_result
+        if source is None or scope.repository_identity is None:
+            return None
+        matches: list[RepositoryReportResult] = []
+        for candidate in report.repository_results:
+            state = candidate.repository_state
+            if (not SQLiteStorageAdapter._repository_identity_matches(
+                    state.identity, scope.repository_identity)
+                    or state.target_commit_sha != scope.target_commit_sha):
+                continue
+            if source.ci_runs:
+                if candidate.ci_result is None or not any(
+                    candidate.ci_result.id == source_ci.id
+                    and candidate.ci_result.commit_sha.lower() == source_ci.commit_sha.lower()
+                    and candidate.ci_result.run_attempt == source_ci.run_attempt
+                    and candidate.ci_result.artifact_id == source_ci.artifact_id
+                    and candidate.ci_result.artifact_name == source_ci.artifact_name
+                    and SQLiteStorageAdapter._repository_identity_matches(
+                        candidate.ci_result.repository_identity or (
+                            candidate.ci_result.provenance.repository_identity
+                            if candidate.ci_result.provenance is not None else None
+                        ),
+                        source_ci.repository_identity or (
+                            source_ci.provenance.repository_identity
+                            if source_ci.provenance is not None else None
+                        ),
+                    )
+                    for source_ci in source.ci_runs
+                ):
+                    continue
+            elif candidate.ci_result is not None:
+                continue
+            matches.append(candidate)
+        return matches[0] if len(matches) == 1 else None
+
+    def _history_evidence_for_scope(
+        self,
+        run_id: Optional[str],
+        project_id: str,
+        scope: RepositorySourceScope,
+        all_scopes: list[RepositorySourceScope],
+    ) -> list[EvidenceItem]:
+        if run_id is None or scope.repository_identity is None:
+            return []
+        identity = scope.repository_identity
+        labels: dict[str, set[tuple[str, str, str]]] = {}
+        for other in all_scopes:
+            candidate = other.repository_identity
+            if candidate is None:
+                continue
+            key = (candidate.id, candidate.owner.casefold(), candidate.repo.casefold())
+            for value in (candidate.id, f"{candidate.owner}/{candidate.repo}"):
+                labels.setdefault(value.casefold(), set()).add(key)
+        commits: set[str] = set()
+        if scope.target_commit_sha is not None:
+            commits.add(scope.target_commit_sha.lower())
+        if scope.repository_result is not None:
+            commits.update(item.commit_sha.lower() for item in (
+                *scope.repository_result.code_diffs, *scope.repository_result.ci_runs,
+            ))
+        else:
+            commits.update(item.commit_sha.lower() for item in (
+                *scope.legacy_code_diffs, *scope.legacy_ci_runs,
+            ))
+        identity_key = (identity.id, identity.owner.casefold(), identity.repo.casefold())
+        evidence: list[EvidenceItem] = []
+        for item in self.get_evidence(run_id):
+            if not isinstance(item, EvidenceItem):
+                continue
+            provenance = item.provenance
+            label = provenance.repository
+            if (provenance.project_id != project_id or label is None
+                    or provenance.commit_sha is None
+                    or provenance.commit_sha.lower() not in commits
+                    or labels.get(label.casefold()) != {identity_key}):
+                continue
+            evidence.append(item)
+        return evidence
+
+    def query_repository_history(
+        self,
+        filters: RepositoryHistoryFilter | dict[str, Any],
+    ) -> list[RepositoryHistoryRecord]:
+        """Query exact persisted captures by AND-combined project/repository/CI identity.
+
+        Source artifact validation is returned separately from each report's eligibility
+        projection. Historical records without explicit identity remain unknown and are
+        never assigned the project's current or a synthetic primary repository.
+        """
+        query = RepositoryHistoryFilter.model_validate(filters)
+        conn = self._get_connection()
+        try:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('snapshot_captures', 'repository_artifacts', 'repository_artifact_observations')"
+            )}
+            required = {
+                "snapshot_captures", "repository_artifacts", "repository_artifact_observations",
+            }
+            if tables != required:
+                raise NotImplementedError(
+                    "Repository history query unavailable; a writable SQLite migration is required."
+                )
+
+            if query.project_id is None:
+                capture_rows = conn.execute(
+                    "SELECT * FROM snapshot_captures ORDER BY project_id, captured_at, capture_id"
+                )
+            else:
+                capture_rows = conn.execute(
+                    "SELECT * FROM snapshot_captures WHERE project_id = ? "
+                    "ORDER BY captured_at, capture_id", (query.project_id,),
+                )
+            records: list[RepositoryHistoryRecord] = []
+            for capture_row in capture_rows:
+                capture = self._parse_capture(capture_row)
+                snapshot = capture.snapshot
+                scopes = list(iter_repository_source_scopes(snapshot))
+                source_observations = {
+                    artifact_identity_key(item.identity): item
+                    for item in extract_artifact_observations(
+                        snapshot, tolerate_unindexed_historical_data=True,
+                    )
+                }
+                artifact_observations = self._load_repository_artifact_observations(
+                    conn, capture.capture_id, source_observations,
+                )
+                runs = conn.execute(
+                    """SELECT run_id FROM runs
+                    WHERE project_id = ? AND snapshot_id = ? AND snapshot_hash = ?
+                    ORDER BY created_at, run_id""",
+                    (snapshot.project_id, snapshot.id, capture.capture_id),
+                ).fetchall()
+                run_ids: list[Optional[str]] = [row["run_id"] for row in runs] or [None]
+                for original_scope in scopes:
+                    if not scope_matches_filters(original_scope, query, project_id=snapshot.project_id):
+                        continue
+                    scope = project_source_scope(original_scope, query)
+                    selected_ci_runs = (
+                        scope.repository_result.ci_runs if scope.repository_result is not None
+                        else scope.legacy_ci_runs
+                    )
+                    scoped_artifacts = [
+                        observation for observation in artifact_observations
+                        if self._repository_identity_matches(
+                            observation.identity.repository_identity, scope.repository_identity,
+                        )
+                        and (scope.target_commit_sha is None
+                             or observation.identity.commit_sha == scope.target_commit_sha)
+                        and any(
+                            observation.identity.ci_run_id == ci.id
+                            and observation.identity.commit_sha == ci.commit_sha.lower()
+                            and observation.identity.actual_attempt == ci.run_attempt
+                            and observation.identity.artifact_id == ci.artifact_id
+                            and observation.identity.artifact_name == ci.artifact_name
+                            for ci in selected_ci_runs
+                        )
+                    ]
+                    if scope.repository_identity is None:
+                        scoped_artifacts = []
+                    for run_id in run_ids:
+                        report_rows = []
+                        if run_id is not None:
+                            report_rows = conn.execute(
+                                "SELECT report_id FROM reports WHERE project_id = ? AND run_id = ? "
+                                "ORDER BY created_at, report_id",
+                                (snapshot.project_id, run_id),
+                            ).fetchall()
+                        report_ids: list[Optional[str]] = [row["report_id"] for row in report_rows] or [None]
+                        evidence = self._history_evidence_for_scope(
+                            run_id, snapshot.project_id, scope, scopes,
+                        )
+                        for report_id in report_ids:
+                            report = self.get_report(report_id) if report_id is not None else None
+                            report_result = None
+                            if (report is not None and report.project_id == snapshot.project_id
+                                    and report.run_id == run_id):
+                                report_result = self._report_result_for_scope(report, scope)
+                            records.append(RepositoryHistoryRecord(
+                                project_id=snapshot.project_id,
+                                capture_id=capture.capture_id,
+                                snapshot_id=snapshot.id,
+                                source_scope=scope.source_scope,
+                                source_item_key=scope.source_item_key,
+                                repository_identity=scope.repository_identity,
+                                target_commit_sha=scope.target_commit_sha,
+                                repository_result=scope.repository_result,
+                                legacy_code_diffs=list(scope.legacy_code_diffs),
+                                legacy_ci_runs=list(scope.legacy_ci_runs),
+                                analysis_run_id=run_id,
+                                report_id=report_id,
+                                report_result=report_result,
+                                artifact_observations=scoped_artifacts,
+                                evidence=evidence,
+                            ))
+            return records
         finally:
             conn.close()
 
@@ -1071,20 +1487,22 @@ class SQLiteStorageAdapter(StoragePort):
         self, snapshot: WeeklySnapshot, content_hash: Optional[str], *, receipt: bool,
     ) -> Optional[SnapshotCapture]:
         raw = snapshot.model_dump_json()
+        capture_id = self._capture_metadata(raw)[0]
+        artifact_observations = extract_artifact_observations(snapshot)
         conn = self._get_connection()
         try:
             with conn:
-                # Explicit BEGIN also makes legacy read-only saves fail before any
-                # history-table lookup. Both writes commit or roll back together.
+                # Capture, source index and latest snapshot projection commit or roll back together.
                 conn.execute("BEGIN IMMEDIATE")
                 self._insert_capture(conn, raw)
                 if receipt:
-                    capture_id = self._capture_metadata(raw)[0]
                     row = conn.execute("SELECT * FROM snapshot_captures WHERE capture_id = ?",
                                        (capture_id,)).fetchone()
                     self._parse_capture(row)
                     if row["data_json"] != raw:
                         raise ValueError("Snapshot capture conflicts with stored JSON")
+                for observation in artifact_observations:
+                    self._insert_repository_artifact_observation(conn, capture_id, observation)
                 conn.execute(
                     """
                     INSERT INTO snapshots (
