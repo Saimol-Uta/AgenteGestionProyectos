@@ -1,6 +1,6 @@
 # Standalone CI metrics artifact validation
 
-The T3 core downloads and validates one already-selected GitHub Actions artifact. It binds the document to caller-supplied repository, source SHA, run, attempt, metadata, and final workflow status. It is not wired into Actions run selection or MultiRepo collection; that integration remains T4.
+The T3 core downloads and validates one already-selected GitHub Actions artifact. T4 wires it into the real MultiRepo Actions/factory path, binding each document to its repository, fixed source SHA, selected run and attempt, metadata, and final workflow status. Legacy singleton and fixture collection keep their prior paths.
 
 ## Quick path
 
@@ -56,14 +56,21 @@ The Python schema and `schemas/ci-metrics.v1.schema.json` source copy match the 
 
 Default limits are 8 MiB compressed, 1 MiB total expanded across all archive members (also the per-member ceiling), 1 MiB for the selected JSON document, 16 archive entries including directories and auxiliaries, three redirects, and 15 seconds overall. Supported ceilings are 64 MiB compressed/expanded, 16 MiB JSON, 128 entries, five redirects, and 30 seconds; callers may lower but not raise these ceilings. The archive-wide expansion receipt counts actual bytes from every validated member, not only `ci-metrics.json`.
 
-## T4 integration hook (pending)
+## T4 MultiRepo integration
 
-T4 owns deterministic run/attempt selection and `GitHubActionsSourceAdapter`/factory integration. It should:
+`create_analysis_composite_source` and `create_composite_source` construct `ArtifactEnabledCISource` for each real MultiRepo repository. That wrapper keeps the existing Actions run adapter, artifact validator, JSON metadata transport, and binary transport; metadata and binary GETs share the active project/repository budget ledger. The singleton factory and fixture-only paths remain unchanged.
 
-1. Select one final Actions run and attempt without falling back to an older successful attempt.
-2. Prove the selected run's source SHA against the configured target. If the selected run exposes only a synthetic execution SHA or lacks a source binding, do not repin; report insufficient evidence.
-3. Select the artifact metadata whose name exactly matches `ci-quality-<SHA>-<run_id>-<attempt>` and pass the GitHub artifact object to `CiArtifactMetadata.from_github_payload`.
-4. Construct `BoundedBinaryGetTransport` using the artifact limits and wrap it in the existing `BudgetedHttpGetTransport` with the already-active `CollectionBudgetLedger`, `github_actions` provider, and the selected `RepositoryIdentity`. Do not call `begin_repository` again. `BudgetedHttpGetTransport` passes `params=None`; the binary port accepts that compatibility argument and rejects nonempty params. Each redirect invokes the wrapper again, charging one call per GET/hop.
-5. Pass `CiMetricsValidationContext` with explicit repository/source SHA/run/attempt/final conclusion. Use `result.certifies_metrics` before exposing values; a green workflow without a document is not complete evidence.
+| Decision | Contract |
+|---|---|
+| Workflow | A configured `quality_workflow_path` is authoritative per repository. Without one, exactly one known target workflow path must be derivable; competing or missing paths produce an explicit noncertifying `invalid_context` observation. |
+| Run chronology | The Actions adapter's newest-first `(updated_at, run_id)` ordering selects the run. Attempt numbers are compared only among duplicate rows for that same run ID. Pending, unknown, or failed newest runs never fall back to an older green run. |
+| Artifact list | The source requests canonical `/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts` pages with `per_page=100` and increasing page numbers. It does not follow remote-provided pagination URLs. |
+| Completeness | Metadata is bounded to 10 pages/1,000 items, 2 MiB, and a five-second overall deadline, in addition to the shared HTTP, byte, and elapsed-time ledger. Counts and page lengths must prove completeness before any matching artifact is validated. |
+| Ambiguity/truncation | Duplicate matches, inconsistent/incomplete pages, page/item/time limits, or shared-ledger exhaustion remain typed and noncertifying. A matching artifact on page one is not accepted while later pages could contain another match. |
+| Public result | A selected `CIRunResult` may include optional typed `metrics_artifact` metadata with validation flags, outcome, artifact name/receipt, and producer metrics. `coverage_basis`, nullable values, and optional suite fields are preserved; absent metadata stays omitted for legacy serialization. The scoped result's evidence retains repository, SHA, run, and artifact provenance. |
 
-T3 does not modify `actions.py`, factories, orchestration, APIs, storage, UI, producers, or workflows. The backend/frontend fixture files are synthetic examples of their respective contract shapes, not live artifacts. Deterministic tests use in-memory responses/ZIP bytes and fake transports, deny socket `connect`/`connect_ex` before application imports, and set `EXTERNAL_WRITES_ENABLED=false`; no live GitHub credential is needed.
+For the producer document's optional `workflow_run_attempt`, absence remains `None`; it is not filled from the known Actions run attempt. Public validation still requires the selected run attempt to be known, binds the artifact name and other run identity to it, and checks a declared document attempt when present. Repository identity comparison is case-insensitive, matching GitHub semantics, while serialized metrics preserve the producer's original repository spelling. A different owner or repository remains invalid.
+
+The validator still proves source SHA and full repository/run/attempt identity from artifact metadata and the validated document. It exposes metric values only when `result.certifies_metrics` is true; a green workflow without valid metrics is not complete evidence. It constructs the download endpoint from validated repository/artifact IDs and never trusts archive download URLs.
+
+T3's backend/frontend fixtures are synthetic examples of the producer contract, not captured live artifacts. Deterministic tests use in-memory responses/ZIP bytes and fake transports, deny socket `connect`/`connect_ex` before application imports, and set `EXTERNAL_WRITES_ENABLED=false`; no live GitHub credential is needed.

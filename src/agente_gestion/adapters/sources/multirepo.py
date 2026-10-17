@@ -7,6 +7,9 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from agente_gestion.adapters.sources.actions import GitHubActionsSourceAdapter
+from agente_gestion.adapters.sources.actions_artifacts import ArtifactEnabledCISource
+from agente_gestion.adapters.sources.artifacts import CiMetricsArtifactValidator
+from agente_gestion.adapters.sources.binary_transport import BoundedBinaryGetTransport
 from agente_gestion.adapters.sources.collection_budget import (
     BudgetedHttpGetTransport,
     CollectionBudgetLedger,
@@ -35,6 +38,7 @@ from agente_gestion.ports.source_collection import (
     SourceExecutionRecord,
     SourceExecutionStatus,
 )
+from agente_gestion.ports.source_artifacts import BinaryGetTransportPort
 from agente_gestion.ports.source_errors import SourceError, SourceErrorCategory, SourceProvider
 from agente_gestion.ports.sources import CISourcePort, CodeSourcePort, PolicySourcePort, TaskSourcePort
 from agente_gestion.domain.snapshot import RepositorySnapshotResult, WeeklySnapshot
@@ -317,12 +321,14 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
         task_source_identity: Optional[str] = None,
         default_timezone: Optional[ZoneInfo] = None,
         clock: Optional[Callable[[], float]] = None,
+        binary_transport: Optional[BinaryGetTransportPort] = None,
     ):
         if not settings.github_repositories:
             raise SourceError(SourceProvider.github, SourceErrorCategory.configuration) from None
         self._settings = settings
         self._repositories = tuple(settings.github_repositories)
         self._transport = transport
+        self._binary_transport = binary_transport
         self._task_source_factory = task_source_factory
         self._policy_source_factory = policy_source_factory
         self._task_source_identity = task_source_identity
@@ -361,6 +367,21 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
         identity: Optional[RepositoryIdentity] = None,
     ) -> BudgetedHttpGetTransport:
         return BudgetedHttpGetTransport(self._raw_transport(provider), ledger, provider, identity)
+
+    def _raw_binary_transport(self) -> BinaryGetTransportPort:
+        if self._binary_transport is not None:
+            return self._binary_transport
+        return BoundedBinaryGetTransport(
+            max_response_bytes=min(8 * MIB, self._settings.http_max_response_bytes),
+            timeout_seconds=min(15.0, self._settings.http_timeout_seconds),
+        )
+
+    def _budgeted_binary_transport(
+        self, ledger: CollectionBudgetLedger, identity: RepositoryIdentity,
+    ) -> BudgetedHttpGetTransport:
+        return BudgetedHttpGetTransport(
+            self._raw_binary_transport(), ledger, SourceProvider.github_actions, identity,
+        )
 
     def _project_context(self, project_id: str, cutoff: datetime, ledger: CollectionBudgetLedger):
         try:
@@ -451,15 +472,25 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
 
         code_source: CodeSourcePort = _BudgetedCodeSource(code_adapter, ledger, identity)
         try:
+            token = (self._settings.github_token.get_secret_value()
+                     if self._settings.github_token else None)
             ci_adapter = GitHubActionsSourceAdapter(
                 owner=repository.owner,
                 repo=repository.repo,
-                token=(self._settings.github_token.get_secret_value()
-                       if self._settings.github_token else None),
+                token=token,
                 target_commit_sha=target_sha,
                 transport=self._budgeted_transport(ledger, SourceProvider.github_actions, identity),
             )
-            ci_source: CISourcePort = _BudgetedCISource(ci_adapter, ledger, identity)
+            artifact_source = ArtifactEnabledCISource(
+                ci_adapter,
+                CiMetricsArtifactValidator(self._budgeted_binary_transport(ledger, identity)),
+                self._budgeted_transport(ledger, SourceProvider.github_actions, identity),
+                repository_full_name=f"{repository.owner}/{repository.repo}",
+                token=token,
+                quality_workflow_path=repository.quality_workflow_path,
+                identity=identity,
+            )
+            ci_source: CISourcePort = _BudgetedCISource(artifact_source, ledger, identity)
         except Exception as exc:
             ci_source = _UnavailableCISource(_category(exc, SourceErrorCategory.configuration))
         return code_source, ci_source, target_sha, None, True, access_confirmed

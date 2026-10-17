@@ -1,6 +1,6 @@
 # MultiRepo collection: independent pins and bounded budgets
 
-MultiRepo collection pins each configured repository independently for one run, keeps code and CI results in repository-scoped containers, and applies shared project plus per-repository source budgets. Existing singleton collection stays on its legacy path. T2 collection still does not select or download CI artifacts; T3 now provides a standalone artifact-validation core, pending T4 integration.
+MultiRepo collection pins each configured repository independently for one run, keeps code and CI results in repository-scoped containers, and applies shared project plus per-repository source budgets. Its Actions source now selects and validates CI metrics artifacts through the real analysis factory path. Existing singleton and fixture collection keep their legacy paths.
 
 ## Quick path
 
@@ -69,7 +69,7 @@ The file count is the number of changed paths observed in code-diff evidence. To
 
 `source_mode: fixtures` keeps the fixture-only path. In the analysis factory, remote sources still require `allow_remote_ai` and non-fake mode; MultiRepo remote collection also requires the existing GitHub token gate. When that gate is closed, fixture results remain unscoped and are not relabeled as evidence from configured private repositories. Operational defaults remain unchanged, including `external_writes_enabled: true` in project configuration and the API default `True`. Run tests and task analyses with `EXTERNAL_WRITES_ENABLED=false`; collection adapters expose GET only. Existing human approval, authorization, idempotency, and audit controls remain in place.
 
-Actions workflow metadata is not an artifact or metrics certificate. This T2 collection unit does not select run attempts, fetch binary artifacts, infer test/coverage metrics from a green workflow, or rewrite workflows. The standalone T3 artifact core in [CI metrics artifacts](ci-metrics.md) accepts a bounded reports-tree ZIP with exactly one safe `ci-metrics.json` document, validates every member, and checks suite aggregates and coverage field relationships without converting unknowns to zero. Deterministic run selection and integration into `GitHubActionsSourceAdapter` and the MultiRepo factory remain T4 work.
+Actions workflow metadata is not an artifact or metrics certificate. The T4 MultiRepo wrapper uses the newest-first run chronology, applies retry-attempt comparisons only within a single run ID, and never replaces a newer pending or failed run with an older green one. Each configured `quality_workflow_path` flows through the repository factory; without a selector, competing or unknown workflow paths produce an explicit noncertifying result. Artifact metadata is read from bounded canonical endpoint pages, and all JSON/binary requests share the existing per-project and per-repository ledger. T3's [CI metrics artifact core](ci-metrics.md) validates the bounded reports-tree ZIP, producer schema, semantic relationships, and full repository/SHA/run/attempt provenance before typed metrics are attached to `CIRunResult` and scoped collection results. Coverage basis and unknown `null` values remain producer-specific; no integration metric or global repository is invented.
 
 ## Public result contracts
 
@@ -79,4 +79,4 @@ Repository provenance is source metadata, not proof that an artifact or metric w
 
 ## Verification and next stage
 
-The focused deterministic tests use fake GET transports, in-memory artifact fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. T3's binary port can be wrapped by the shared `BudgetedHttpGetTransport`/`CollectionBudgetLedger` to account each bounded redirect hop and its observed bytes without relaxing the current JSON GET transport. T4 must reuse the existing ledger and must not reset repository counters.
+The focused deterministic tests use fake JSON and binary GET transports, synthetic producer-shaped ZIP fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. The artifact validator's binary port is wrapped by the existing `BudgetedHttpGetTransport`/`CollectionBudgetLedger`; each bounded request/redirect hop and observed byte is charged without resetting repository counters or relaxing JSON GET checks. Review the public integration test through `create_analysis_composite_source` and `SourceCollectionResult.repository_results`, then use the focused T4 selection/pagination tests and retained T3/T2 suites.

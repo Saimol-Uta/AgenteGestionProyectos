@@ -32,6 +32,7 @@ from agente_gestion.adapters.sources.http_transport import (
     HttpGetTransportPort,
 )
 from agente_gestion.adapters.sources.multirepo import MultiRepoSourcesAdapter
+from agente_gestion.ports.source_artifacts import BinaryGetTransportPort
 
 
 def _task_source_identity(source: TaskSourcePort) -> Optional[str]:
@@ -190,6 +191,7 @@ def create_analysis_composite_source(
     commit_sha: Optional[str] = None,
     transport: Optional[HttpGetTransportPort] = None,
     clock: Optional[Callable[[], float]] = None,
+    binary_transport: Optional[BinaryGetTransportPort] = None,
 ) -> CompositeSourcesAdapter | MultiRepoSourcesAdapter | FixtureSourcesAdapter:
     """Build an analysis source graph with per-component local fallback and a strict remote gate."""
     fixtures = FixtureSourcesAdapter(fixtures_dir=settings.fixtures_dir)
@@ -220,6 +222,7 @@ def create_analysis_composite_source(
             task_source_identity=_task_source_identity_from_settings(settings) if task_configured else None,
             default_timezone=ZoneInfo(settings.timezone),
             clock=clock,
+            binary_transport=binary_transport,
         )
     repository = settings.github_repo or settings.github_repository
     repo_bound = bool(settings.github_owner and repository and settings.github_token)
@@ -266,6 +269,7 @@ def create_composite_source(
     commit_sha: Optional[str] = None,
     transport: Optional[HttpGetTransportPort] = None,
     clock: Optional[Callable[[], float]] = None,
+    binary_transport: Optional[BinaryGetTransportPort] = None,
 ) -> CompositeSourcesAdapter | MultiRepoSourcesAdapter | FixtureSourcesAdapter:
     """Create a fresh composite source; collection mode keeps repositories independently scoped."""
     if settings.source_mode == "fixtures":
@@ -281,6 +285,7 @@ def create_composite_source(
             task_source_identity=_task_source_identity_from_settings(settings),
             default_timezone=ZoneInfo(settings.timezone),
             clock=clock,
+            binary_transport=binary_transport,
         )
 
     task_source = create_task_source(settings, transport=transport)

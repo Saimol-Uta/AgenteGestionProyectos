@@ -1,9 +1,11 @@
 """Deterministic public contracts for repository-scoped source collection and budgets."""
 
 import base64
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,7 @@ from urllib.parse import urlsplit
 from unittest.mock import patch
 
 from agente_gestion.application.config import Settings
+from agente_gestion.domain.ci_metrics import CiArtifactOutcome
 from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
 from agente_gestion.domain.code import CIRunResult, CodeDiffSnippet
 from agente_gestion.domain.evidence import EvidenceItem
@@ -26,6 +29,7 @@ from agente_gestion.domain.repositories import (
 )
 from agente_gestion.domain.tasks import TaskCard
 from agente_gestion.ports.source_collection import RepositorySourceCollectionResult
+from agente_gestion.ports.source_artifacts import BinaryHttpResponse
 from agente_gestion.ports.source_errors import SourceError, SourceErrorCategory, SourceProvider
 from agente_gestion.adapters.sources.collection_budget import (
     BudgetedHttpGetTransport,
@@ -38,6 +42,7 @@ from agente_gestion.adapters.sources.factory import (
     create_code_source,
     create_composite_source,
 )
+from agente_gestion.adapters.sources.multirepo import MultiRepoSourcesAdapter
 
 
 SHA_A = "a" * 40
@@ -156,6 +161,99 @@ class ScriptedTransport:
             "patch": "@@ -1 +1 @@\n-old\n+new",
             "sha": "d" * 40,
         }
+
+
+class ArtifactEnabledMultiRepoTransport(ScriptedTransport):
+    """Fakes the production JSON and binary ports for two source-bound artifacts."""
+
+    FIXTURES = Path(__file__).resolve().parent / "fixtures" / "ci_metrics"
+    METRICS = {
+        "example-org/backend": (SHA_A, "12345", 2, 77, "backend-v1.json"),
+        "example-org/frontend": (SHA_B, "23456", 1, 88, "frontend-v1.json"),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.artifact_calls: list[dict[str, Any]] = []
+        self.binary_calls: list[dict[str, Any]] = []
+        self._bundles = {}
+
+    def get(self, url, params=None, headers=None, timeout_seconds=None):
+        owner, repo, endpoint = self._repo_parts(url)
+        full_name = f"{owner}/{repo}"
+        if endpoint.startswith("/actions/artifacts/") and endpoint.endswith("/zip"):
+            return self.get_binary(url, params=params, headers=headers, timeout_seconds=timeout_seconds)
+        if endpoint == "/actions/runs":
+            sha, run_id, attempt, _artifact_id, _fixture = self.METRICS[full_name]
+            quality_path = (".github/workflows/backend-quality.yml" if repo == "backend"
+                            else ".github/workflows/frontend-quality.yml")
+            quality_row = {
+                "id": int(run_id),
+                "name": "Quality",
+                "head_sha": sha,
+                "head_branch": "develop",
+                "event": "push",
+                "workflow_id": int(run_id),
+                "status": "completed",
+                "conclusion": "success",
+                "updated_at": "2026-10-16T10:00:00Z",
+                "created_at": "2026-10-16T09:55:00Z",
+                "run_started_at": "2026-10-16T09:55:01Z",
+                "run_attempt": attempt,
+                "path": quality_path,
+            }
+            decoy_id = int(run_id) - 1
+            decoy_row = {
+                **quality_row,
+                "id": decoy_id,
+                "workflow_id": decoy_id,
+                "name": "Other",
+                "run_attempt": 9,
+                "updated_at": "2026-10-16T10:01:00Z",
+                "path": ".github/workflows/unrelated.yml",
+            }
+            self.calls.append({"url": url, "params": params, "method": "GET"})
+            return self._response({"total_count": 2, "workflow_runs": [decoy_row, quality_row]})
+        if endpoint.startswith("/actions/runs/") and endpoint.endswith("/artifacts"):
+            sha, run_id, attempt, artifact_id, _fixture = self.METRICS[full_name]
+            self.artifact_calls.append({"url": url, "params": params, "repo": full_name})
+            self.calls.append({"url": url, "params": params, "method": "GET"})
+            row = {
+                "id": artifact_id,
+                "name": f"ci-quality-{sha}-{run_id}-{attempt}",
+                "expired": False,
+                "workflow_run": {
+                    "id": int(run_id),
+                    "head_sha": sha,
+                    "head_repository": {"full_name": full_name},
+                    "run_attempt": attempt,
+                },
+            }
+            return self._response({"total_count": 1, "artifacts": [row]})
+        return super().get(url, params=params, headers=headers, timeout_seconds=timeout_seconds)
+
+    def get_binary(self, url, params=None, headers=None, timeout_seconds=None):
+        parts = urlsplit(url).path.split("/")
+        owner, repo, artifact_id = parts[2], parts[3], int(parts[6])
+        full_name = f"{owner}/{repo}"
+        sha, run_id, attempt, expected_artifact_id, fixture_name = self.METRICS[full_name]
+        if artifact_id != expected_artifact_id or params is not None:
+            raise AssertionError("unexpected binary artifact request")
+        self.binary_calls.append({"url": url, "headers": dict(headers or {})})
+        bundle = self._bundles.get(full_name)
+        if bundle is None:
+            document = json.dumps(json.loads((self.FIXTURES / fixture_name).read_text(encoding="utf-8")))
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+                zipped.writestr("reports/ci-metrics.json", document.encode("utf-8"))
+            bundle = archive.getvalue()
+            self._bundles[full_name] = bundle
+        return BinaryHttpResponse(
+            status_code=200,
+            headers={},
+            body=bundle,
+            bytes_received=len(bundle),
+        )
 
 
 class _BudgetStreamResponse:
@@ -823,6 +921,100 @@ class MultiRepoCollectionTests(unittest.TestCase):
         self.assertIn("estimated", scoped.budget_receipt.token_estimate_note.lower())
         self.assertFalse(any(call["url"].endswith("/actions/runs") for call in self.transport.calls))
 
+    def test_analysis_factory_collects_metrics_for_each_fixed_repository(self):
+        backend = RepositoryConfiguration(
+            id="backend", owner="example-org", repo="backend", branch="develop",
+            commit_sha=SHA_A, quality_workflow_path=".github/workflows/backend-quality.yml",
+        )
+        frontend = RepositoryConfiguration(
+            id="frontend", owner="example-org", repo="frontend", branch="develop",
+            commit_sha=SHA_B, quality_workflow_path=".github/workflows/frontend-quality.yml",
+        )
+        transport = ArtifactEnabledMultiRepoTransport()
+        settings = _settings(
+            [backend, frontend],
+            github_token="synthetic-test-token",
+            allow_remote_ai=True,
+        )
+        try:
+            source = create_analysis_composite_source(
+                settings,
+                transport=transport,
+                binary_transport=transport,
+            )
+        except TypeError as exc:
+            self.fail(f"analysis factory must expose its budgeted binary fake port: {exc}")
+
+        self.assertIsInstance(source, MultiRepoSourcesAdapter)
+        result = source.collect_snapshot("multirepo-test", self.now)
+
+        self.assertEqual(len(result.repository_results), 2)
+        scoped_by_id = {
+            scoped.repository_state.identity.id: scoped for scoped in result.repository_results
+        }
+        expected = {
+            "backend": (SHA_A, "12345", 2, 49, 97.9,
+                        "Loaded backend TypeScript sources in src/**/*.ts."),
+            "frontend": (SHA_B, "23456", 1, 31, 92.73,
+                         "Loaded frontend TypeScript sources; UI TSX is excluded."),
+        }
+        for repository_id, (sha, run_id, attempt, total, coverage, basis) in expected.items():
+            with self.subTest(repository=repository_id):
+                scoped = scoped_by_id[repository_id]
+                self.assertEqual(scoped.repository_state.target_commit_sha, sha)
+                self.assertEqual(
+                    len(scoped.ci_runs), 2,
+                    f"records={[record.model_dump(mode='json') for record in scoped.records]}; "
+                    f"calls={[call['url'] for call in transport.calls]}; "
+                    f"metadata={transport.artifact_calls}; "
+                    f"binary_urls={[call['url'] for call in transport.binary_calls]}",
+                )
+                run = next(run for run in scoped.ci_runs if run.id == run_id)
+                decoy = next(run for run in scoped.ci_runs if run.id != run_id)
+                self.assertIsNone(decoy.metrics_artifact)
+                self.assertIsNone(decoy.total_tests)
+                self.assertEqual((run.id, run.commit_sha, run.run_attempt), (run_id, sha, attempt))
+                self.assertEqual(run.repository_identity.id, repository_id)
+                self.assertEqual((run.total_tests, run.failed_tests, run.coverage_percentage),
+                                 (total, 0, coverage))
+                self.assertEqual(run.metrics_artifact.outcome, CiArtifactOutcome.validated)
+                self.assertTrue(run.metrics_artifact.certifies_metrics)
+                self.assertEqual(run.metrics_artifact.metrics.coverage_basis, basis)
+                self.assertEqual(run.metrics_artifact.metrics.coverage_metric, "lines")
+                if repository_id == "frontend":
+                    self.assertIsNone(run.metrics_artifact.metrics.test_suites)
+                    self.assertEqual(run.metrics_artifact.metrics.e2e_status, "not_implemented")
+                artifact_evidence = [item for item in scoped.evidence
+                                     if item.category == "ci_artifact_metrics"]
+                self.assertEqual(len(artifact_evidence), 1)
+                self.assertEqual(artifact_evidence[0].provenance.repository,
+                                 f"example-org/{repository_id}")
+                self.assertEqual(artifact_evidence[0].provenance.commit_sha, sha)
+                self.assertEqual(artifact_evidence[0].provenance.external_id, run_id)
+                self.assertEqual(artifact_evidence[0].provenance.payload["outcome"],
+                                 CiArtifactOutcome.validated.value)
+                self.assertIsNotNone(scoped.budget_receipt)
+                self.assertEqual(scoped.budget_receipt.http_calls, 5)
+
+        public_result = result.model_dump(mode="json")
+        serialized_runs = {
+            item["repository_state"]["identity"]["id"]: {
+                run["id"]: run for run in item["ci_runs"]
+            }
+            for item in public_result["repository_results"]
+        }
+        backend_run = serialized_runs["backend"][expected["backend"][1]]
+        frontend_run = serialized_runs["frontend"][expected["frontend"][1]]
+        self.assertEqual(backend_run["metrics_artifact"]["metrics"]["coverage_basis"],
+                         expected["backend"][5])
+        self.assertNotIn("test_suites", frontend_run["metrics_artifact"]["metrics"])
+        self.assertEqual({call["repo"] for call in transport.artifact_calls},
+                         {"example-org/backend", "example-org/frontend"})
+        self.assertEqual(len(transport.artifact_calls), 2)
+        self.assertEqual(len(transport.binary_calls), 2)
+        self.assertEqual(result.budget_receipt.http_calls, 10)
+        self.assertEqual(transport.write_calls, [])
+
     def test_singleton_factory_path_remains_single_repository_and_legacy_shape(self):
         settings = Settings(
             project_id="legacy",
@@ -841,6 +1033,9 @@ class MultiRepoCollectionTests(unittest.TestCase):
         self.assertEqual(result.target_commit_sha, SHA_A)
         self.assertTrue(result.snapshot.code_diffs)
         self.assertTrue(result.snapshot.ci_runs)
+        self.assertNotIn("metrics_artifact", result.snapshot.ci_runs[0].model_dump())
+        self.assertFalse(any("/actions/runs/" in call["url"] and call["url"].endswith("/artifacts")
+                             for call in self.transport.calls))
         self.assertEqual(self.transport.write_calls, [])
 
 

@@ -1172,6 +1172,7 @@ class TestCompositeSourcesAdapter(unittest.TestCase):
         self.assertTrue(data["snapshot"]["is_complete"])
         self.assertEqual(len(data["records"]), 4)
         self.assertEqual(len(data["evidence"]), 3)
+        self.assertNotIn("metrics_artifact", data["snapshot"]["ci_runs"][0])
 
     def test_actions_metrics_none_baseline_quality_unknown(self) -> None:
         """Actions run with metrics=None evaluates to unknown under Q1 and Q2 policies."""
