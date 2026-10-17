@@ -40,6 +40,7 @@ class QualityEvaluator:
         findings: Optional[list[CandidateFinding]] = None,
         extra_facts: Optional[dict[str, Any]] = None,
         unresolved_findings: Optional[list[CandidateFinding]] = None,
+        findings_complete: bool = True,
     ) -> dict[str, Any]:
         """Assembles standard facts dictionary from verified CI and findings."""
         facts: dict[str, Any] = {}
@@ -60,7 +61,10 @@ class QualityEvaluator:
             if cls._is_severe_finding(f)
         ]
 
-        if findings is not None:
+        if not findings_complete:
+            facts["total_findings"] = None
+            facts["open_critical_findings"] = None
+        elif findings is not None:
             facts["total_findings"] = len(findings)
             # Count critical findings
             critical_count = sum(
@@ -93,6 +97,9 @@ class QualityEvaluator:
         unresolved_findings: Optional[list[CandidateFinding]] = None,
         source_is_complete: bool = True,
         incomplete_reason: Optional[str] = None,
+        findings_complete: bool = True,
+        metric_evidence_complete: bool = True,
+        require_ci_status: bool = False,
     ) -> PolicyEvaluationResult:
         """Extracts facts and runs deterministic policy evaluation."""
         unresolved_severe = [
@@ -105,6 +112,7 @@ class QualityEvaluator:
             findings=findings,
             extra_facts=extra_facts,
             unresolved_findings=unresolved_severe,
+            findings_complete=findings_complete,
         )
         res = evaluate_policies(rules, facts)
 
@@ -146,4 +154,83 @@ class QualityEvaluator:
             if not res.mandatory_failed_ids and not res.failed_rule_ids:
                 res.recommended_action = "evidencia_insuficiente"
 
+        if not findings_complete:
+            from agente_gestion.domain.policies import RuleEvaluation, RuleEvaluationStatus
+            cls._append_repository_evaluation(
+                res,
+                RuleEvaluation(
+                    rule_id="Q_REPOSITORY_FINDINGS_INCOMPLETE",
+                    description="Completitud de hallazgos del repositorio",
+                    status=RuleEvaluationStatus.unknown,
+                    observed_value=None,
+                    mandatory=True,
+                    reason="La revisión de código de este repositorio no produjo evidencia completa.",
+                ),
+            )
+        if not metric_evidence_complete:
+            from agente_gestion.domain.policies import RuleEvaluation, RuleEvaluationStatus
+            cls._append_repository_evaluation(
+                res,
+                RuleEvaluation(
+                    rule_id="Q_REPOSITORY_CI_METRICS_UNAVAILABLE",
+                    description="Métricas CI v1 validadas del repositorio",
+                    status=RuleEvaluationStatus.unknown,
+                    observed_value=None,
+                    mandatory=True,
+                    reason="No hay métricas CI validadas y vinculadas a la identidad, SHA, ejecución e intento del repositorio.",
+                ),
+            )
+        if require_ci_status:
+            from agente_gestion.domain.policies import RuleEvaluation, RuleEvaluationStatus
+            status = str(getattr(ci_run, "status", "") or "").strip().casefold()
+            if ci_run is None or status not in {"success", "failure", "cancelled"}:
+                workflow_eval = RuleEvaluation(
+                    rule_id="Q_REPOSITORY_CI_WORKFLOW",
+                    description="Resultado del workflow del repositorio",
+                    status=RuleEvaluationStatus.unknown,
+                    observed_value=None,
+                    mandatory=True,
+                    reason="No hay un estado final inequívoco para el workflow del repositorio.",
+                )
+            elif status == "success":
+                workflow_eval = RuleEvaluation(
+                    rule_id="Q_REPOSITORY_CI_WORKFLOW",
+                    description="Resultado del workflow del repositorio",
+                    status=RuleEvaluationStatus.pass_,
+                    observed_value=status,
+                    mandatory=True,
+                    reason="El workflow del repositorio finalizó correctamente.",
+                )
+            else:
+                workflow_eval = RuleEvaluation(
+                    rule_id="Q_REPOSITORY_CI_WORKFLOW",
+                    description="Resultado del workflow del repositorio",
+                    status=RuleEvaluationStatus.fail,
+                    observed_value=status,
+                    mandatory=True,
+                    reason="El workflow del repositorio finalizó sin éxito.",
+                )
+            cls._append_repository_evaluation(res, workflow_eval)
+
+        if res.mandatory_failed_ids or res.failed_rule_ids:
+            res.recommended_action = "solicitar_cambios"
+        elif res.mandatory_unknown_ids or res.unknown_rule_ids:
+            res.recommended_action = "evidencia_insuficiente"
         return res
+
+    @staticmethod
+    def _append_repository_evaluation(result: PolicyEvaluationResult, evaluation) -> None:
+        """Append one namespaced deterministic check without duplicating configured rules."""
+        if any(item.rule_id == evaluation.rule_id for item in result.evaluations):
+            return
+        result.evaluations.append(evaluation)
+        if evaluation.status.value == "pass":
+            result.passed_rule_ids.append(evaluation.rule_id)
+        elif evaluation.status.value == "fail":
+            result.failed_rule_ids.append(evaluation.rule_id)
+            if evaluation.mandatory:
+                result.mandatory_failed_ids.append(evaluation.rule_id)
+        else:
+            result.unknown_rule_ids.append(evaluation.rule_id)
+            if evaluation.mandatory:
+                result.mandatory_unknown_ids.append(evaluation.rule_id)

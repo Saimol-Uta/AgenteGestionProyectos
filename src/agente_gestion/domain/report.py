@@ -8,9 +8,10 @@ from agente_gestion.domain.action_proposal import ProposalField, ProposalValue, 
 
 from agente_gestion.domain.tasks import TaskState, DeterministicTaskMetrics
 from agente_gestion.domain.code import CIRunResult
-from agente_gestion.domain.findings import CandidateFinding
+from agente_gestion.domain.findings import CandidateFinding, FindingVerification
 from agente_gestion.domain.policies import PolicyEvaluationResult
 from agente_gestion.domain.repositories import RepositoryAnalysisState
+from agente_gestion.domain.run import StageStatus
 
 
 class HumanDecisionState(str, Enum):
@@ -110,19 +111,31 @@ class RepositoryReportResult(BaseModel):
     rejected_findings: list[CandidateFinding] = Field(default_factory=list)
     insufficient_findings: list[CandidateFinding] = Field(default_factory=list)
     pending_findings: list[CandidateFinding] = Field(default_factory=list)
+    verifications: list[FindingVerification] = Field(
+        default_factory=list, exclude_if=lambda value: not value,
+    )
     coverage_percentage: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     coverage_scope: Optional[str] = None
+    source_is_complete: Optional[bool] = None
+    source_problems: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    quality_status: Optional[StageStatus] = None
+    quality_reason: Optional[str] = None
+    verification_status: Optional[StageStatus] = None
+    verification_reason: Optional[str] = None
+    evaluation_status: Optional[StageStatus] = None
+    evaluation_reason: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_repository_scope(self) -> "RepositoryReportResult":
         identity = self.repository_state.identity
         target_sha = self.repository_state.target_commit_sha
-        items = [
+        findings = [
             *self.confirmed_findings,
             *self.rejected_findings,
             *self.insufficient_findings,
             *self.pending_findings,
         ]
+        items = list(findings)
         if self.ci_result is not None:
             items.append(self.ci_result)
         for item in items:
@@ -130,6 +143,11 @@ class RepositoryReportResult(BaseModel):
                 raise ValueError("Repository report item identity does not match repository_state.")
             if target_sha is not None and item.commit_sha.lower() != target_sha:
                 raise ValueError("Repository report item commit does not match target_commit_sha.")
+        finding_ids = [item.id for item in findings]
+        if len(finding_ids) != len(set(finding_ids)):
+            raise ValueError("Repository report finding IDs must be unique within the repository result.")
+        if any(item.finding_id not in set(finding_ids) for item in self.verifications):
+            raise ValueError("Repository report verification references an unknown finding ID.")
         return self
 
 

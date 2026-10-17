@@ -4,8 +4,31 @@ from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from agente_gestion.domain.report import FinalReport, HumanDecisionState
+from agente_gestion.domain.report import FinalReport, HumanDecisionState, RepositoryReportResult
+from agente_gestion.domain.run import StageStatus
 from agente_gestion.domain.findings import CandidateFinding, FindingVerification
+
+
+def summarize_repository_results(
+    results: list[RepositoryReportResult], recommendation: str,
+) -> str:
+    """Create a deterministic project summary without combining repository metrics."""
+    complete = sum(
+        result.source_is_complete is True
+        and not result.source_problems
+        and result.quality_status in {None, StageStatus.completed, StageStatus.skipped}
+        and result.verification_status in {None, StageStatus.completed, StageStatus.skipped}
+        and result.evaluation_status in {None, StageStatus.completed, StageStatus.skipped}
+        for result in results
+    )
+    uncertain = len(results) - complete
+    return (
+        f"Análisis por repositorio: {complete} de {len(results)} repositorios cuentan con "
+        f"evidencia completa; {uncertain} conservan incertidumbres explícitas. "
+        f"La recomendación objetiva es `{recommendation}`. "
+        "Los valores de CI y cobertura se presentan por repositorio; no se calcula un promedio global. "
+        "La decisión del gestor permanece pendiente."
+    )
 
 
 def generate_report_markdown(
@@ -133,7 +156,74 @@ def generate_report_markdown(
 
     # 8. Criterios de calidad y CI
     lines.append("## Criterios de calidad y CI")
-    if report.ci_result:
+    if report.repository_results:
+        lines.append("- **Estado de CI global:** No se selecciona un repositorio principal; consulte cada resultado por repositorio.")
+        lines.append("- **Cobertura global:** No se calcula cobertura global ni se promedian porcentajes entre repositorios.")
+        lines.append("\n### Resultados por repositorio")
+        for result in report.repository_results:
+            state = result.repository_state
+            identity = state.identity
+            ci = result.ci_result
+            full_name = f"{identity.owner}/{identity.repo}"
+            sha = state.target_commit_sha or "Desconocido"
+            lines.append(f"\n#### {full_name} (id `{identity.id}`)")
+            lines.append(f"- **SHA objetivo:** `{sha}`")
+            lines.append(
+                f"- **Disponibilidad:** acceso `{state.access_status.value}`, "
+                f"fuente `{state.availability_status.value}`, resolución `{state.commit_resolution_status.value}`"
+            )
+            if ci is None:
+                lines.append("- **Workflow / ejecución / intento:** Desconocidos; no hay una ejecución única vinculada.")
+                lines.append("- **Estado del workflow:** Desconocido")
+                lines.append("- **Pruebas totales / fallidas:** Desconocidas / desconocidas")
+                lines.append("- **Cobertura:** Desconocida (base no disponible)")
+            else:
+                attempt = f"intento {ci.run_attempt}" if ci.run_attempt is not None else "intento desconocido"
+                lines.append(
+                    f"- **Workflow / ejecución / intento:** `{ci.workflow_name}` "
+                    f"(`{ci.workflow_path or 'workflow desconocido'}`) / `{ci.id}` / {attempt}"
+                )
+                lines.append(f"- **Estado del workflow:** workflow `{ci.status}`")
+                total = str(ci.total_tests) if ci.total_tests is not None else "Desconocido"
+                failed = str(ci.failed_tests) if ci.failed_tests is not None else "Desconocido"
+                lines.append(f"- **Pruebas totales / fallidas:** {total} / {failed}")
+                if result.coverage_percentage is None:
+                    coverage = "Desconocida"
+                else:
+                    coverage = f"{result.coverage_percentage:.2f}%"
+                basis = result.coverage_scope or "base de cobertura desconocida"
+                lines.append(f"- **Cobertura:** {coverage} (base: {basis})")
+                artifact = ci.metrics_artifact
+                if artifact is not None:
+                    lines.append(f"- **Artefacto de métricas:** `{artifact.outcome.value}`; métricas certificadas: `{str(artifact.certifies_metrics).lower()}`")
+                    if artifact.metrics is not None and artifact.metrics.e2e_status is not None:
+                        lines.append(f"- **Estado E2E informado por el productor:** `{artifact.metrics.e2e_status}`")
+            for label, status, reason in (
+                ("Calidad", result.quality_status, result.quality_reason),
+                ("Verificación", result.verification_status, result.verification_reason),
+                ("Evaluación", result.evaluation_status, result.evaluation_reason),
+            ):
+                if status is not None:
+                    lines.append(f"- **{label}:** `{status.value}`" + (f" — {reason}" if reason else ""))
+            for problem in result.source_problems:
+                lines.append(f"- **Problema de fuente/evidencia:** {problem}")
+            for heading, findings in (
+                ("Confirmados", result.confirmed_findings),
+                ("Rechazados", result.rejected_findings),
+                ("Evidencia insuficiente", result.insufficient_findings),
+                ("Pendientes", result.pending_findings),
+            ):
+                for finding in findings:
+                    lines.append(
+                        f"- **Hallazgo {heading}:** `{finding.id}` en `{finding.file_path}:{finding.line}` "
+                        f"(SHA `{finding.commit_sha}`, repo `{identity.id}`)"
+                    )
+            for verification in result.verifications:
+                lines.append(
+                    f"- **Verificación:** `{verification.finding_id}` → `{verification.verdict.value}`; "
+                    f"evidencias: {', '.join(verification.evidence_ids) or 'ninguna'}"
+                )
+    elif report.ci_result:
         lines.append(f"- **Workflow de CI:** {report.ci_result.workflow_name} (`{report.ci_result.commit_sha}`)")
         lines.append(f"- **Estado de CI:** `{report.ci_result.status}`")
         if report.ci_result.total_tests is not None:

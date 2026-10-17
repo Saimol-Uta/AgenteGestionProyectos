@@ -77,6 +77,21 @@ Actions workflow metadata is not an artifact or metrics certificate. The T4 Mult
 
 Repository provenance is source metadata, not proof that an artifact or metric was validated. Historical records without recoverable origin remain unknown. A non-target CI run can be preserved for display, but the explicit non-target marker does not validate it.
 
+## Repository analysis, evaluation, and reporting
+
+When `WeeklySnapshot.repository_results` is nonempty, the orchestrator analyzes each pinned repository serially. Project tasks, policies, and the monitoring draft remain shared and are fetched/generated once; each quality, verifier, and policy-evaluation context receives only that repository's code, target SHA, CI, and evidence. Namespaced stage keys (`quality:<repository-id>`, `verifier:<repository-id>`, `evaluation:<repository-id>`) retain auditable per-repository outcomes while the legacy `quality` and `verifier` stage summaries remain available.
+
+| Evidence | T5 behavior |
+|---|---|
+| Identity and pin | Source snippets and CI must match the configured identity and fixed target SHA. Foreign model finding identity/provenance and verifier references are rejected rather than relabeled. Finding and evidence references include repository and SHA namespaces. |
+| CI metric eligibility | Counts and coverage are used only from certified `ci-metrics.v1` values matching repository, SHA, run, attempt, artifact name, and workflow status. Workflow outcome remains separately visible; a valid failed workflow cannot evaluate as green. |
+| Safe report projection | If repository-analysis eligibility rejects certified artifact metrics, the public report omits those nested values, clears `certifies_metrics`, and leaves numeric metrics `null`. A workflow-status mismatch also clears `workflow_status_matches` and gives a report-projection reason. The original collected snapshot is unchanged; document validation remains distinct from report eligibility. Valid sibling metrics remain certified. |
+| Missing or partial data | Unknown values stay `null`; known zero counts remain zero. Denied, unavailable, incomplete, or budget-limited repositories keep separate status/reason fields without discarding valid sibling results or treating unknown as approval. |
+| Coverage and summaries | Each repository retains its exact producer coverage basis, including frontend exclusions and E2E status. The consolidated report includes per-repository JSON and Markdown details but does not average coverage or select a project-wide primary repository. |
+| Compatibility | An empty `repository_results` collection uses the pre-existing monorepository flow and report shape. Human decisions remain pending until explicitly recorded; this analysis path adds no code-action or notification execution. |
+
+The MultiRepo analysis shares the existing run-level call coordinator. Per-repository requests are sequential; quality/verifier output reservations are divided from their existing stage caps, and each prompt retains the existing context-window and timeout bounds. Context estimates and provider-measured token usage remain distinct telemetry; this is not a provider tokenizer guarantee. A budget-exhausted repository is explicitly marked for attention while already collected analysis remains reportable.
+
 ## Verification and next stage
 
 The focused deterministic tests use fake JSON and binary GET transports, synthetic producer-shaped ZIP fixtures, socket denial before application imports, and `EXTERNAL_WRITES_ENABLED=false`. The artifact validator's binary port is wrapped by the existing `BudgetedHttpGetTransport`/`CollectionBudgetLedger`; each bounded request/redirect hop and observed byte is charged without resetting repository counters or relaxing JSON GET checks. Review the public integration test through `create_analysis_composite_source` and `SourceCollectionResult.repository_results`, then use the focused T4 selection/pagination tests and retained T3/T2 suites.

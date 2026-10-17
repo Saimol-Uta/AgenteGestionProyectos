@@ -106,6 +106,9 @@ class VerifierAgent:
         snippets: list[CodeDiffSnippet],
         rules: Optional[list[QualityRule]] = None,
         evidence_ids: Optional[list[str]] = None,
+        repository_scope: Optional[dict[str, Any]] = None,
+        stage_name: Optional[str] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> list[FindingVerification]:
         if not findings:
             return []
@@ -148,11 +151,21 @@ class VerifierAgent:
             "- Si hay un archivo completo, aplica mentalmente suggested_code al fragmento original único y valida la sintaxis del archivo resultante antes de confirmar.\n"
         )
 
+        if repository_scope is not None:
+            identity = repository_scope.get("identity", {})
+            instructions += (
+                "\nALCANCE DE REPOSITORIO FIJADO POR EL BACKEND:\n"
+                f"- Repositorio: {identity.get('owner', '')}/{identity.get('repo', '')} (id {identity.get('id', '')}).\n"
+                f"- SHA objetivo inmutable: {repository_scope.get('target_commit_sha')}.\n"
+                "- Verifica solo los hallazgos y evidencias de este repositorio; no cruces identidades.\n"
+            )
+
         context = self.context_builder.build_verifier_context(
             project_id, verifiable_findings, snippets, rules or [], sorted(valid_ev_ids), strict_budget=True,
+            repository_scope=repository_scope,
         )
         capabilities = self.provider.get_capabilities()
-        output_tokens = min(1024, capabilities.max_output_tokens)
+        output_tokens = min(max_output_tokens or 1024, capabilities.max_output_tokens)
         evidences_payload = self.context_builder.runtime_payload(
             context, instructions, VerifierOutputSchema.model_json_schema(), output_tokens,
             capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
@@ -213,7 +226,7 @@ class VerifierAgent:
             )
 
         _, validated_dict = self.coordinator.invoke_stage(
-            stage="verifier",
+            stage=stage_name or "verifier",
             provider=self.provider,
             request=request,
             validator=validate_payload,

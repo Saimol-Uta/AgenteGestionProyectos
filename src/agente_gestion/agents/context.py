@@ -315,6 +315,7 @@ class ContextBuilder:
         evidence_ids: Optional[list[str]] = None,
         budget_tokens: Optional[int] = None,
         strict_budget: bool = False,
+        repository_scope: Optional[dict[str, Any]] = None,
     ) -> ContextPayload:
         """Assembles code bounded context for code review (revisor)."""
         ev_ids = list(evidence_ids) if evidence_ids is not None else [s.commit_sha for s in code_snippets]
@@ -326,6 +327,8 @@ class ContextBuilder:
             "rules": [r.model_dump() for r in rules] if rules else [],
             "evidence_ids": ev_ids,
         }
+        if repository_scope is not None:
+            data["repository_scope"] = copy.deepcopy(repository_scope)
         return self._check_budget(
             BoundedContextType.code, project_id, data, budget_tokens, strict_budget
         )
@@ -339,6 +342,7 @@ class ContextBuilder:
         evidence_ids: Optional[list[str]] = None,
         budget_tokens: Optional[int] = None,
         strict_budget: bool = False,
+        repository_scope: Optional[dict[str, Any]] = None,
     ) -> ContextPayload:
         """Assembles verifier bounded context for selective finding verification."""
         selected_snippets = []
@@ -364,6 +368,8 @@ class ContextBuilder:
             "rules": [rule.model_dump() for rule in selected_rules],
             "evidence_ids": sorted(cited & available),
         }
+        if repository_scope is not None:
+            data["repository_scope"] = copy.deepcopy(repository_scope)
         return self._check_budget(
             BoundedContextType.verifier, project_id, data, budget_tokens, strict_budget
         )

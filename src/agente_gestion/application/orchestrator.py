@@ -64,9 +64,13 @@ from agente_gestion.application.generation import (
     GlobalBudgetExceededError,
 )
 from agente_gestion.application.escalation import EscalationGate, EscalationDecision
-from agente_gestion.application.reporting import generate_report_markdown
+from agente_gestion.application.reporting import (
+    generate_report_markdown,
+    summarize_repository_results,
+)
 from agente_gestion.application.validation import SemanticValidator, ValidationError
 from agente_gestion.quality.evaluator import QualityEvaluator
+from agente_gestion.application.repository_analysis import analyze_repository_results
 from agente_gestion.application.config import Settings, SystemConfig
 
 DEFAULT_TIMEZONE = ZoneInfo("America/Guayaquil")
@@ -335,20 +339,23 @@ class ProjectOrchestrator:
             due_soon_days=self.config.due_soon_days,
         )
 
-        # CI commit matching: evaluate CI only for exact commit matching code diffs or pinned target SHA
+        # MultiRepo has no arbitrary project-wide primary repository or commit.
+        multi_repository = bool(snapshot.repository_results)
         eval_commit_sha = None
-        if self._last_collection_result and getattr(self._last_collection_result, "target_commit_sha", None):
-            eval_commit_sha = self._last_collection_result.target_commit_sha
-        elif snapshot.code_diffs:
-            eval_commit_sha = snapshot.code_diffs[0].commit_sha
-        elif getattr(self.config, "commit_sha", None):
-            eval_commit_sha = self.config.commit_sha
+        if not multi_repository:
+            if self._last_collection_result and getattr(self._last_collection_result, "target_commit_sha", None):
+                eval_commit_sha = self._last_collection_result.target_commit_sha
+            elif snapshot.code_diffs:
+                eval_commit_sha = snapshot.code_diffs[0].commit_sha
+            elif getattr(self.config, "commit_sha", None):
+                eval_commit_sha = self.config.commit_sha
 
         matching_ci: Optional[CIRunResult] = None
-        if eval_commit_sha:
-            matching_ci = match_ci_for_commit(snapshot.ci_runs, eval_commit_sha)
-        elif snapshot.ci_runs:
-            matching_ci = snapshot.ci_runs[0]
+        if not multi_repository:
+            if eval_commit_sha:
+                matching_ci = match_ci_for_commit(snapshot.ci_runs, eval_commit_sha)
+            elif snapshot.ci_runs:
+                matching_ci = snapshot.ci_runs[0]
 
         # Stage variable containers
         monitoring_draft: Optional[MonitoringDraft] = None
@@ -417,8 +424,9 @@ class ProjectOrchestrator:
 
         # ================= STAGE 2: Code Quality (Revisor) =================
         stg2_start = time.time()
-        if not snapshot.code_diffs:
-            # Rule: No code => skip quality stage
+        if multi_repository or not snapshot.code_diffs:
+            # MultiRepo code is analyzed only through its repository-scoped containers.
+            # Rule: No code => skip quality stage for the legacy snapshot path.
             run.stages["quality"] = StageExecutionRecord(
                 stage_name="quality",
                 status=StageStatus.skipped,
@@ -624,17 +632,54 @@ class ProjectOrchestrator:
                     pending_findings.extend(escalated_findings)
                     pending_findings.extend(routine_findings)
 
+        repository_analysis = None
+        if multi_repository:
+            repository_analysis = analyze_repository_results(
+                snapshot.repository_results,
+                project_id=proj_id,
+                draft=monitoring_draft,
+                rules=snapshot.policies,
+                quality_provider=self.revisor_provider,
+                verifier_provider=self.verificador_provider,
+                coordinator=coordinator,
+                escalation_gate=self.escalation_gate,
+                config=self.config,
+            )
+            candidate_findings = repository_analysis.candidate_findings
+            confirmed_findings = repository_analysis.confirmed_findings
+            rejected_findings = repository_analysis.rejected_findings
+            insufficient_findings = repository_analysis.insufficient_findings
+            pending_findings = repository_analysis.pending_findings
+            verifications = repository_analysis.verifications
+            escalation_decisions = repository_analysis.escalation_decisions
+            escalation_map = {
+                decision.finding_id: decision.reasons
+                for decision in escalation_decisions
+                if decision.reasons
+            }
+            for stage_name, stage_record in repository_analysis.stages.items():
+                run.stages[stage_name] = stage_record
+                self.sqlite.save_stage_result(run_id, stage_record)
+            if candidate_findings:
+                self.sqlite.save_findings(run_id, candidate_findings, escalation_decisions)
+            if verifications:
+                self.sqlite.save_verifications(run_id, verifications)
+
         # ================= STAGE 4: Policy Evaluation & Report (Aprobador) =================
         stg4_start = time.time()
-        # Compute policy evaluations with confirmed findings and unresolved findings
+        # Compute policy evaluations with confirmed findings and unresolved findings.
         unresolved_findings = [f for f in (insufficient_findings + pending_findings)]
-        policy_eval_result = QualityEvaluator.evaluate(
-            rules=snapshot.policies,
-            ci_run=matching_ci,
-            findings=confirmed_findings,
-            unresolved_findings=unresolved_findings,
-            source_is_complete=snapshot.is_complete,
-            incomplete_reason=snapshot.incomplete_reason,
+        policy_eval_result = (
+            repository_analysis.policy_evaluations
+            if repository_analysis is not None and repository_analysis.policy_evaluations is not None
+            else QualityEvaluator.evaluate(
+                rules=snapshot.policies,
+                ci_run=matching_ci,
+                findings=confirmed_findings,
+                unresolved_findings=unresolved_findings,
+                source_is_complete=snapshot.is_complete,
+                incomplete_reason=snapshot.incomplete_reason,
+            )
         )
 
         # Assemble all sources evidence IDs (tasks + code diffs/commits + CI runs + audit evidence)
@@ -650,6 +695,10 @@ class ProjectOrchestrator:
                 all_sources_evidence_ids.append(ci.id)
         if eval_commit_sha and eval_commit_sha not in all_sources_evidence_ids:
             all_sources_evidence_ids.append(eval_commit_sha)
+        if repository_analysis is not None:
+            for evidence_id in repository_analysis.evidence_ids:
+                if evidence_id not in all_sources_evidence_ids:
+                    all_sources_evidence_ids.append(evidence_id)
         if self._last_collection_result and getattr(self._last_collection_result, "evidence", None):
             for ev in self._last_collection_result.evidence:
                 ev_id = ev.provenance.id if hasattr(ev, "provenance") and hasattr(ev.provenance, "id") else getattr(ev, "id", None)
@@ -682,6 +731,21 @@ class ProjectOrchestrator:
             final_report.providers_used = models_used
             final_report.candidate_findings = candidate_findings
             final_report.all_evidence_ids = all_sources_evidence_ids
+            if repository_analysis is not None:
+                final_report.repository_results = repository_analysis.repository_results
+                final_report.ci_result = None
+                final_report.confirmed_findings = confirmed_findings
+                final_report.rejected_findings = rejected_findings
+                final_report.insufficient_findings = insufficient_findings
+                final_report.pending_findings = pending_findings
+                final_report.policy_evaluations = policy_eval_result
+                final_report.summary = summarize_repository_results(
+                    repository_analysis.repository_results,
+                    policy_eval_result.recommended_action,
+                )
+                final_report.recommendations = [
+                    "Revisar los resultados individuales y las incertidumbres de cada repositorio antes de decidir."
+                ]
 
             run.stages["report"] = StageExecutionRecord(
                 stage_name="report",
@@ -693,20 +757,65 @@ class ProjectOrchestrator:
             )
             self.sqlite.save_stage_result(run_id, run.stages["report"])
         except Exception as e:
-            has_partial_failure = True
-            failure_reason = f"Report synthesis stage failed: {str(e)}"
-            provider_errors.append(failure_reason)
-            run.stages["report"] = StageExecutionRecord(
-                stage_name="report",
-                status=StageStatus.failed,
-                duration_seconds=time.time() - stg4_start,
-                error_message=failure_reason,
-            )
-            self.sqlite.save_stage_result(run_id, run.stages["report"])
-            return self._finalize_run_on_failure(
-                run, snapshot, task_metrics, monitoring_draft, candidate_findings, verifications,
-                coordinator, provider_errors, failure_reason, start_time, models_used
-            )
+            if multi_repository and repository_analysis is not None:
+                fallback_reason = (
+                    "Report synthesis was unavailable; deterministic repository results were retained."
+                )
+                provider_errors.append(fallback_reason)
+                final_report = FinalReport(
+                    project_id=proj_id,
+                    cutoff_datetime=snapshot.cutoff_datetime,
+                    metrics=task_metrics,
+                    ci_result=None,
+                    confirmed_findings=confirmed_findings,
+                    rejected_findings=rejected_findings,
+                    insufficient_findings=insufficient_findings,
+                    pending_findings=pending_findings,
+                    policy_evaluations=policy_eval_result,
+                    recommendation=policy_eval_result.recommended_action,
+                    summary=(
+                        "La síntesis del modelo no estuvo disponible. "
+                        + summarize_repository_results(
+                            repository_analysis.repository_results,
+                            policy_eval_result.recommended_action,
+                        )
+                    ),
+                    recommendations=[
+                        "Revisar los resultados individuales y las incertidumbres de cada repositorio antes de decidir."
+                    ],
+                    human_decision=HumanDecisionState.pending,
+                    report_id=f"rep-{run_id}",
+                    run_id=run_id,
+                    providers_used=models_used,
+                    candidate_findings=candidate_findings,
+                    all_evidence_ids=all_sources_evidence_ids,
+                    repository_results=repository_analysis.repository_results,
+                )
+                run.stages["report"] = StageExecutionRecord(
+                    stage_name="report",
+                    status=StageStatus.needs_attention,
+                    duration_seconds=time.time() - stg4_start,
+                    error_message=fallback_reason,
+                    output_summary=fallback_reason,
+                    data_hash=compute_sha256(final_report),
+                    completed_at=datetime.now(DEFAULT_TIMEZONE),
+                )
+                self.sqlite.save_stage_result(run_id, run.stages["report"])
+            else:
+                has_partial_failure = True
+                failure_reason = f"Report synthesis stage failed: {str(e)}"
+                provider_errors.append(failure_reason)
+                run.stages["report"] = StageExecutionRecord(
+                    stage_name="report",
+                    status=StageStatus.failed,
+                    duration_seconds=time.time() - stg4_start,
+                    error_message=failure_reason,
+                )
+                self.sqlite.save_stage_result(run_id, run.stages["report"])
+                return self._finalize_run_on_failure(
+                    run, snapshot, task_metrics, monitoring_draft, candidate_findings, verifications,
+                    coordinator, provider_errors, failure_reason, start_time, models_used
+                )
 
         # ================= STAGE 5: Semantic Validation & Persistence =================
         total_duration = time.time() - start_time
@@ -767,7 +876,7 @@ class ProjectOrchestrator:
             execution_metrics=exec_metrics_payload,
         )
 
-        if self.manager_notifications is not None and self.manager_email and (
+        if not multi_repository and self.manager_notifications is not None and self.manager_email and (
             candidate_findings or task_metrics.overdue_card_ids or task_metrics.blocked_card_ids
             or (run.stages.get("proposals") and json.loads(run.stages["proposals"].output_summary).get("saved", 0))
         ):

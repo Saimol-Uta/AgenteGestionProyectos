@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from agente_gestion.domain.code import CodeDiffSnippet
 from agente_gestion.domain.findings import CandidateFinding, FindingSeverity
+from agente_gestion.domain.repositories import RepositoryIdentity, RepositoryProvenance
 from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.report import MonitoringDraft
 from agente_gestion.domain.llm import GenerationRequest
@@ -55,6 +56,20 @@ class CodeFindingsSchema(BaseModel):
     )
 
 
+class RepositoryScopedGeneratedFindingSchema(GeneratedFindingSchema):
+    """Repository-mode output can state provenance, which is checked before binding."""
+
+    repository_identity: Optional[RepositoryIdentity] = None
+    provenance: Optional[RepositoryProvenance] = None
+
+
+class RepositoryScopedCodeFindingsSchema(BaseModel):
+    findings: list[RepositoryScopedGeneratedFindingSchema] = Field(
+        default_factory=list,
+        description="Candidate findings identified within one fixed repository scope",
+    )
+
+
 class CodeQualityAgent:
     """
     Explicit revisor agent.
@@ -89,11 +104,23 @@ class CodeQualityAgent:
         criteria: Optional[list[str]] = None,
         rules: Optional[list[QualityRule]] = None,
         evidence_ids: Optional[list[str]] = None,
+        repository_scope: Optional[dict[str, Any]] = None,
+        stage_name: Optional[str] = None,
     ) -> list[CandidateFinding]:
         valid_rules = {r.id for r in rules} if rules else set()
         code_ev_ids = set(evidence_ids) if evidence_ids else set()
         for s in snippets:
             code_ev_ids.add(s.commit_sha)
+
+        output_schema = (
+            RepositoryScopedCodeFindingsSchema
+            if repository_scope is not None else CodeFindingsSchema
+        )
+        finding_schema = (
+            RepositoryScopedGeneratedFindingSchema
+            if repository_scope is not None else GeneratedFindingSchema
+        )
+        output_json_schema = output_schema.model_json_schema()
 
         rules_list_str = ", ".join(sorted(valid_rules)) if valid_rules else "ninguna"
         ev_list_str = ", ".join(sorted(code_ev_ids)) if code_ev_ids else "ninguna"
@@ -160,13 +187,23 @@ class CodeQualityAgent:
             "- El verificador debe usar insufficient cuando confirmar dependa de contenido no visible.\n"
         )
 
+        if repository_scope is not None:
+            identity = repository_scope.get("identity", {})
+            instructions += (
+                "\nALCANCE DE REPOSITORIO FIJADO POR EL BACKEND:\n"
+                f"- Repositorio: {identity.get('owner', '')}/{identity.get('repo', '')} (id {identity.get('id', '')}).\n"
+                f"- SHA objetivo inmutable: {repository_scope.get('target_commit_sha')}.\n"
+                "- Usa exclusivamente los fragmentos, CI y evidencias de este alcance. No infieras otra identidad.\n"
+                "- No emitas repository_identity ni provenance; el backend vincula la salida a evidencia validada.\n"
+            )
+
         capabilities = self.provider.get_capabilities()
         output_tokens = min(self.max_output_tokens or 768, capabilities.max_output_tokens)
         safety_margin = self.safety_margin_tokens
 
         instructions_overhead = (
             estimate_tokens_from_data(instructions)
-            + estimate_tokens_from_data(CodeFindingsSchema.model_json_schema())
+            + estimate_tokens_from_data(output_json_schema)
         )
         safe_input_budget = self.context_builder.calculate_safe_input_budget(
             context_window=capabilities.context_tokens,
@@ -186,11 +223,12 @@ class CodeQualityAgent:
             sorted(code_ev_ids),
             budget_tokens=safe_input_budget,
             strict_budget=True,
+            repository_scope=repository_scope,
         )
         evidences_payload = self.context_builder.runtime_payload(
             context,
             instructions,
-            CodeFindingsSchema.model_json_schema(),
+            output_json_schema,
             output_tokens,
             capabilities.context_tokens,
             max_output_tokens=capabilities.max_output_tokens,
@@ -208,7 +246,7 @@ class CodeQualityAgent:
             instructions=instructions,
             evidences=evidences_payload,
             schema_name="code_findings_v1",
-            json_schema=CodeFindingsSchema.model_json_schema(),
+            json_schema=output_json_schema,
             model=self.model,
             max_generation_tokens=output_tokens,
             timeout_seconds=self.timeout_seconds,
@@ -219,7 +257,7 @@ class CodeQualityAgent:
             parsed_findings: list[CandidateFinding] = []
             for item in raw_findings:
                 try:
-                    gen_item = GeneratedFindingSchema.model_validate(item)
+                    gen_item = finding_schema.model_validate(item)
                     if not gen_item.suggested_code.strip() or not gen_item.improvement_summary.strip():
                         return ["Finding must include suggested_code and improvement_summary."]
                     parsed_findings.append(CandidateFinding.model_validate(gen_item.model_dump()))
@@ -235,7 +273,7 @@ class CodeQualityAgent:
             )
 
         _, validated_dict = self.coordinator.invoke_stage(
-            stage="quality",
+            stage=stage_name or "quality",
             provider=self.provider,
             request=request,
             validator=validate_payload,
