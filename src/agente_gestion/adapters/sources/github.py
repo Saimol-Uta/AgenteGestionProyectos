@@ -564,6 +564,7 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
                 raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
             if expected_blob_sha.lower() != blob_sha.lower():
                 raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+        encoded = encoded.replace("\r\n", "").replace("\n", "")
         try:
             content_bytes = base64.b64decode(encoded, validate=True)
         except (ValueError, TypeError):

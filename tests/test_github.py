@@ -199,6 +199,102 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         source_calls = [call for call in transport.calls if "/contents/" in call["url"]]
         self.assertEqual([call["url"] for call in source_calls], [contents_url])
 
+    def test_full_file_source_accepts_only_lf_and_crlf_base64_wrapping(self):
+        source = "line one\nline two\nline three\n"
+        source_bytes = source.encode("utf-8")
+        encoded = base64.b64encode(source_bytes).decode("ascii")
+        chunks = [encoded[index:index + 12] for index in range(0, len(encoded), 12)]
+        cases = (
+            ("unwrapped", encoded),
+            ("LF", "\n".join(chunks) + "\n"),
+            ("CRLF", "\r\n".join(chunks) + "\r\n"),
+        )
+        path = "src/wrapped.txt"
+        contents_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{path}"
+            f"?ref={self.valid_sha_1}"
+        )
+
+        for label, content in cases:
+            with self.subTest(label=label):
+                transport = FakeTransport({
+                    self.commit_url: HttpResponse(status_code=200, body={
+                        "sha": self.valid_sha_1,
+                        "files": [{
+                            "filename": path, "status": "modified", "patch": None,
+                            "sha": "b" * 40,
+                        }],
+                    }),
+                    contents_url: HttpResponse(status_code=200, body={
+                        "encoding": "base64", "content": content,
+                        "sha": "b" * 40, "size": len(source_bytes),
+                    }),
+                })
+                adapter = GitHubCodeSourceAdapter(
+                    owner=self.owner, repo=self.repo, transport=transport,
+                )
+
+                snippets = adapter.get_diffs("project", commit_sha=self.valid_sha_1)
+                full_file = next(item for item in snippets if item.evidence_scope == "full_file")
+                evidence = next(
+                    item for item in adapter.get_evidence("project", self.valid_sha_1)
+                    if item.provenance.file_path == path
+                )
+
+                self.assertEqual(full_file.content, source)
+                self.assertEqual(full_file.lines, [1, 2, 3])
+                self.assertEqual(full_file.total_lines, 3)
+                self.assertEqual(full_file.source_sha256, hashlib.sha256(source_bytes).hexdigest())
+                self.assertEqual(full_file.source_blob_sha, "b" * 40)
+                self.assertFalse(adapter.last_collection_complete)
+                self.assertEqual(adapter.unavailable_file_paths, [path])
+                self.assertFalse(evidence.provenance.payload["patch_available"])
+                self.assertTrue(evidence.provenance.payload["full_file_available"])
+                self.assertEqual(evidence.provenance.payload["source_sha256"], full_file.source_sha256)
+                self.assertEqual(evidence.provenance.payload["source_blob_sha"], "b" * 40)
+
+    def test_full_file_base64_rejects_unauthorized_whitespace_and_padding(self):
+        valid = base64.b64encode(b"safe").decode("ascii")
+        invalid_contents = (
+            ("space", valid + " "),
+            ("tab", valid + "\t"),
+            ("invalid character", valid[:4] + "#" + valid[4:]),
+            ("non-ASCII", valid + "é"),
+            ("bare CR", valid[:4] + "\r" + valid[4:]),
+            ("missing padding", valid[:-1]),
+            ("excess padding", valid + "="),
+            ("interior padding", valid[:4] + "=" + valid[5:]),
+        )
+        path = "src/invalid.txt"
+        contents_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{path}"
+            f"?ref={self.valid_sha_1}"
+        )
+
+        for label, content in invalid_contents:
+            with self.subTest(label=label):
+                transport = FakeTransport({
+                    self.commit_url: HttpResponse(status_code=200, body={
+                        "sha": self.valid_sha_1,
+                        "files": [{
+                            "filename": path, "status": "modified", "patch": None,
+                            "sha": "b" * 40,
+                        }],
+                    }),
+                    contents_url: HttpResponse(status_code=200, body={
+                        "encoding": "base64", "content": content,
+                        "sha": "b" * 40, "size": len(b"safe"),
+                    }),
+                })
+                adapter = GitHubCodeSourceAdapter(
+                    owner=self.owner, repo=self.repo, transport=transport,
+                )
+
+                with self.assertRaises(SourceError) as context:
+                    adapter.get_diffs("project", commit_sha=self.valid_sha_1)
+                self.assertEqual(context.exception.category, SourceErrorCategory.malformed_payload)
+                self.assertIsNone(adapter.last_resolved_commit_sha)
+
     def test_fixture_source_adapter_preserves_complete_file_boundaries_and_hash(self):
         source = "def parse(value):\n    return value\n"
         sha256 = hashlib.sha256(source.encode()).hexdigest()

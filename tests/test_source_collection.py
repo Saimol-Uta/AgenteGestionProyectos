@@ -528,6 +528,101 @@ class TestCompositeSourcesAdapter(unittest.TestCase):
         self.assertEqual(len(result.snapshot.tasks), 1)
         self.assertEqual(len(result.snapshot.policies), 1)
 
+    def test_wrapped_partial_code_queries_ci_for_pinned_sha_but_invalid_wrapping_suppresses_ci(self) -> None:
+        source = b"line one\nline two\nline three\n"
+        encoded = base64.b64encode(source).decode("ascii")
+        chunks = [encoded[index:index + 12] for index in range(0, len(encoded), 12)]
+        wrapped = "\r\n".join(chunks) + "\r\n"
+        cases = (("valid CRLF wrapping", wrapped, True), ("invalid character", wrapped + "#", False))
+        recovered_path = "scripts/recovered.py"
+        sibling_path = "src/sibling.py"
+        commit_url = f"https://api.github.com/repos/owner/repo/commits/{SAMPLE_SHA}"
+        recovered_url = (
+            f"https://api.github.com/repos/owner/repo/contents/{recovered_path}?ref={SAMPLE_SHA}"
+        )
+        sibling_url = f"https://api.github.com/repos/owner/repo/contents/{sibling_path}?ref={SAMPLE_SHA}"
+
+        for label, content, is_valid in cases:
+            with self.subTest(label=label):
+                transport = FakeTransport({
+                    commit_url: HttpResponse(status_code=200, body={
+                        "sha": SAMPLE_SHA,
+                        "files": [
+                            {
+                                "filename": sibling_path, "status": "modified",
+                                "patch": "@@ -1 +1 @@\n-old\n+new\n",
+                            },
+                            {
+                                "filename": recovered_path, "status": "modified", "patch": None,
+                                "sha": "d" * 40,
+                            },
+                        ],
+                    }),
+                    sibling_url: HttpResponse(status_code=404, body={}),
+                    recovered_url: HttpResponse(status_code=200, body={
+                        "encoding": "base64", "content": content,
+                        "sha": "d" * 40, "size": len(source),
+                    }),
+                })
+                code_source = GitHubCodeSourceAdapter(
+                    owner="owner", repo="repo", transport=transport,
+                )
+                ci, ci_ev = _make_sample_ci(self.project_id, SAMPLE_SHA)
+                ci_source = FakeCISource([ci], [ci_ev])
+                adapter = CompositeSourcesAdapter(
+                    task_source=FakeTaskSource(),
+                    code_source=code_source,
+                    ci_source=ci_source,
+                    policy_source=FakePolicySource(),
+                    default_commit_sha=SAMPLE_SHA,
+                )
+
+                result = adapter.collect_snapshot(self.project_id, self.cutoff)
+
+                if is_valid:
+                    self.assertFalse(result.snapshot.is_complete)
+                    self.assertEqual(result.target_commit_sha, SAMPLE_SHA)
+                    self.assertEqual(ci_source.calls, [(self.project_id, SAMPLE_SHA)])
+                    self.assertEqual(len(result.snapshot.ci_runs), 1)
+                    self.assertEqual(result.snapshot.ci_runs[0].commit_sha, SAMPLE_SHA)
+                    full_file = next(
+                        item for item in result.snapshot.code_diffs
+                        if item.file_path == recovered_path and item.evidence_scope == "full_file"
+                    )
+                    self.assertEqual(full_file.content, source.decode("utf-8"))
+                    self.assertEqual(full_file.source_blob_sha, "d" * 40)
+                    self.assertTrue(any(
+                        item.file_path == sibling_path and item.evidence_scope == "diff"
+                        for item in result.snapshot.code_diffs
+                    ))
+                    recovered_evidence = next(
+                        item for item in result.evidence
+                        if item.provenance.source == EvidenceSource.github
+                        and item.provenance.file_path == recovered_path
+                    )
+                    self.assertFalse(recovered_evidence.provenance.payload["patch_available"])
+                    self.assertTrue(recovered_evidence.provenance.payload["full_file_available"])
+                    self.assertEqual(recovered_evidence.provenance.payload["source_blob_sha"], "d" * 40)
+                    self.assertFalse(code_source.last_collection_complete)
+                else:
+                    self.assertFalse(result.snapshot.is_complete)
+                    self.assertEqual(result.snapshot.code_diffs, [])
+                    self.assertFalse(any(
+                        item.provenance.source == EvidenceSource.github for item in result.evidence
+                    ))
+                    self.assertIsNone(result.target_commit_sha)
+                    self.assertEqual(result.snapshot.ci_runs, [])
+                    self.assertEqual(ci_source.calls, [])
+                    code_record = next(
+                        item for item in result.records if item.provider == SourceProvider.github
+                    )
+                    self.assertEqual(code_record.status, SourceExecutionStatus.failed)
+                    self.assertEqual(code_record.error.category, SourceErrorCategory.malformed_payload)
+                    self.assertNotIn(
+                        SourceProvider.github_actions,
+                        {item.provider for item in result.records},
+                    )
+
     def test_full_file_recovery_security_and_access_errors_discard_partial_code(self) -> None:
         path = "styles/site.css"
         contents_url = f"https://api.github.com/repos/owner/repo/contents/{path}?ref={SAMPLE_SHA}"
