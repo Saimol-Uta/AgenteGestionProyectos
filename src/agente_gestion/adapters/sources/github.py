@@ -53,18 +53,61 @@ MAX_CACHE_ENTRIES = 20
 CORE_CODE_EXTENSIONS = (
     ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs",
     ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php",
+    ".css", ".scss", ".sql", ".html", ".vue", ".svelte",
 )
+
+MEDIA_BINARY_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".tiff",
+    ".pdf", ".ttf", ".woff", ".woff2", ".eot", ".otf",
+    ".zip", ".tar", ".gz", ".7z", ".rar",
+    ".mp3", ".mp4", ".mov", ".avi", ".mkv",
+    ".exe", ".dll", ".so", ".dylib", ".bin",
+)
+
+GIT_LFS_POINTER_RE = re.compile(
+    r"^version https://git-lfs\.github\.com/spec/v1\r?\n"
+    r"oid sha256:([0-9a-f]{64})\r?\n"
+    r"size ([0-9]+)\r?\n?$",
+    re.ASCII,
+)
+
+
+def _parse_git_lfs_pointer(content_bytes: bytes) -> Optional[int]:
+    """
+    Parse strict Git LFS pointer text.
+    Returns the declared LFS object size in bytes if valid, None otherwise.
+    """
+    try:
+        text = content_bytes.decode("utf-8")
+    except UnicodeError:
+        return None
+    m = GIT_LFS_POINTER_RE.match(text)
+    if not m:
+        return None
+    try:
+        val = int(m.group(2))
+        return val if val >= 0 else None
+    except (ValueError, TypeError):
+        return None
 
 
 def _full_file_priority_key(entry: dict[str, Any]) -> tuple[int, str]:
     filename = entry.get("filename") or ""
     patch = entry.get("patch")
     status = entry.get("status")
-    if patch is None and status != "removed":
-        return (0, filename)
     lower = filename.lower()
-    if any(lower.endswith(ext) for ext in CORE_CODE_EXTENSIONS):
+    is_code = any(lower.endswith(ext) for ext in CORE_CODE_EXTENSIONS)
+    is_media = any(lower.endswith(ext) for ext in MEDIA_BINARY_EXTENSIONS)
+    if patch is None and status != "removed":
+        if is_code:
+            return (0, filename)
+        if is_media:
+            return (4, filename)
+        return (3, filename)
+    if is_code:
         return (1, filename)
+    if is_media:
+        return (4, filename)
     return (2, filename)
 
 
@@ -596,10 +639,16 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
             content = content_bytes.decode("utf-8")
         except UnicodeError:
             return None
-        self._assert_no_credential_echo(content)
         size = body.get("size")
+        lfs_size = _parse_git_lfs_pointer(content_bytes)
+        if lfs_size is not None:
+            if size is not None and (type(size) is not int or size != lfs_size):
+                raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+            return None
+
         if size is not None and (type(size) is not int or size != len(content_bytes)):
             raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+        self._assert_no_credential_echo(content)
         if len(content_bytes) > min(MAX_FULL_FILE_BYTES, self._max_total_bytes):
             return None
         if len(content.splitlines()) > self._max_lines:

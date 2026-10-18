@@ -30,6 +30,8 @@ from agente_gestion.adapters.sources.github import (
     GitHubCodeSourceAdapter,
     DEFAULT_MAX_FILES,
     MAX_GITHUB_FILES_CEILING,
+    _full_file_priority_key,
+    _parse_git_lfs_pointer,
 )
 
 
@@ -1562,6 +1564,164 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
             with self.assertRaises(SourceError) as cm:
                 adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
             self.assertEqual(cm.exception.category, SourceErrorCategory.malformed_payload)
+
+    def test_git_lfs_pointer_parsing(self):
+        valid_lf = (
+            b"version https://git-lfs.github.com/spec/v1\n"
+            b"oid sha256:08dfa95b001e3fc86e862e4450193bd89f60cb25ae0ec3e497d7661e896d6ab6\n"
+            b"size 262660\n"
+        )
+        self.assertEqual(_parse_git_lfs_pointer(valid_lf), 262660)
+
+        valid_crlf = (
+            b"version https://git-lfs.github.com/spec/v1\r\n"
+            b"oid sha256:08dfa95b001e3fc86e862e4450193bd89f60cb25ae0ec3e497d7661e896d6ab6\r\n"
+            b"size 1024\r\n"
+        )
+        self.assertEqual(_parse_git_lfs_pointer(valid_crlf), 1024)
+
+        # Invalid header
+        self.assertIsNone(_parse_git_lfs_pointer(b"version http://bad.com\noid sha256:08\nsize 1\n"))
+        # Invalid hash length
+        self.assertIsNone(_parse_git_lfs_pointer(b"version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 1\n"))
+        # Non-numeric size
+        self.assertIsNone(_parse_git_lfs_pointer(b"version https://git-lfs.github.com/spec/v1\noid sha256:" + b"a" * 64 + b"\nsize abc\n"))
+        # Non-utf8 bytes
+        self.assertIsNone(_parse_git_lfs_pointer(b"\xff\xfe\x00\x00"))
+
+    def test_capture_full_file_with_valid_git_lfs_pointer(self):
+        lfs_path = "public/brand/logo.png"
+        code_path = "src/main.ts"
+        lfs_bytes = (
+            b"version https://git-lfs.github.com/spec/v1\n"
+            b"oid sha256:08dfa95b001e3fc86e862e4450193bd89f60cb25ae0ec3e497d7661e896d6ab6\n"
+            b"size 262660\n"
+        )
+        lfs_blob_sha = "f68af8ce7e233632321b6f2d79f05d190d4fdfb5"
+        code_blob_sha = "a" * 40
+        lfs_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{lfs_path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        code_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{code_path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        transport = FakeTransport({
+            self.commit_url: HttpResponse(status_code=200, body={
+                "sha": self.valid_sha_1,
+                "files": [
+                    {"filename": lfs_path, "status": "modified", "patch": None, "sha": lfs_blob_sha},
+                    {"filename": code_path, "status": "modified", "patch": "@@ -1 +1 @@\n-old\n+new\n", "sha": code_blob_sha},
+                ],
+            }),
+            lfs_url: HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(lfs_bytes).decode(),
+                "sha": lfs_blob_sha,
+                "size": 262660,  # Matches declared LFS object size, differs from pointer length
+            }),
+            code_url: HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(b"const x = 1;\n").decode(),
+                "sha": code_blob_sha,
+                "size": len(b"const x = 1;\n"),
+            }),
+        })
+        adapter = GitHubCodeSourceAdapter(owner=self.owner, repo=self.repo, transport=transport, max_full_files=8)
+        snippets = adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
+
+        # LFS pointer is not converted into a diff snippet
+        file_paths = [s.file_path for s in snippets]
+        self.assertIn(code_path, file_paths)
+        self.assertNotIn(lfs_path, file_paths)
+
+        # Truthful incomplete collection and unavailable path record
+        self.assertFalse(adapter.last_collection_complete)
+        self.assertEqual(adapter.unavailable_file_paths, [lfs_path])
+
+    def test_capture_full_file_rejects_forged_or_mismatched_lfs_size(self):
+        lfs_path = "images/badge.png"
+        lfs_bytes = (
+            b"version https://git-lfs.github.com/spec/v1\n"
+            b"oid sha256:" + b"e" * 64 + b"\n"
+            b"size 50000\n"
+        )
+        lfs_blob_sha = "d" * 40
+        lfs_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{lfs_path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        # Body says size is 1234, but pointer declared 50000
+        transport = FakeTransport({
+            self.commit_url: HttpResponse(status_code=200, body={
+                "sha": self.valid_sha_1,
+                "files": [
+                    {"filename": lfs_path, "status": "modified", "patch": None, "sha": lfs_blob_sha},
+                ],
+            }),
+            lfs_url: HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(lfs_bytes).decode(),
+                "sha": lfs_blob_sha,
+                "size": 1234,  # Mismatched!
+            }),
+        })
+        adapter = GitHubCodeSourceAdapter(owner=self.owner, repo=self.repo, transport=transport)
+        with self.assertRaises(SourceError) as cm:
+            adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
+        self.assertEqual(cm.exception.category, SourceErrorCategory.malformed_payload)
+
+    def test_capture_full_file_rejects_non_lfs_size_mismatch(self):
+        text_path = "src/logic.py"
+        text_bytes = b"print('hello')\n"
+        blob_sha = "c" * 40
+        url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{text_path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        transport = FakeTransport({
+            self.commit_url: HttpResponse(status_code=200, body={
+                "sha": self.valid_sha_1,
+                "files": [
+                    {"filename": text_path, "status": "modified", "patch": None, "sha": blob_sha},
+                ],
+            }),
+            url: HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(text_bytes).decode(),
+                "sha": blob_sha,
+                "size": 9999,  # Mismatched against actual bytes length!
+            }),
+        })
+        adapter = GitHubCodeSourceAdapter(owner=self.owner, repo=self.repo, transport=transport)
+        with self.assertRaises(SourceError) as cm:
+            adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
+        self.assertEqual(cm.exception.category, SourceErrorCategory.malformed_payload)
+
+    def test_full_file_priority_key_ranks_code_above_media(self):
+        entries = [
+            {"filename": "public/images/logo.png", "patch": None, "status": "modified"},
+            {"filename": "src/admin/admin.css", "patch": None, "status": "modified"},
+            {"filename": "src/App.tsx", "patch": "@@ -1 +1 @@\n", "status": "modified"},
+            {"filename": "package.json", "patch": "@@ -1 +1 @@\n", "status": "modified"},
+            {"filename": "fonts/roboto.ttf", "patch": None, "status": "modified"},
+            {"filename": "docs/notes.txt", "patch": None, "status": "modified"},
+        ]
+        sorted_files = sorted(entries, key=_full_file_priority_key)
+        filenames = [f["filename"] for f in sorted_files]
+
+        # 1. Code file with missing patch (rank 0)
+        self.assertEqual(filenames[0], "src/admin/admin.css")
+        # 2. Code file with diff patch (rank 1)
+        self.assertEqual(filenames[1], "src/App.tsx")
+        # 3. Other config/text with patch (rank 2)
+        self.assertEqual(filenames[2], "package.json")
+        # 4. Unknown non-code without patch (rank 3)
+        self.assertEqual(filenames[3], "docs/notes.txt")
+        # 5. Media/binary files without patch (rank 4)
+        self.assertIn("fonts/roboto.ttf", filenames[4:])
+        self.assertIn("public/images/logo.png", filenames[4:])
 
 
 if __name__ == "__main__":

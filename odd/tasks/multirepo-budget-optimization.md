@@ -15,9 +15,11 @@ S7. RDD remains disabled; `EXTERNAL_WRITES_ENABLED=false`; no modifications to H
 T1 [S1,S2,S5,S6] route=inline; status=completed; Implement de-duplication and bounded deterministic full_file capture in `github.py`.
 T2 [S3,S4,S5,S6] route=inline; status=completed; Implement budget reservation for CI and repository isolation in `multirepo.py` and `collection_budget.py`.
 T3 [S1–S7] route=inline; status=completed; Regression tests for large commits, duplicate files, exhausted budgets, CI reservation, and repo isolation. Verify partial evidence not complete.
+T4 [S1,S2,S6] route=inline; status=completed; Support Git LFS pointers in `github.py` with size validation and prioritize code over media.
 
 ## Verification
-- Unit tests: `tests/test_multirepo_collection.py` (29 passed).
-- Suite tests: 201 tests passed across 15 modules without errors or external calls.
+- Unit tests: `tests/test_multirepo_collection.py` (29 passed), `tests/test_github.py` (54 passed).
+- Suite tests: 223 tests passed across 15 modules without errors or external calls.
+- Real read-only collection: `hormigestion-frontend` resolved SHA `adc9794`, collected 81 diffs and 85 evidence items without `malformed_payload`.
 - Preserved states: `incomplete`, `unknown`, `needs_attention` properly retained when limits exceeded.
 
