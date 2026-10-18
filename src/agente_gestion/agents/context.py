@@ -133,6 +133,22 @@ def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[E
     return choices, sorted(set(limitations))
 
 
+def _snippet_priority_key(snippet: CodeDiffSnippet) -> tuple[int, int, int, str, int]:
+    path = snippet.file_path.lower()
+    suffix = path.rsplit(".", 1)[-1] if "." in path.rsplit("/", 1)[-1] else ""
+    if suffix in {"ts", "tsx", "js", "jsx", "py", "pyw", "go", "rs", "java", "c", "cpp", "cs", "php", "rb"}:
+        cat_prio = 0
+    elif suffix in {"json", "yaml", "yml", "toml", "html", "css", "scss"}:
+        cat_prio = 1
+    elif suffix in {"sql", "sh", "bash"}:
+        cat_prio = 2
+    else:
+        cat_prio = 3
+    scope_prio = 0 if snippet.evidence_scope in {"diff", "snippet"} else 1
+    token_prio = len(snippet.content)
+    return (cat_prio, scope_prio, token_prio, snippet.file_path, snippet.start_line or 0)
+
+
 class ContextBuilder:
     """Builds explicit bounded contexts without silent truncation of critical evidence."""
 
@@ -317,9 +333,13 @@ class ContextBuilder:
         strict_budget: bool = False,
         repository_scope: Optional[dict[str, Any]] = None,
     ) -> ContextPayload:
-        """Assembles code bounded context for code review (revisor)."""
+        """Assembles bounded code context prioritizing relevant snippets within budget."""
+        effective_budget = budget_tokens if budget_tokens is not None else self.default_budget_tokens
+        if effective_budget <= 0:
+            raise ContextBudgetExceededError("No input context budget remains. Request additional context or increase the explicit context budget.")
+
         ev_ids = list(evidence_ids) if evidence_ids is not None else [s.commit_sha for s in code_snippets]
-        data = {
+        full_data: dict[str, Any] = {
             "project_id": project_id,
             "draft_summary": draft.summary,
             "review_criteria": criteria,
@@ -328,9 +348,129 @@ class ContextBuilder:
             "evidence_ids": ev_ids,
         }
         if repository_scope is not None:
-            data["repository_scope"] = copy.deepcopy(repository_scope)
-        return self._check_budget(
-            BoundedContextType.code, project_id, data, budget_tokens, strict_budget
+            full_data["repository_scope"] = copy.deepcopy(repository_scope)
+
+        full_estimated = estimate_tokens_from_data(full_data)
+
+        # Case 1: All snippets fit within the allocated budget
+        if full_estimated <= effective_budget:
+            full_data["selection"] = {
+                "total_snippets": len(code_snippets),
+                "selected_count": len(code_snippets),
+                "omitted_count": 0,
+                "omitted_files": [],
+                "status": "complete",
+                "is_complete": True,
+                "reason": None,
+            }
+            return ContextPayload(
+                context_type=BoundedContextType.code,
+                project_id=project_id,
+                budget_tokens=effective_budget,
+                estimated_tokens=full_estimated,
+                is_truncated=False,
+                status="complete",
+                incomplete_reason=None,
+                data=full_data,
+            )
+
+        # Case 2: Budget exceeded and not in strict budgeting mode
+        if not strict_budget:
+            msg = (
+                f"Context budget exceeded for code: "
+                f"estimated {full_estimated} tokens > budget {effective_budget} tokens. "
+                "Silent truncation rejected per architectural policy. "
+                "Request additional context or increase the explicit context budget."
+            )
+            full_data["selection"] = {
+                "total_snippets": len(code_snippets),
+                "selected_count": len(code_snippets),
+                "omitted_count": 0,
+                "omitted_files": [],
+                "status": "incomplete",
+                "is_complete": False,
+                "reason": msg,
+            }
+            return ContextPayload(
+                context_type=BoundedContextType.code,
+                project_id=project_id,
+                budget_tokens=effective_budget,
+                estimated_tokens=full_estimated,
+                is_truncated=True,
+                status="incomplete",
+                incomplete_reason=msg,
+                data=full_data,
+            )
+
+        # Case 3: Budget exceeded and strict budgeting mode -> prioritize snippets
+        base_data = dict(full_data)
+        base_data["code_snippets"] = []
+        base_overhead = estimate_tokens_from_data(base_data)
+        if base_overhead >= effective_budget:
+            raise ContextBudgetExceededError(
+                f"Base quality context overhead ({base_overhead} tokens) exceeds allocated budget ({effective_budget} tokens). "
+                "Request additional context or increase the explicit context budget."
+            )
+
+        sorted_snippets = sorted(code_snippets, key=_snippet_priority_key)
+        selected_snippets: list[CodeDiffSnippet] = []
+        omitted_snippets: list[CodeDiffSnippet] = []
+        current_snippets: list[dict[str, Any]] = []
+
+        for s in sorted_snippets:
+            candidate_snippets = current_snippets + [s.model_dump()]
+            candidate_data = dict(base_data)
+            candidate_data["code_snippets"] = candidate_snippets
+            if estimate_tokens_from_data(candidate_data) <= effective_budget:
+                current_snippets = candidate_snippets
+                selected_snippets.append(s)
+            else:
+                omitted_snippets.append(s)
+
+        if code_snippets and not selected_snippets:
+            raise ContextBudgetExceededError(
+                f"Context budget ({effective_budget} tokens) is insufficient to include even the smallest code snippet. "
+                "Request additional context or increase the explicit context budget."
+            )
+
+        selected_shas = {s.commit_sha for s in selected_snippets}
+        if evidence_ids is not None:
+            ev_ids = [eid for eid in evidence_ids if eid in selected_shas or eid not in {s.commit_sha for s in code_snippets}]
+        else:
+            ev_ids = sorted(selected_shas)
+
+        is_complete = len(omitted_snippets) == 0
+        status_val = "complete" if is_complete else "incomplete"
+        reason_val = (
+            None if is_complete
+            else f"Context budget accommodated {len(selected_snippets)} of {len(code_snippets)} code snippet(s); "
+                 f"{len(omitted_snippets)} snippet(s) omitted to respect {effective_budget} token limit."
+        )
+
+        data = dict(base_data)
+        data["code_snippets"] = [s.model_dump() for s in selected_snippets]
+        data["evidence_ids"] = ev_ids
+        data["selection"] = {
+            "total_snippets": len(code_snippets),
+            "selected_count": len(selected_snippets),
+            "omitted_count": len(omitted_snippets),
+            "omitted_files": sorted(list({s.file_path for s in omitted_snippets})),
+            "status": "complete" if is_complete else "partial",
+            "is_complete": is_complete,
+            "reason": reason_val,
+        }
+
+        estimated = estimate_tokens_from_data(data)
+
+        return ContextPayload(
+            context_type=BoundedContextType.code,
+            project_id=project_id,
+            budget_tokens=effective_budget,
+            estimated_tokens=estimated,
+            is_truncated=not is_complete,
+            status=status_val,
+            incomplete_reason=reason_val,
+            data=data,
         )
 
     def build_verifier_context(

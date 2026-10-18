@@ -174,6 +174,7 @@ export interface ProviderAttempt {
   status: string;
   attempt_count: number;
   duration_seconds: number | null;
+  repository_id?: string | null;
 }
 
 export type StageStatus = "pending" | "running" | "completed" | "skipped" | "failed" | "needs_attention" | "unknown";

@@ -18,7 +18,8 @@ class UnifiedProviderConfigTests(unittest.TestCase):
         self.assertEqual(settings.report_provider, "gemini")
         self.assertEqual(settings.groq_model, "qwen/qwen3.8-27b")
         self.assertIsNone(settings.groq_api_key)
-        self.assertIsNone(settings.quality_context_window)
+        self.assertEqual(settings.quality_context_window, 6000)
+        self.assertEqual(settings.quality_max_output_tokens, 1024)
         self.assertEqual(settings.quality_context_margin, 64)
 
     def test_groq_provider_is_supported_and_retired_provider_is_rejected(self) -> None:

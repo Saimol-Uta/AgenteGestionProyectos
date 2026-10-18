@@ -225,6 +225,17 @@ class CodeQualityAgent:
             strict_budget=True,
             repository_scope=repository_scope,
         )
+        self.last_selection = context.data.get("selection", {})
+        included_file_lines = {
+            (s.get("file_path"), tuple(s.get("lines", [])))
+            for s in context.data.get("code_snippets", [])
+        }
+        visible_snippets = [
+            s for s in snippets
+            if (s.file_path, tuple(s.lines)) in included_file_lines
+        ] if included_file_lines else snippets
+        available_ev_ids = set(context.data.get("evidence_ids", [])) or code_ev_ids
+
         evidences_payload = self.context_builder.runtime_payload(
             context,
             instructions,
@@ -266,9 +277,9 @@ class CodeQualityAgent:
 
             return SemanticValidator.validate_candidate_findings(
                 findings=parsed_findings,
-                available_snippets=snippets,
+                available_snippets=visible_snippets,
                 valid_rule_ids=valid_rules,
-                available_evidence_ids=code_ev_ids,
+                available_evidence_ids=available_ev_ids,
                 rules=rules or [],
             )
 

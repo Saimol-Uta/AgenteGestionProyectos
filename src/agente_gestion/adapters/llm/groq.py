@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 from typing import Any, Callable, Optional
 import requests
@@ -13,11 +14,72 @@ from agente_gestion.domain.llm import (
     ModelCapabilities,
 )
 from agente_gestion.ports.llm import LLMProviderPort
+from agente_gestion.agents.context import estimate_tokens_from_data
 from agente_gestion.application.security import (
     assert_remote_allowed,
     assert_safe_remote_payload,
     mask_secret,
 )
+
+_ORG_ID_RE = re.compile(r"\borg_[a-zA-Z0-9]+\b")
+_BEARER_RE = re.compile(r"Bearer\s+[a-zA-Z0-9_\-\.]+", re.IGNORECASE)
+_GROQ_KEY_RE = re.compile(r"\bgsk_[a-zA-Z0-9]+\b")
+
+
+def sanitize_provider_error(err: str, secret: Optional[str] = None) -> str:
+    """Mask credentials and internal organization identifiers from error strings."""
+    cleaned = err
+    if secret:
+        cleaned = mask_secret(cleaned, secret)
+    cleaned = _ORG_ID_RE.sub("org_[REDACTED]", cleaned)
+    cleaned = _BEARER_RE.sub("Bearer [REDACTED]", cleaned)
+    cleaned = _GROQ_KEY_RE.sub("gsk_[REDACTED]", cleaned)
+    return cleaned
+
+
+class RollingWindowTokenLimiter:
+    """Tracks prompt token usage over a rolling window (e.g. 60s) to respect ITPM limits."""
+
+    def __init__(
+        self,
+        limit_tokens: int = 6000,
+        window_seconds: float = 60.0,
+        sleeper: Callable[[float], None] = time.sleep,
+        time_fn: Callable[[], float] = time.monotonic,
+    ):
+        self.limit_tokens = limit_tokens
+        self.window_seconds = window_seconds
+        self.sleeper = sleeper
+        self.time_fn = time_fn
+        self.history: list[tuple[float, int]] = []
+
+    def _clean(self, now: float) -> None:
+        cutoff = now - self.window_seconds
+        self.history = [(t, count) for (t, count) in self.history if t > cutoff]
+
+    def current_usage(self, now: Optional[float] = None) -> int:
+        current_time = self.time_fn() if now is None else now
+        self._clean(current_time)
+        return sum(count for _, count in self.history)
+
+    def acquire(self, tokens: int, timeout: float = 120.0) -> bool:
+        start_time = self.time_fn()
+        if tokens > self.limit_tokens:
+            return False
+        while True:
+            now = self.time_fn()
+            self._clean(now)
+            used = sum(count for _, count in self.history)
+            if used + tokens <= self.limit_tokens:
+                self.history.append((now, tokens))
+                return True
+            if not self.history:
+                return False
+            oldest_time, _ = self.history[0]
+            wait_time = (oldest_time + self.window_seconds) - now + 0.05
+            if (now - start_time) + wait_time > timeout:
+                return False
+            self.sleeper(min(wait_time, 1.0))
 
 
 class GroqProvider(LLMProviderPort):
@@ -33,6 +95,7 @@ class GroqProvider(LLMProviderPort):
         context_tokens: int = 131072,
         max_output_tokens: int = 8192,
         transport: Optional[Callable[..., dict[str, Any]]] = None,
+        rate_limiter: Optional[RollingWindowTokenLimiter] = None,
     ):
         self.provider_name = "groq"
         self.api_key = api_key if api_key is not None else os.environ.get("GROQ_API_KEY", "")
@@ -42,6 +105,7 @@ class GroqProvider(LLMProviderPort):
         self.context_tokens = context_tokens
         self.max_output_tokens = max_output_tokens
         self.transport = transport
+        self.rate_limiter = rate_limiter
 
     def __repr__(self) -> str:
         return f"<GroqProvider model='{self.model}' provider='{self.provider_name}'>"
@@ -72,6 +136,7 @@ class GroqProvider(LLMProviderPort):
             "status_code": resp.status_code,
             "body": resp_json,
             "text": resp.text,
+            "headers": dict(resp.headers),
         }
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
@@ -94,6 +159,42 @@ class GroqProvider(LLMProviderPort):
                 duration_seconds=0.0,
                 request_ref=request.schema_name,
             )
+
+        # 4. Check operational rate limits and context budgets before sending
+        estimated_prompt_tokens = (
+            estimate_tokens_from_data(request.instructions)
+            + estimate_tokens_from_data(request.evidences)
+        )
+        if self.rate_limiter is not None:
+            acquired = self.rate_limiter.acquire(
+                estimated_prompt_tokens,
+                timeout=request.timeout_seconds,
+            )
+            if not acquired:
+                if estimated_prompt_tokens > self.rate_limiter.limit_tokens:
+                    return GenerationResult(
+                        status=GenerationStatus.error,
+                        error_message=(
+                            f"Local rejection: Payload estimated at {estimated_prompt_tokens} tokens "
+                            f"exceeds operational limit of {self.rate_limiter.limit_tokens} tokens."
+                        ),
+                        provider="groq",
+                        model=target_model,
+                        duration_seconds=0.0,
+                        request_ref=request.schema_name,
+                    )
+                else:
+                    return GenerationResult(
+                        status=GenerationStatus.error,
+                        error_message=(
+                            f"Operational rate limit (ITPM) exhausted across window. "
+                            f"Could not allocate {estimated_prompt_tokens} tokens within timeout."
+                        ),
+                        provider="groq",
+                        model=target_model,
+                        duration_seconds=0.0,
+                        request_ref=request.schema_name,
+                    )
 
         endpoint = f"{self.base_url}/chat/completions"
         headers = {
@@ -144,7 +245,7 @@ class GroqProvider(LLMProviderPort):
                     )
         except Exception as e:
             duration = time.monotonic() - start_time
-            sanitized_err = mask_secret(str(e), self.api_key)
+            sanitized_err = sanitize_provider_error(str(e), self.api_key)
             return GenerationResult(
                 status=GenerationStatus.error,
                 error_message=f"Groq transport error: {sanitized_err}",
@@ -165,7 +266,7 @@ class GroqProvider(LLMProviderPort):
                 or res.get("text")
                 or f"HTTP {status_code}"
             )
-            sanitized_err = mask_secret(str(raw_err), self.api_key)
+            sanitized_err = sanitize_provider_error(str(raw_err), self.api_key)
             return GenerationResult(
                 status=GenerationStatus.error,
                 error_message=f"Groq API error {status_code}: {sanitized_err}",

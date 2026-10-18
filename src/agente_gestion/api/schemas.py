@@ -267,6 +267,7 @@ class ProviderAttempt(ApiModel):
     status: str
     attempt_count: int = Field(ge=0)
     duration_seconds: float | None = None
+    repository_id: str | None = None
 
 
 class StageView(ApiModel):

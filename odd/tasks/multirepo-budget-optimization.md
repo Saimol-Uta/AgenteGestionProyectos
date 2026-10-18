@@ -16,10 +16,14 @@ T1 [S1,S2,S5,S6] route=inline; status=completed; Implement de-duplication and bo
 T2 [S3,S4,S5,S6] route=inline; status=completed; Implement budget reservation for CI and repository isolation in `multirepo.py` and `collection_budget.py`.
 T3 [S1–S7] route=inline; status=completed; Regression tests for large commits, duplicate files, exhausted budgets, CI reservation, and repo isolation. Verify partial evidence not complete.
 T4 [S1,S2,S6] route=inline; status=completed; Support Git LFS pointers in `github.py` with size validation and prioritize code over media.
+T5 [S1,S2,S5,S6] route=inline; status=completed; Bound Groq quality context window (6000) and max output tokens (1024), rolling window token limiter (60s), prompt pre-flight check, and sanitize provider errors.
+T6 [S5,S6] route=inline; status=completed; Project multirepo provider attempts (`quality:<repo>`, `verifier:<repo>`) in API schemas and UI types while preserving repository_id and failed attempts.
 
 ## Verification
 - Unit tests: `tests/test_multirepo_collection.py` (29 passed), `tests/test_github.py` (54 passed).
-- Suite tests: 223 tests passed across 15 modules without errors or external calls.
-- Real read-only collection: `hormigestion-frontend` resolved SHA `adc9794`, collected 81 diffs and 85 evidence items without `malformed_payload`.
+- Budget & telemetry tests: `tests/test_groq_budget_telemetry.py` (10 passed).
+- Suite tests: 1046 tests passed across entire test suite without errors or external calls (`Ran 1046 tests in 20.016s - OK (skipped=1)`).
 - Preserved states: `incomplete`, `unknown`, `needs_attention` properly retained when limits exceeded.
+- Error sanitation: API keys, Bearer tokens, and `org_...` properly redacted.
+- Provider attempts: UI/API schemas maintain `repository_id` and map stage names without dropping failed attempts.
 

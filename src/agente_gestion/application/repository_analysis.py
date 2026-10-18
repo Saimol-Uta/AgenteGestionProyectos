@@ -11,7 +11,16 @@ from agente_gestion.agents.context import ContextBuilder
 from agente_gestion.agents.quality import CodeQualityAgent
 from agente_gestion.agents.verifier import VerifierAgent
 from agente_gestion.application.escalation import EscalationGate, EscalationDecision
-from agente_gestion.application.generation import GlobalBudgetExceededError, StageInvocationCoordinator
+from agente_gestion.application.generation import (
+    AuthenticationError,
+    FormatValidationError,
+    GlobalBudgetExceededError,
+    PayloadTooLargeError,
+    ProviderError,
+    ProviderInternalError,
+    RateLimitExceededError,
+    StageInvocationCoordinator,
+)
 from agente_gestion.domain.ci_metrics import CiArtifactOutcome
 from agente_gestion.domain.code import (
     CIRunResult,
@@ -118,6 +127,16 @@ def _safe_failure(stage: str, error: Exception) -> str:
         return "Global LLM call budget exhausted; remaining repository work was not invoked."
     if type(error).__name__ == "ContextBudgetExceededError":
         return f"{stage.capitalize()} context budget exhausted; no evidence was truncated."
+    if isinstance(error, PayloadTooLargeError) or type(error).__name__ == "PayloadTooLargeError":
+        return f"{stage.capitalize()} stage failed with PayloadTooLargeError: input tokens exceed provider limit (HTTP 413); results remain unapproved."
+    if isinstance(error, RateLimitExceededError) or type(error).__name__ == "RateLimitExceededError":
+        return f"{stage.capitalize()} stage failed with RateLimitExceededError: rate limit reached (HTTP 429); results remain unapproved."
+    if isinstance(error, AuthenticationError) or type(error).__name__ == "AuthenticationError":
+        return f"{stage.capitalize()} stage failed with AuthenticationError: provider credentials rejected; results remain unapproved."
+    if isinstance(error, FormatValidationError) or type(error).__name__ == "FormatValidationError":
+        return f"{stage.capitalize()} stage failed with FormatValidationError: model output failed schema validation; results remain unapproved."
+    if isinstance(error, ProviderInternalError) or type(error).__name__ == "ProviderInternalError":
+        return f"{stage.capitalize()} stage failed with ProviderInternalError: provider returned internal server error; results remain unapproved."
     return f"{stage.capitalize()} stage failed with {type(error).__name__}; results remain unapproved."
 
 
@@ -584,6 +603,10 @@ def analyze_repository_results(
                         repository_scope=_scope_payload(work),
                         stage_name=f"quality:{work.stage_id}",
                     )
+                    selection = getattr(agent, "last_selection", {})
+                    if selection.get("omitted_count", 0) > 0:
+                        work.code_is_complete = False
+
                     allowed = set(work.evidence_ids)
                     for finding in raw_findings:
                         bound, issue = _namespace_finding(finding, work, allowed)
@@ -598,7 +621,12 @@ def analyze_repository_results(
                     )
                     work.quality_reason = (
                         None if work.quality_status == StageStatus.completed
-                        else "Repository source or model output was incomplete; retained only identity-matched findings."
+                        else (
+                            f"Reviewed {selection.get('selected_count', len(work.snippets))} of {len(work.snippets)} repository-scoped code item(s); "
+                            f"{selection.get('omitted_count', 0)} omitted due to context budget."
+                            if selection.get("omitted_count", 0) > 0
+                            else "Repository source or model output was incomplete; retained only identity-matched findings."
+                        )
                     )
                     work.findings_complete = work.quality_status == StageStatus.completed
                 except Exception as exc:

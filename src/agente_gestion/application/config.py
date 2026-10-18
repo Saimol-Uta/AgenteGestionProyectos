@@ -66,6 +66,8 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             merged["verifier_timeout_seconds"] = exec_sec["verifier_timeout_seconds"]
         if "quality_max_output_tokens" in exec_sec:
             merged["quality_max_output_tokens"] = exec_sec["quality_max_output_tokens"]
+        if "quality_context_window" in exec_sec:
+            merged["quality_context_window"] = exec_sec["quality_context_window"]
 
     if "providers" in file_data and isinstance(file_data["providers"], dict):
         prov_sec = file_data["providers"]
@@ -77,6 +79,10 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
                 merged["quality_max_output_tokens"] = q_sec["max_output_tokens"]
             if "model" in q_sec:
                 merged["groq_model"] = q_sec["model"]
+            if "context_window" in q_sec:
+                merged["quality_context_window"] = q_sec["context_window"]
+            if "quality_context_window" in q_sec:
+                merged["quality_context_window"] = q_sec["quality_context_window"]
         if "report" in prov_sec and isinstance(prov_sec["report"], dict):
             rep_sec = prov_sec["report"]
             if "provider" in rep_sec:

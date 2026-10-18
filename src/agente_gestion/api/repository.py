@@ -1059,23 +1059,32 @@ class SQLiteQueryRepository:
                 "WHERE run_id = ? ORDER BY stage, provider, model, status",
                 (run_id,),
             ).fetchall()
-        grouped: dict[tuple[str, str, str, str], list[float | None]] = {}
+        grouped: dict[tuple[str, str, str, str, str | None], list[float | None]] = {}
         safe_providers = {"gemini", "groq", "fake_simulated"}
-        safe_statuses = {"complete", "incomplete", "refused", "error"}
+        safe_statuses = {"complete", "incomplete", "refused", "error", "succeeded", "failed"}
         for row in rows:
-            stage = str(row["stage"] or "")
-            if stage not in self._RUN_STAGES:
+            raw_stage = str(row["stage"] or "")
+            base_stage, _, repo_id = raw_stage.partition(":")
+            if base_stage not in self._RUN_STAGES:
                 continue
             raw_provider = str(row["provider"] or "")
             provider = raw_provider if raw_provider in safe_providers else "other"
             model = self._safe_model_name(row["model"])
             status_value = str(row["status"] or "")
-            status = status_value if status_value in safe_statuses else "unknown"
+            if status_value == "complete":
+                status = "succeeded"
+            elif status_value in {"error", "refused", "incomplete"}:
+                status = "failed"
+            elif status_value in safe_statuses:
+                status = status_value
+            else:
+                status = "unknown"
             duration = self._safe_duration(row["duration_seconds"])
-            key = (stage, provider, model, status)
+            repository_id = repo_id if repo_id else None
+            key = (base_stage, provider, model, status, repository_id)
             grouped.setdefault(key, []).append(duration)
         result: dict[str, list[ProviderAttempt]] = {}
-        for (stage, provider, model, status), durations in grouped.items():
+        for (stage, provider, model, status, repository_id), durations in grouped.items():
             result.setdefault(stage, []).append(ProviderAttempt(
                 provider=provider,
                 model=model,
@@ -1083,6 +1092,7 @@ class SQLiteQueryRepository:
                 attempt_count=len(durations),
                 duration_seconds=(sum(value for value in durations if value is not None)
                                   if all(value is not None for value in durations) else None),
+                repository_id=repository_id,
             ))
         return result
 

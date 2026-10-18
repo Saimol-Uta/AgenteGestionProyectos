@@ -26,7 +26,7 @@ from agente_gestion.adapters.sources.local_monitoring_rules import (
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
 from agente_gestion.adapters.llm.gemini import GeminiProvider
-from agente_gestion.adapters.llm.groq import GroqProvider
+from agente_gestion.adapters.llm.groq import GroqProvider, RollingWindowTokenLimiter
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
@@ -92,7 +92,15 @@ def _build_orchestrator(
             base_url=config.groq_base_url,
             allow_remote_ai=True,
             context_tokens=config.quality_context_window or 131072,
-            max_output_tokens=config.quality_max_output_tokens or 8192,
+            max_output_tokens=config.quality_max_output_tokens or 1024,
+            rate_limiter=(
+                RollingWindowTokenLimiter(
+                    limit_tokens=config.quality_context_window or 6000,
+                    window_seconds=60.0,
+                )
+                if config.quality_context_window
+                else None
+            ),
         ) if remote_models_allowed and groq_key
         else FakeProvider(model="sandbox-quality")
     )

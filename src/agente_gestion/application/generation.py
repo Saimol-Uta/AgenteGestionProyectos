@@ -24,6 +24,36 @@ class NonRetryableError(Exception):
     pass
 
 
+class ProviderError(RuntimeError):
+    """Base exception for provider invocation failures."""
+    pass
+
+
+class PayloadTooLargeError(ProviderError):
+    """HTTP 413 or prompt exceeding operational token limit."""
+    pass
+
+
+class RateLimitExceededError(ProviderError):
+    """HTTP 429 or operational rate limit exhausted."""
+    pass
+
+
+class AuthenticationError(ProviderError, NonRetryableError):
+    """Authentication or access credentials defect."""
+    pass
+
+
+class FormatValidationError(ProviderError):
+    """Failed to produce valid JSON adhering to domain schema."""
+    pass
+
+
+class ProviderInternalError(ProviderError):
+    """5xx internal provider error."""
+    pass
+
+
 class GlobalBudgetTracker:
     """Tracks and bounds cumulative LLM call count across all stages of an execution run."""
 
@@ -139,7 +169,7 @@ class StageInvocationCoordinator:
                             error_message=err_msg,
                         )
                     )
-                    raise RuntimeError(f"Non-retryable provider error in stage '{stage}': {err_msg}")
+                    raise AuthenticationError(f"Non-retryable provider error in stage '{stage}': {err_msg}")
 
                 # Check transient errors
                 if is_transient_error(err_msg) and transient_retries_made < self.max_transient_retries:
@@ -180,7 +210,14 @@ class StageInvocationCoordinator:
                         error_message=err_msg,
                     )
                 )
-                raise RuntimeError(f"Provider failed in stage '{stage}': {err_msg}")
+                msg_lower = err_msg.lower()
+                if "413" in err_msg or "request too large" in msg_lower or "payload too large" in msg_lower or "local rejection" in msg_lower:
+                    raise PayloadTooLargeError(f"Payload too large in stage '{stage}': {err_msg}")
+                if "429" in err_msg or "rate limit" in msg_lower or "itpm" in msg_lower:
+                    raise RateLimitExceededError(f"Rate limit exceeded in stage '{stage}': {err_msg}")
+                if any(ind in err_msg for ind in ["500", "502", "503", "504"]) or "internal" in msg_lower or "overloaded" in msg_lower:
+                    raise ProviderInternalError(f"Provider internal error in stage '{stage}': {err_msg}")
+                raise ProviderError(f"Provider failed in stage '{stage}': {err_msg}")
 
             if result.status == GenerationStatus.refused:
                 self.recorded_attempts.append(
