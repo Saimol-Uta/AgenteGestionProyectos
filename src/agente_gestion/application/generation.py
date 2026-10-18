@@ -127,6 +127,7 @@ class StageInvocationCoordinator:
         provider: LLMProviderPort,
         request: GenerationRequest,
         validator: Optional[Callable[[dict[str, Any]], list[str]]] = None,
+        repair_context_builder: Optional[Callable[[GenerationRequest, dict[str, Any], list[str]], GenerationRequest]] = None,
     ) -> tuple[GenerationResult, dict[str, Any]]:
         """
         Executes an agent stage invocation loop with strict budget and retry invariants.
@@ -290,23 +291,36 @@ class StageInvocationCoordinator:
                 if repair_attempts_made < self.max_repair_attempts:
                     repair_attempts_made += 1
                     err_summary = "; ".join(val_errors)
-                    repair_instructions = (
-                        f"{request.instructions}\n\n"
-                        f"IMPORTANT CORRECTION REQUIRED: Your previous output failed domain validation with:\n"
-                        f"{err_summary}\n"
-                        f"Regenerate the response fixing these specific issues strictly adhering to given facts."
-                    )
-                    current_request = GenerationRequest(
-                        role=request.role,
-                        instructions=repair_instructions,
-                        evidences=request.evidences,
-                        schema_name=request.schema_name,
-                        json_schema=request.json_schema,
-                        model=request.model,
-                        max_generation_tokens=request.max_generation_tokens,
-                        timeout_seconds=request.timeout_seconds,
-                        options=request.options,
-                    )
+                    if repair_context_builder:
+                        current_request = repair_context_builder(request, parsed_data, val_errors)
+                    else:
+                        previous_draft = ""
+                        if parsed_data:
+                            try:
+                                previous_draft = (
+                                    f"\n\nYOUR PREVIOUS OUTPUT DRAFT (FAILED VALIDATION):\n"
+                                    f"```json\n{json.dumps(parsed_data, indent=2, ensure_ascii=False)}\n```"
+                                )
+                            except Exception:
+                                pass
+                        repair_instructions = (
+                            f"{request.instructions}\n\n"
+                            f"IMPORTANT CORRECTION REQUIRED: Your previous output failed domain validation with:\n"
+                            f"{err_summary}\n"
+                            f"{previous_draft}\n"
+                            f"Regenerate the response fixing these specific issues strictly adhering to given facts."
+                        )
+                        current_request = GenerationRequest(
+                            role=request.role,
+                            instructions=repair_instructions,
+                            evidences=request.evidences,
+                            schema_name=request.schema_name,
+                            json_schema=request.json_schema,
+                            model=request.model,
+                            max_generation_tokens=request.max_generation_tokens,
+                            timeout_seconds=request.timeout_seconds,
+                            options=request.options,
+                        )
                     continue
                 else:
                     raise ValidationError(

@@ -34,8 +34,8 @@ class GeneratedFindingSchema(BaseModel):
     category: Optional[str] = Field(default="otros", description="Defect category")
     evidence: Optional[str] = Field(default="", description="Snippet excerpt")
     suggested_fix: Optional[str] = Field(default="", description="Suggested fix proposal")
-    suggested_code: str = Field(default="", description="Syntactically coherent code example for human review")
-    improvement_summary: str = Field(default="", description="Breve resumen en español de la mejora propuesta")
+    suggested_code: str = Field(min_length=1, description="Syntactically coherent code example for human review")
+    improvement_summary: str = Field(min_length=1, description="Breve resumen en español de la mejora propuesta")
 
     @field_validator("evidence_ids", mode="before")
     @classmethod
@@ -148,9 +148,11 @@ class CodeQualityAgent:
             "  * line: numero de linea exacto dentro de las lineas del fragmento.\n"
             "  * confidence: flotante entre 0.0 y 1.0.\n"
             "  * requires_verification: booleano (true).\n"
-            "  * suggested_code: ejemplo de código concreto que corrige el hallazgo, compatible con el contexto visible.\n"
-            "  * improvement_summary: resumen breve de la mejora en español.\n"
-            "- Prohibido inventar o autoasignar IDs de reglas o evidencias inexistentes.\n\n"
+            "  * suggested_code: ejemplo de código concreto que corrige el hallazgo, compatible con el contexto visible. NUNCA vacio.\n"
+            "  * improvement_summary: resumen breve de la mejora en español. NUNCA vacio. Nota: 'suggested_fix' NO sustituye a 'improvement_summary'. Ambos campos son obligatorios.\n"
+            "- Prohibido inventar o autoasignar IDs de reglas o evidencias inexistentes.\n"
+            "- No inventes defectos si el código es correcto. Si no encuentras defectos reales en los fragmentos visibles, devuelve una lista vacía: {\"findings\": []}.\n"
+            "- Cita únicamente líneas y archivos visibles en los fragmentos provistos.\n\n"
             "EJEMPLO DE ESQUEMA VALIDO:\n"
             "{\n"
             '  "findings": [\n'
@@ -272,7 +274,7 @@ class CodeQualityAgent:
                 try:
                     gen_item = finding_schema.model_validate(item)
                     if not gen_item.suggested_code.strip() or not gen_item.improvement_summary.strip():
-                        return ["Finding must include suggested_code and improvement_summary."]
+                        return ["Malformed finding structure: Finding must include non-empty suggested_code and improvement_summary."]
                     parsed_findings.append(CandidateFinding.model_validate(gen_item.model_dump()))
                 except Exception as e:
                     return [f"Malformed finding structure: {str(e)}"]
@@ -285,11 +287,87 @@ class CodeQualityAgent:
                 rules=rules or [],
             )
 
+        def build_repair_request(
+            orig_req: GenerationRequest,
+            parsed_data: dict[str, Any],
+            val_errors: list[str],
+        ) -> GenerationRequest:
+            err_summary = "; ".join(val_errors)
+            previous_draft_str = json.dumps(parsed_data, indent=2, ensure_ascii=False) if parsed_data else ""
+
+            # Check if we can localize evidence context around candidate findings
+            raw_findings = parsed_data.get("findings", []) if isinstance(parsed_data, dict) else []
+            localized_snippets = []
+            if raw_findings:
+                referenced_locs = {
+                    (f.get("commit_sha"), f.get("file_path"))
+                    for f in raw_findings
+                    if isinstance(f, dict) and f.get("file_path")
+                }
+                localized_snippets = [
+                    s for s in visible_snippets
+                    if (s.commit_sha, s.file_path) in referenced_locs
+                ]
+
+            repair_evidences = orig_req.evidences
+            if localized_snippets:
+                focused_context = self.context_builder.build_code_context(
+                    project_id=project_id,
+                    draft=draft,
+                    criteria=criteria or [],
+                    code_snippets=localized_snippets,
+                    rules=rules,
+                    evidence_ids=sorted(code_ev_ids),
+                    budget_tokens=safe_input_budget,
+                    strict_budget=True,
+                    repository_scope=repository_scope,
+                )
+                repair_evidences = self.context_builder.runtime_payload(
+                    focused_context,
+                    instructions,
+                    output_json_schema,
+                    output_tokens,
+                    capabilities.context_tokens,
+                    max_output_tokens=capabilities.max_output_tokens,
+                    request_fields={
+                        "role": "revisor",
+                        "model": self.model,
+                        "schema_name": "code_findings_v1",
+                        "timeout_seconds": self.timeout_seconds,
+                    },
+                    safety_margin_tokens=safety_margin,
+                )
+
+            repair_instructions = (
+                f"{instructions}\n\n"
+                f"IMPORTANT CORRECTION REQUIRED:\n"
+                f"Your previous output failed validation with the following error(s):\n"
+                f"{err_summary}\n\n"
+                f"YOUR PREVIOUS OUTPUT DRAFT:\n"
+                f"```json\n{previous_draft_str}\n```\n\n"
+                f"Regenerate the complete valid JSON response fixing these specific issues.\n"
+                f"- Ensure every candidate finding strictly includes 'suggested_code' and 'improvement_summary'.\n"
+                f"- Preserve exact commit_sha, file_path, line, and evidence_ids from your previous draft and visible code."
+            )
+
+            return GenerationRequest(
+                role=orig_req.role,
+                instructions=repair_instructions,
+                evidences=repair_evidences,
+                schema_name=orig_req.schema_name,
+                json_schema=orig_req.json_schema,
+                model=orig_req.model,
+                max_generation_tokens=orig_req.max_generation_tokens,
+                timeout_seconds=orig_req.timeout_seconds,
+                options=orig_req.options,
+            )
+
         _, validated_dict = self.coordinator.invoke_stage(
             stage=stage_name or "quality",
             provider=self.provider,
             request=request,
             validator=validate_payload,
+            repair_context_builder=build_repair_request,
         )
 
         raw_findings = validated_dict.get("findings", [])

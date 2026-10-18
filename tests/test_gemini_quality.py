@@ -16,6 +16,7 @@ from agente_gestion.application.generation import (
     RateLimitExceededError,
     StageInvocationCoordinator,
 )
+from agente_gestion.application.validation import ValidationError
 from agente_gestion.application.repository_analysis import (
     _prepare_work,
     _scope_payload,
@@ -600,6 +601,399 @@ class GeminiQualityReviewerTestCase(unittest.TestCase):
         )
         self.assertEqual(groq.get_capabilities().max_output_tokens, 1024)
         self.assertEqual(mistral.get_capabilities().max_output_tokens, 4096)
+
+    def test_gemini_request_transmits_response_mime_type_and_schema(self):
+        """11. GeminiProvider incluye responseMimeType y responseSchema en generationConfig."""
+        mock_transport = MagicMock(return_value={
+            "status_code": 200,
+            "body": {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": '{"findings": []}'}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 10},
+            },
+            "text": "{}",
+        })
+        provider = GeminiProvider(
+            api_key="synthetic_gemini_key",
+            model="gemini-3.5-flash-lite",
+            allow_remote_ai=True,
+            transport=mock_transport,
+        )
+        fake_schema = {"type": "object", "properties": {"findings": {"type": "array"}}}
+        request = GenerationRequest(
+            role="revisor",
+            instructions="Revisar código.",
+            evidences={"code": "test"},
+            schema_name="code_findings_v1",
+            json_schema=fake_schema,
+            model="gemini-3.5-flash-lite",
+            max_generation_tokens=8192,
+        )
+        result = provider.generate(request)
+        self.assertEqual(result.status, GenerationStatus.complete)
+        payload = mock_transport.call_args[1].get("payload") or mock_transport.call_args[1].get("json")
+        gen_cfg = payload["generationConfig"]
+        self.assertEqual(gen_cfg["responseMimeType"], "application/json")
+        self.assertEqual(gen_cfg["responseSchema"], fake_schema)
+        self.assertEqual(gen_cfg["responseFormat"]["text"]["mimeType"], "APPLICATION_JSON")
+        self.assertEqual(gen_cfg["responseFormat"]["text"]["schema"], fake_schema)
+
+    def test_rejection_when_finding_lacks_improvement_summary(self):
+        """12. Rechazo de respuestas cuando un hallazgo omite improvement_summary."""
+        mock_findings = {
+            "findings": [
+                {
+                    "id": "CQ-001",
+                    "rule_id": None,
+                    "claim": "Missing input validation",
+                    "severity": "medium",
+                    "evidence_ids": ["c0ffee1"],
+                    "commit_sha": "c0ffee1",
+                    "file_path": "src/main.py",
+                    "line": 10,
+                    "confidence": 0.9,
+                    "suggested_code": "if not input: raise ValueError()",
+                }
+            ]
+        }
+        mock_transport = MagicMock(return_value={
+            "status_code": 200,
+            "body": {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": json.dumps(mock_findings)}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 200, "candidatesTokenCount": 80},
+            },
+            "text": "{}",
+        })
+        provider = GeminiProvider(
+            api_key="synthetic_gemini_key",
+            model="gemini-3.5-flash-lite",
+            allow_remote_ai=True,
+            transport=mock_transport,
+        )
+        coordinator = StageInvocationCoordinator(max_repair_attempts=0)
+        agent = CodeQualityAgent(
+            provider=provider,
+            model="gemini-3.5-flash-lite",
+            coordinator=coordinator,
+            context_builder=ContextBuilder(),
+        )
+        snippet = CodeDiffSnippet(
+            repository="test-repo",
+            commit_sha="c0ffee1",
+            file_path="src/main.py",
+            diff_side="NEW",
+            lines=[10],
+            content="def run(x):\n    return x\n",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            agent.run(
+                project_id="TEST",
+                draft=self.draft,
+                snippets=[snippet],
+                rules=[],
+                stage_name="quality:test",
+            )
+        self.assertIn("improvement_summary", str(ctx.exception))
+
+    def test_rejection_when_finding_lacks_suggested_code(self):
+        """13. Rechazo de respuestas cuando un hallazgo omite suggested_code."""
+        mock_findings = {
+            "findings": [
+                {
+                    "id": "CQ-001",
+                    "rule_id": None,
+                    "claim": "Missing input validation",
+                    "severity": "medium",
+                    "evidence_ids": ["c0ffee1"],
+                    "commit_sha": "c0ffee1",
+                    "file_path": "src/main.py",
+                    "line": 10,
+                    "confidence": 0.9,
+                    "improvement_summary": "Valida la entrada antes de procesar.",
+                }
+            ]
+        }
+        mock_transport = MagicMock(return_value={
+            "status_code": 200,
+            "body": {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": json.dumps(mock_findings)}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 200, "candidatesTokenCount": 80},
+            },
+            "text": "{}",
+        })
+        provider = GeminiProvider(
+            api_key="synthetic_gemini_key",
+            model="gemini-3.5-flash-lite",
+            allow_remote_ai=True,
+            transport=mock_transport,
+        )
+        coordinator = StageInvocationCoordinator(max_repair_attempts=0)
+        agent = CodeQualityAgent(
+            provider=provider,
+            model="gemini-3.5-flash-lite",
+            coordinator=coordinator,
+            context_builder=ContextBuilder(),
+        )
+        snippet = CodeDiffSnippet(
+            repository="test-repo",
+            commit_sha="c0ffee1",
+            file_path="src/main.py",
+            diff_side="NEW",
+            lines=[10],
+            content="def run(x):\n    return x\n",
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            agent.run(
+                project_id="TEST",
+                draft=self.draft,
+                snippets=[snippet],
+                rules=[],
+                stage_name="quality:test",
+            )
+        self.assertIn("suggested_code", str(ctx.exception))
+
+    def test_successful_repair_with_previous_draft_and_localized_context(self):
+        """14. Reparación exitosa: intento 1 falla por falta de improvement_summary, intento 2 recibe borrador previo y contexto acotado."""
+        attempt_1_payload = {
+            "findings": [
+                {
+                    "id": "CQ-001",
+                    "rule_id": None,
+                    "claim": "Missing input validation in handler",
+                    "severity": "medium",
+                    "evidence_ids": ["sha-handler"],
+                    "commit_sha": "sha-handler",
+                    "file_path": "src/handler.py",
+                    "line": 5,
+                    "confidence": 0.9,
+                    "suggested_fix": "Validar entrada",
+                    "suggested_code": "if not x: raise ValueError()",
+                }
+            ]
+        }
+        attempt_2_payload = {
+            "findings": [
+                {
+                    "id": "CQ-001",
+                    "rule_id": None,
+                    "claim": "Missing input validation in handler",
+                    "severity": "medium",
+                    "evidence_ids": ["sha-handler"],
+                    "commit_sha": "sha-handler",
+                    "file_path": "src/handler.py",
+                    "line": 5,
+                    "confidence": 0.9,
+                    "suggested_code": "if not x: raise ValueError()",
+                    "improvement_summary": "Añade validación de entrada obligatoria.",
+                }
+            ]
+        }
+
+        transport_calls = []
+
+        def mock_call(url, headers, payload=None, timeout=30.0, **kwargs):
+            body = payload or kwargs.get("json")
+            transport_calls.append(body)
+            if len(transport_calls) == 1:
+                return {
+                    "status_code": 200,
+                    "body": {
+                        "candidates": [
+                            {
+                                "content": {"parts": [{"text": json.dumps(attempt_1_payload)}]},
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": {"promptTokenCount": 5000, "candidatesTokenCount": 100},
+                    },
+                    "text": "{}",
+                }
+            else:
+                return {
+                    "status_code": 200,
+                    "body": {
+                        "candidates": [
+                            {
+                                "content": {"parts": [{"text": json.dumps(attempt_2_payload)}]},
+                                "finishReason": "STOP",
+                            }
+                        ],
+                        "usageMetadata": {"promptTokenCount": 800, "candidatesTokenCount": 120},
+                    },
+                    "text": "{}",
+                }
+
+        provider = GeminiProvider(
+            api_key="synthetic_gemini_key",
+            model="gemini-3.5-flash-lite",
+            allow_remote_ai=True,
+            transport=mock_call,
+        )
+
+        agent = CodeQualityAgent(
+            provider=provider,
+            model="gemini-3.5-flash-lite",
+            context_builder=ContextBuilder(),
+        )
+
+        handler_snippet = CodeDiffSnippet(
+            repository="test-repo",
+            commit_sha="sha-handler",
+            file_path="src/handler.py",
+            diff_side="NEW",
+            lines=[5],
+            content="def handle(x):\n    return x\n",
+        )
+        unrelated_snippet = CodeDiffSnippet(
+            repository="test-repo",
+            commit_sha="sha-other",
+            file_path="src/other.py",
+            diff_side="NEW",
+            lines=[1],
+            content="print('unrelated')\n",
+        )
+
+        findings = agent.run(
+            project_id="TEST",
+            draft=self.draft,
+            snippets=[handler_snippet, unrelated_snippet],
+            rules=[],
+            evidence_ids=["sha-handler", "sha-other"],
+            stage_name="quality:test",
+        )
+
+        self.assertEqual(len(transport_calls), 2)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].id, "CQ-001")
+        self.assertEqual(findings[0].commit_sha, "sha-handler")
+        self.assertEqual(findings[0].file_path, "src/handler.py")
+        self.assertEqual(findings[0].line, 5)
+        self.assertEqual(findings[0].improvement_summary, "Añade validación de entrada obligatoria.")
+
+        # Verify repair call prompt contents
+        repair_body = transport_calls[1]
+        repair_prompt = repair_body["contents"][0]["parts"][0]["text"]
+        self.assertIn("IMPORTANT CORRECTION REQUIRED", repair_prompt)
+        self.assertIn("improvement_summary", repair_prompt)
+        self.assertIn("YOUR PREVIOUS OUTPUT DRAFT", repair_prompt)
+        self.assertIn("CQ-001", repair_prompt)
+        # Verify localized context: repair evidence context includes handler.py but NOT other.py
+        repair_evidences_raw = repair_prompt.split("Evidence Context:\n", 1)[1]
+        self.assertIn("src/handler.py", repair_evidences_raw)
+        self.assertNotIn("src/other.py", repair_evidences_raw)
+
+    def test_verifier_and_report_handle_findings_with_suggested_code_and_summary(self):
+        """15. VerifierAgent y RepositoryReportResult procesan correctamente hallazgos con suggested_code e improvement_summary."""
+        from agente_gestion.agents.verifier import VerifierAgent
+        from agente_gestion.domain.findings import CandidateFinding
+        from agente_gestion.domain.report import RepositoryReportResult
+        from agente_gestion.domain.repositories import RepositoryAnalysisState, RepositoryIdentity
+
+        sha = "a" * 40
+        finding = CandidateFinding(
+            id="CQ-001",
+            rule_id=None,
+            claim="Concatenación SQL visible",
+            severity="high",
+            evidence_ids=[sha],
+            commit_sha=sha,
+            file_path="src/db.py",
+            line=12,
+            confidence=0.95,
+            suggested_code="db.execute('SELECT * FROM users WHERE id = %s', (uid,))",
+            improvement_summary="Parametriza la consulta para prevenir inyección SQL.",
+        )
+
+        mock_verifier_transport = MagicMock(return_value={
+            "status_code": 200,
+            "body": {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps({
+                                        "verifications": [
+                                            {
+                                                "finding_id": "CQ-001",
+                                                "verdict": "confirmed",
+                                                "reason": "Visible SQL concatenation on line 12 confirmed.",
+                                                "evidence_ids": [sha],
+                                            }
+                                        ]
+                                    })
+                                }
+                            ]
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 300, "candidatesTokenCount": 80},
+            },
+            "text": "{}",
+        })
+        verifier_provider = GeminiProvider(
+            api_key="synthetic_gemini_key",
+            model="gemini-3.5-flash-lite",
+            allow_remote_ai=True,
+            transport=mock_verifier_transport,
+        )
+        verifier = VerifierAgent(provider=verifier_provider, model="gemini-3.5-flash-lite")
+        snippet = CodeDiffSnippet(
+            repository="test-repo",
+            commit_sha=sha,
+            file_path="src/db.py",
+            diff_side="NEW",
+            lines=[12],
+            content="query = 'SELECT * FROM users WHERE id = ' + uid\n",
+        )
+        verifications = verifier.run(
+            project_id="PROJ",
+            findings=[finding],
+            snippets=[snippet],
+            rules=[],
+            evidence_ids=[sha],
+        )
+        from agente_gestion.domain.findings import VerificationVerdict
+
+        self.assertEqual(len(verifications), 1)
+        self.assertEqual(verifications[0].finding_id, "CQ-001")
+        self.assertEqual(verifications[0].verdict, VerificationVerdict.insufficient)
+
+        repo_identity = RepositoryIdentity(
+            id="repo-1",
+            owner="org",
+            repo="test-repo",
+        )
+        repo_state = RepositoryAnalysisState(
+            identity=repo_identity,
+            branch="main",
+            target_commit_sha=sha,
+        )
+        report_result = RepositoryReportResult(
+            repository_state=repo_state,
+            insufficient_findings=[finding],
+            verifications=verifications,
+        )
+        json_data = report_result.model_dump_json()
+        restored = RepositoryReportResult.model_validate_json(json_data)
+        self.assertEqual(len(restored.insufficient_findings), 1)
+        self.assertEqual(restored.insufficient_findings[0].suggested_code, finding.suggested_code)
+        self.assertEqual(restored.insufficient_findings[0].improvement_summary, finding.improvement_summary)
 
 
 if __name__ == "__main__":
