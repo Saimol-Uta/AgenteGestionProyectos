@@ -602,8 +602,8 @@ class GeminiQualityReviewerTestCase(unittest.TestCase):
         self.assertEqual(groq.get_capabilities().max_output_tokens, 1024)
         self.assertEqual(mistral.get_capabilities().max_output_tokens, 4096)
 
-    def test_gemini_request_transmits_response_mime_type_and_schema(self):
-        """11. GeminiProvider incluye responseMimeType y responseSchema en generationConfig."""
+    def test_gemini_request_transmits_response_format_without_response_schema(self):
+        """11. GeminiProvider transmite responseFormat y omite responseSchema para evitar HTTP 400 por $defs/$ref."""
         mock_transport = MagicMock(return_value={
             "status_code": 200,
             "body": {
@@ -637,10 +637,51 @@ class GeminiQualityReviewerTestCase(unittest.TestCase):
         self.assertEqual(result.status, GenerationStatus.complete)
         payload = mock_transport.call_args[1].get("payload") or mock_transport.call_args[1].get("json")
         gen_cfg = payload["generationConfig"]
-        self.assertEqual(gen_cfg["responseMimeType"], "application/json")
-        self.assertEqual(gen_cfg["responseSchema"], fake_schema)
+        self.assertNotIn("responseSchema", gen_cfg)
+        self.assertNotIn("responseMimeType", gen_cfg)
         self.assertEqual(gen_cfg["responseFormat"]["text"]["mimeType"], "APPLICATION_JSON")
         self.assertEqual(gen_cfg["responseFormat"]["text"]["schema"], fake_schema)
+
+    def test_gemini_monitoring_schema_with_defs_compatible(self):
+        """11b. Esquema de MonitoringDraft con $defs y $ref se empaqueta en responseFormat sin provocar HTTP 400."""
+        from agente_gestion.domain.report import MonitoringDraft
+
+        mock_transport = MagicMock(return_value={
+            "status_code": 200,
+            "body": {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": '{"summary": "ok", "task_state_claims": [], "referenced_task_ids": [], "evidence_ids": []}'}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 150, "candidatesTokenCount": 20},
+            },
+            "text": "{}",
+        })
+        provider = GeminiProvider(
+            api_key="synthetic_gemini_key",
+            model="gemini-3.5-flash-lite",
+            allow_remote_ai=True,
+            transport=mock_transport,
+        )
+        monitoring_schema = MonitoringDraft.model_json_schema()
+        self.assertIn("$defs", monitoring_schema)
+        request = GenerationRequest(
+            role="elaborador",
+            instructions="Generar borrador de monitoreo.",
+            evidences={"tasks": []},
+            schema_name="monitoring_draft_v1",
+            json_schema=monitoring_schema,
+            model="gemini-3.5-flash-lite",
+            max_generation_tokens=2048,
+        )
+        result = provider.generate(request)
+        self.assertEqual(result.status, GenerationStatus.complete)
+        payload = mock_transport.call_args[1].get("payload") or mock_transport.call_args[1].get("json")
+        gen_cfg = payload["generationConfig"]
+        self.assertNotIn("responseSchema", gen_cfg)
+        self.assertEqual(gen_cfg["responseFormat"]["text"]["schema"], monitoring_schema)
 
     def test_rejection_when_finding_lacks_improvement_summary(self):
         """12. Rechazo de respuestas cuando un hallazgo omite improvement_summary."""

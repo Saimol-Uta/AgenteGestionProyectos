@@ -122,8 +122,6 @@ class GeminiProvider(LLMProviderPort):
         }
 
         if request.json_schema:
-            body["generationConfig"]["responseMimeType"] = "application/json"
-            body["generationConfig"]["responseSchema"] = request.json_schema
             body["generationConfig"]["responseFormat"] = {
                 "text": {
                     "mimeType": "APPLICATION_JSON",
