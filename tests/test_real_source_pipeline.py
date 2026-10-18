@@ -532,6 +532,8 @@ class RealSourcePipelineTestCase(unittest.TestCase):
         config_path = os.path.join(self.temp_dir, "cli_real_cfg.yaml")
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(
+                "project:\n"
+                "  id: test-proj\n"
                 f"sources:\n"
                 f"  mode: real\n"
                 f"  trello:\n"

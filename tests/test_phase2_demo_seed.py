@@ -6,13 +6,17 @@ import sqlite3
 import tempfile
 import unittest
 
+from agente_gestion.api.app import ApiSettings, ProjectConfig, create_app
+from fastapi.testclient import TestClient
+
 from tests.web_fixtures import (
     OPERATOR_TOKEN,
     PROJECT_ID,
     REPORT_ID,
     SOURCE_CONTENT,
+    SOURCE_REPOSITORY,
     SOURCE_SUGGESTION,
-    build_web_api_fixture,
+    TASK_ID,
     seed_unified_demo_data,
 )
 
@@ -81,8 +85,32 @@ class Phase2DemoSeedTests(unittest.TestCase):
     def test_public_history_technical_review_and_source_approval_are_real_and_local(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            fixture = build_web_api_fixture(root, governance_enabled=True)
-            client = fixture.client
+            database_path = root / "web-fixture.sqlite"
+            runs_path = root / "web-fixture-runs"
+            outbox_dir = root / "web-fixture-outbox"
+            seed = seed_unified_demo_data(database_path, runs_path, outbox_dir)
+            branches_dir = root / "web-fixture-branches"
+            settings = ApiSettings(
+                db_path=str(database_path),
+                runs_dir=str(runs_path),
+                outbox_dir=str(outbox_dir),
+                projects=(ProjectConfig(
+                    id=PROJECT_ID, name="Proyecto de prueba", source_mode="fixtures",
+                ),),
+                operator_token=OPERATOR_TOKEN,
+                operator_actor="operador-local-de-prueba",
+                operator_project_ids=(PROJECT_ID,),
+                allowed_origins=["http://testserver"],
+                allowed_hosts=["testserver"],
+                governance_enabled=True,
+                report_decisions_enabled=False,
+                weekly_cycle_enabled=False,
+                branches_dir=str(branches_dir),
+                github_repository=SOURCE_REPOSITORY,
+                github_base_branch="main",
+                external_writes_enabled=False,
+            )
+            client = TestClient(create_app(settings))
             self.addCleanup(client.close)
 
             history = client.get(f"/api/v1/projects/{PROJECT_ID}/history")
@@ -97,7 +125,7 @@ class Phase2DemoSeedTests(unittest.TestCase):
             )
             self.assertEqual(comparison.status_code, 200, comparison.text)
             self.assertTrue(any(
-                change["task_id"] == fixture.task_id
+                change["task_id"] == TASK_ID
                 for change in comparison.json()["changes"]
             ))
 
@@ -105,13 +133,13 @@ class Phase2DemoSeedTests(unittest.TestCase):
             self.assertEqual(runs.status_code, 200, runs.text)
             self.assertEqual(runs.json()["total"], 2)
             run_ids = {item["run_id"] for item in runs.json()["items"]}
-            self.assertEqual(run_ids, set(fixture.run_ids))
-            current_run_id = fixture.current_run_id
+            self.assertEqual(run_ids, set(seed.run_ids))
+            current_run_id = seed.current_run_id
             current_run = client.get(f"/api/v1/runs/{current_run_id}")
             self.assertEqual(current_run.status_code, 200, current_run.text)
             self.assertEqual(current_run.json()["report_id"], REPORT_ID)
-            self.assertEqual(fixture.current_report_id, REPORT_ID)
-            self.assertEqual(fixture.report_id, REPORT_ID)
+            self.assertEqual(seed.current_report_id, REPORT_ID)
+            self.assertEqual(seed.report_id, REPORT_ID)
             report = client.get(f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}")
             self.assertEqual(report.status_code, 200, report.text)
             self.assertEqual(report.json()["report_id"], REPORT_ID)
@@ -173,7 +201,7 @@ class Phase2DemoSeedTests(unittest.TestCase):
             self.assertTrue(result["branch_url"].startswith("sandbox://branches/"))
 
             artifact = (
-                fixture.branches_dir / "quality" / "fixture-seed-approval" / "src" / "metrics.py"
+                branches_dir / "quality" / "fixture-seed-approval" / "src" / "metrics.py"
             )
             self.assertTrue(artifact.is_file())
             patched_source = artifact.read_text(encoding="utf-8")

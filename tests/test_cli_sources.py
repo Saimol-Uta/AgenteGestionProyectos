@@ -366,6 +366,8 @@ class CLISourceCheckTestCase(unittest.TestCase):
         gh_config_path = os.path.join(self.temp_dir, "gh_config.yaml")
         with open(gh_config_path, "w", encoding="utf-8") as f:
             f.write(
+                "project:\n"
+                "  id: isolated-actions-source-check\n"
                 "sources:\n"
                 "  mode: real\n"
                 "  github:\n"
@@ -500,6 +502,8 @@ class CLISourceCheckTestCase(unittest.TestCase):
         config_path = os.path.join(self.temp_dir, "leak_config.yaml")
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(
+                "project:\n"
+                "  id: isolated-cross-provider-source-check\n"
                 f"sources:\n"
                 f"  mode: real\n"
                 f"  trello:\n"
