@@ -1,6 +1,14 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { summary, project, secondProject, tasks, allTasks, history, runCurrent, runPrevious, runHistory, stageRecords, candidateFinding, findingDetail, quality, policies, executiveSummary, analysisPreparation, analysisJob, comparison, proposalSummary, proposalDetail, reportSummary, reportDetail, auditEvent, unknownAuditEvent, outboxReceipt, weeklySchedule, weeklyWindow, scheduleView, outboxMessage, outboxDetail, schedulePreparation, weeklyCycleJob, projectConfiguration, auditCollection, installApi, managerCredentials } from "./fixtures";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === "http://127.0.0.1:4173") return route.continue();
+    return route.abort();
+  });
+});
+
 test("el dashboard enlaza estados y señales desde conteos del backend sin sumar categorías solapadas", async ({ page }) => {
   await installApi(page);
   await page.goto("/");
@@ -380,7 +388,7 @@ test("el inicio de sesión informa errores de credenciales sin habilitar accione
 
   await expect(page.getByRole("alert")).toHaveText("Correo electrónico o contraseña incorrectos. Verifique sus credenciales de Gestor del Proyecto.");
   await expect(page.getByRole("button", { name: "Iniciar sesión" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sincronizar y Analizar Proyecto" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sincronizar proyecto" })).toHaveCount(0);
   const stored = await page.evaluate(() => Object.values(localStorage));
   expect(stored).not.toContain("incorrecta");
 });
@@ -398,7 +406,7 @@ test("credenciales desconocidas o incorrectas no desbloquean el área de gestor"
     await page.getByRole("button", { name: "Iniciar Sesión como Gestor" }).click();
     await expect(page.getByRole("alert")).toHaveText("Correo electrónico o contraseña incorrectos. Verifique sus credenciales de Gestor del Proyecto.");
     await expect(page.getByRole("heading", { name: "Acceso de operador" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sincronizar y Analizar Proyecto" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Sincronizar proyecto" })).toHaveCount(0);
     await expect(page.getByRole("link", { name: "Propuestas", exact: true })).toHaveCount(0);
   }
 

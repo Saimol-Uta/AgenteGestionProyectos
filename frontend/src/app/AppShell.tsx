@@ -312,6 +312,7 @@ export function AppShell() {
           </div>
           <div className="topbar-actions">
             <div className="topbar-project"><ProjectSelect compact /></div>
+            <AgentWorkflowBar />
             <SystemStatus />
             <Link to="/audit" className="icon-button topbar-history" aria-label="Historial de eventos">
               <Clock3 aria-hidden="true" size={18} />
@@ -331,7 +332,6 @@ export function AppShell() {
 
         <main className="page-container" id="main-content" tabIndex={-1}>
           <Breadcrumbs />
-          <AgentWorkflowBar />
           <Outlet />
         </main>
       </div>
