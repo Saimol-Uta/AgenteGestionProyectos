@@ -26,19 +26,24 @@ class GeminiProvider(LLMProviderPort):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: Optional[Any] = None,
         model: str = "gemini-2.5-flash",
         allow_remote_ai: bool = False,
         context_tokens: int = 1048576,
         max_output_tokens: int = 8192,
+        thinking_level: Optional[str] = None,
         transport: Optional[Callable[..., dict[str, Any]]] = None,
     ):
         self.provider_name = "gemini"
-        self.api_key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", "")
+        if hasattr(api_key, "get_secret_value"):
+            self.api_key = api_key.get_secret_value()
+        else:
+            self.api_key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", "")
         self.model = model
         self.allow_remote_ai = allow_remote_ai
         self.context_tokens = context_tokens
         self.max_output_tokens = max_output_tokens
+        self.thinking_level = thinking_level
         self.transport = transport
 
     def get_capabilities(self) -> ModelCapabilities:
@@ -48,7 +53,7 @@ class GeminiProvider(LLMProviderPort):
             supports_json_schema=True,
             supports_tools=False,
             supports_streaming=False,
-            reasoning_options=False,
+            reasoning_options=bool(self.thinking_level),
         )
 
     def _default_transport(
@@ -122,6 +127,12 @@ class GeminiProvider(LLMProviderPort):
                     "mimeType": "APPLICATION_JSON",
                     "schema": request.json_schema,
                 }
+            }
+
+        effective_thinking = request.options.get("thinking_level") or self.thinking_level
+        if effective_thinking:
+            body["generationConfig"]["thinkingConfig"] = {
+                "thinkingLevel": str(effective_thinking).upper(),
             }
 
         start_time = time.monotonic()

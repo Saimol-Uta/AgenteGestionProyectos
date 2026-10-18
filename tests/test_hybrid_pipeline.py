@@ -54,11 +54,27 @@ class UnifiedPipelineProviderTests(unittest.TestCase):
     def test_gemini_key_enables_monitoring_verifier_and_report(self) -> None:
         verifier, monitoring, quality, report = self.providers(self.settings(
             gemini_api_key="synthetic-gemini-key",
+            quality_provider="groq",
         ))
         self.assertIsInstance(monitoring, GeminiProvider)
         self.assertIsInstance(verifier, GeminiProvider)
         self.assertIsInstance(report, GeminiProvider)
         self.assertIsInstance(quality, FakeProvider)
+
+    def test_gemini_key_enables_all_roles_when_gemini_selected(self) -> None:
+        verifier, monitoring, quality, report = self.providers(self.settings(
+            gemini_api_key="synthetic-gemini-key",
+            quality_provider="gemini",
+            quality_context_window=128000,
+            quality_max_output_tokens=4096,
+        ))
+        self.assertIsInstance(monitoring, GeminiProvider)
+        self.assertIsInstance(verifier, GeminiProvider)
+        self.assertIsInstance(report, GeminiProvider)
+        self.assertIsInstance(quality, GeminiProvider)
+        self.assertEqual(quality.model, "gemini-3.5-flash-lite")
+        self.assertEqual(quality.context_tokens, 128000)
+        self.assertEqual(quality.max_output_tokens, 4096)
 
     def test_explicit_remote_gate_forces_sandbox_even_with_synthetic_keys(self) -> None:
         verifier, monitoring, quality, report = self.providers(self.settings(
@@ -82,6 +98,7 @@ class UnifiedPipelineProviderTests(unittest.TestCase):
         verifier, monitoring, quality, report = self.providers(self.settings(
             gemini_api_key="synthetic-gemini-key",
             groq_api_key="synthetic-groq-key",
+            quality_provider="groq",
             quality_context_window=65536,
             quality_max_output_tokens=4096,
         ))

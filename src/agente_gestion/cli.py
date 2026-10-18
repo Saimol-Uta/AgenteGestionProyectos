@@ -87,7 +87,19 @@ def _build_orchestrator(
         ) if remote_models_allowed and gemini_key
         else FakeProvider(model="sandbox-monitoring")
     )
-    if config.quality_provider == "mistral":
+    if config.quality_provider == "gemini":
+        revisor = (
+            GeminiProvider(
+                api_key=gemini_key,
+                model=config.gemini_quality_model or config.gemini_monitoring_model or "gemini-3.5-flash-lite",
+                allow_remote_ai=True,
+                context_tokens=config.quality_context_window or 128000,
+                max_output_tokens=config.quality_max_output_tokens or 4096,
+                thinking_level=config.quality_thinking_level,
+            ) if remote_models_allowed and gemini_key
+            else FakeProvider(model="sandbox-quality")
+        )
+    elif config.quality_provider == "mistral":
         revisor = (
             MistralProvider(
                 api_key=mistral_key,
@@ -248,6 +260,10 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         overrides["mistral_model"] = args.mistral_model
     if getattr(args, "gemini_model", None):
         overrides["gemini_model"] = args.gemini_model
+    if getattr(args, "gemini_quality_model", None):
+        overrides["gemini_quality_model"] = args.gemini_quality_model
+    if getattr(args, "quality_thinking_level", None):
+        overrides["quality_thinking_level"] = args.quality_thinking_level
     if getattr(args, "due_soon_days", None) is not None:
         overrides["due_soon_days"] = args.due_soon_days
 
@@ -1030,8 +1046,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--allow-remote-ai", action="store_true", help="Explicitly permit remote AI providers (e.g. Gemini)")
     parser_run.add_argument("--db-path", default=None, help="Path to SQLite database file")
     parser_run.add_argument("--output-dir", default=None, help="Directory to save runs artifacts")
-    parser_run.add_argument("--monitoring-provider", choices=["gemini"], default=None, help="LLM provider for ProjectMonitoringAgent")
-    parser_run.add_argument("--quality-provider", choices=["groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent")
+    parser_run.add_argument("--quality-provider", choices=["gemini", "groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent")
+    parser_run.add_argument("--gemini-quality-model", default=None, help="Model identifier for Gemini quality reviewer")
+    parser_run.add_argument("--quality-thinking-level", choices=["low", "medium", "high"], default=None, help="Thinking level for quality reviewer")
     parser_run.add_argument("--groq-model", default=None, help="Model identifier for Groq quality reviewer")
     parser_run.add_argument("--mistral-model", default=None, help="Model identifier for Mistral quality reviewer")
     parser_run.add_argument("--gemini-model", default=None, help="Model identifier for Gemini verifier")

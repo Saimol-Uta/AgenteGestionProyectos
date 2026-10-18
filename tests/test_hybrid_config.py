@@ -9,20 +9,23 @@ from agente_gestion.application.config import Settings
 
 
 class UnifiedProviderConfigTests(unittest.TestCase):
-    def test_project_defaults_enable_remote_and_select_gemini_and_mistral(self) -> None:
+    def test_project_defaults_enable_remote_and_select_gemini(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings.from_env_and_file(_env_file=None)
         self.assertTrue(settings.allow_remote_ai)
         self.assertEqual(settings.monitoring_provider, "gemini")
-        self.assertEqual(settings.quality_provider, "mistral")
+        self.assertEqual(settings.quality_provider, "gemini")
         self.assertEqual(settings.report_provider, "gemini")
-        self.assertEqual(settings.mistral_model, "mistral-large-2512")
-        self.assertIsNone(settings.mistral_api_key)
+        self.assertEqual(settings.gemini_quality_model, "gemini-3.5-flash-lite")
+        self.assertEqual(settings.quality_thinking_level, "medium")
         self.assertEqual(settings.quality_context_window, 128000)
         self.assertEqual(settings.quality_max_output_tokens, 4096)
         self.assertEqual(settings.quality_context_margin, 64)
 
-    def test_groq_and_mistral_providers_are_supported_and_retired_provider_is_rejected(self) -> None:
+    def test_gemini_groq_and_mistral_providers_are_supported_and_retired_provider_is_rejected(self) -> None:
+        with patch.dict(os.environ, {"QUALITY_PROVIDER": "gemini"}, clear=True):
+            settings = Settings.from_env_and_file(_env_file=None)
+            self.assertEqual(settings.quality_provider, "gemini")
         with patch.dict(os.environ, {"QUALITY_PROVIDER": "groq"}, clear=True):
             settings = Settings.from_env_and_file(_env_file=None)
             self.assertEqual(settings.quality_provider, "groq")

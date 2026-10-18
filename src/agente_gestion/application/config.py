@@ -80,8 +80,12 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             if "model" in q_sec:
                 if q_sec.get("provider") == "mistral":
                     merged["mistral_model"] = q_sec["model"]
+                elif q_sec.get("provider") == "gemini":
+                    merged["gemini_quality_model"] = q_sec["model"]
                 else:
                     merged["groq_model"] = q_sec["model"]
+            if "thinking_level" in q_sec:
+                merged["quality_thinking_level"] = q_sec["thinking_level"]
             if "context_window" in q_sec:
                 merged["quality_context_window"] = q_sec["context_window"]
             if "quality_context_window" in q_sec:
@@ -103,7 +107,7 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
         roles_sec = file_data["roles"]
         if roles_sec.get("elaborador") == "gemini":
             merged["monitoring_provider"] = "gemini"
-        if roles_sec.get("revisor") in ("groq", "mistral"):
+        if roles_sec.get("revisor") in ("groq", "mistral", "gemini"):
             merged["quality_provider"] = roles_sec.get("revisor")
         if roles_sec.get("aprobador") == "gemini":
             merged["report_provider"] = "gemini"
@@ -280,6 +284,14 @@ class Settings(BaseSettings):
         description="Google Gemini API key. SecretStr excluded from repr, dumps, and fingerprints.",
     )
     gemini_model: str = Field(default="gemini-2.5-flash")
+    gemini_quality_model: str = Field(
+        default="gemini-3.5-flash-lite",
+        description="Gemini model identifier for code quality review.",
+    )
+    quality_thinking_level: Optional[str] = Field(
+        default=None,
+        description="Optional thinking level for quality reviewer (e.g. low, medium, high).",
+    )
     quality_provider: str = Field(
         default="groq",
         description="LLM provider for CodeQualityAgent. The deterministic sandbox is used when credentials are missing.",
@@ -622,8 +634,8 @@ class Settings(BaseSettings):
         if not isinstance(v, str):
             raise ValueError("quality_provider must be a string")
         cleaned = v.strip().lower()
-        if cleaned not in ("groq", "mistral"):
-            raise ValueError(f"Invalid quality_provider: '{v}'. Must be 'groq' or 'mistral'.")
+        if cleaned not in ("gemini", "groq", "mistral"):
+            raise ValueError(f"Invalid quality_provider: '{v}'. Must be 'gemini', 'groq', or 'mistral'.")
         return cleaned
 
     @field_validator(

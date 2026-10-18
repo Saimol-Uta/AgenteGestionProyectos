@@ -25,11 +25,12 @@ from agente_gestion.agents.context import estimate_tokens_from_data
 _BEARER_RE = re.compile(r"Bearer\s+[a-zA-Z0-9_\-\.]+", re.IGNORECASE)
 
 
-def sanitize_mistral_error(err: str, secret: Optional[str] = None) -> str:
+def sanitize_mistral_error(err: str, secret: Optional[Any] = None) -> str:
     """Mask credentials and internal authorization tokens from error strings."""
     cleaned = err
     if secret:
-        cleaned = mask_secret(cleaned, secret)
+        sec_str = secret.get_secret_value() if hasattr(secret, "get_secret_value") else str(secret)
+        cleaned = mask_secret(cleaned, sec_str)
     cleaned = _BEARER_RE.sub("Bearer [REDACTED]", cleaned)
     return cleaned
 
@@ -40,7 +41,7 @@ class MistralProvider(LLMProviderPort):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: Optional[Any] = None,
         model: str = "mistral-large-2512",
         base_url: str = "https://api.mistral.ai/v1",
         allow_remote_ai: bool = False,
@@ -50,7 +51,10 @@ class MistralProvider(LLMProviderPort):
         rate_limiter: Optional[RollingWindowTokenLimiter] = None,
     ):
         self.provider_name = "mistral"
-        self.api_key = api_key if api_key is not None else os.environ.get("MISTRAL_API_KEY", "")
+        if hasattr(api_key, "get_secret_value"):
+            self.api_key = api_key.get_secret_value()
+        else:
+            self.api_key = api_key if api_key is not None else os.environ.get("MISTRAL_API_KEY", "")
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.allow_remote_ai = allow_remote_ai

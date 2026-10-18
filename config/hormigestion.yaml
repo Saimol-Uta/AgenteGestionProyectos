@@ -15,17 +15,18 @@ providers:
   remote:
     model: gemini-3.5-flash-lite
   quality:
-    provider: mistral
-    model: mistral-large-2512
+    provider: gemini
+    model: gemini-3.5-flash-lite
     context_window: 128000
     max_output_tokens: 4096
+    thinking_level: medium
   report:
     provider: gemini
     model: gemini-3.5-flash-lite
 
 roles:
   elaborador: gemini
-  revisor: mistral
+  revisor: gemini
   aprobador: gemini
 
 sources:

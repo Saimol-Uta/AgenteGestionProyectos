@@ -18,7 +18,7 @@ class UnifiedRuntimeConfigTests(unittest.TestCase):
             settings = Settings.from_env_and_file(_env_file=None)
         self.assertTrue(settings.allow_remote_ai)
         self.assertEqual(settings.monitoring_provider, "gemini")
-        self.assertEqual(settings.quality_provider, "mistral")
+        self.assertEqual(settings.quality_provider, "gemini")
         self.assertEqual(settings.report_provider, "gemini")
 
     def test_yaml_layers_apply_base_then_project_then_explicit_before_environment(self):
