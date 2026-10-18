@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Mail, Save } from "lucide-react";
 import { api } from "../../api/client";
 import { useProjects, useSendManagerEmailMutation } from "../../api/queries";
@@ -23,11 +23,19 @@ function deliveryStatusLabel(status: string): string {
   return "Estado sin confirmar";
 }
 
-export function EmailDeliveryPanel({ projectId }: { projectId: string }) {
-  return <ProjectEmailDeliveryPanel key={projectId} projectId={projectId} />;
+type EmailDeliveryPanelProps = {
+  projectId: string;
+  compact?: boolean;
+  idempotencyKey?: { current: string | null };
+  busyOverride?: boolean;
+  onBusyChange?: (busy: boolean) => void;
+};
+
+export function EmailDeliveryPanel({ projectId, ...options }: EmailDeliveryPanelProps) {
+  return <ProjectEmailDeliveryPanel key={projectId} projectId={projectId} {...options} />;
 }
 
-function RecipientEditor({ recipient, onSave }: { recipient: string; onSave: (value: string) => void }) {
+function RecipientEditor({ recipient, onSave, disabled = false }: { recipient: string; onSave: (value: string) => void; disabled?: boolean }) {
   const [draft, setDraft] = useState(recipient);
   const [invalid, setInvalid] = useState(false);
   const inputId = useId();
@@ -40,12 +48,18 @@ function RecipientEditor({ recipient, onSave }: { recipient: string; onSave: (va
   }
   return <form className="delivery-recipient-form" onSubmit={submit} noValidate>
     <label htmlFor={inputId}>Correo del gestor<span>Cambio opcional para este proyecto</span></label>
-    <div className="delivery-recipient-controls"><input id={inputId} type="email" autoComplete="email" maxLength={254} placeholder="Ejemplo: gestor@example.org" value={draft} aria-invalid={invalid} aria-describedby={`${inputId}-help`} onChange={(event) => { setDraft(event.target.value); setInvalid(false); }} /><button className="button button-secondary" type="submit"><Save size={15} aria-hidden="true" />Guardar correo local</button></div>
+    <div className="delivery-recipient-controls"><input id={inputId} type="email" autoComplete="email" maxLength={254} placeholder="Ejemplo: gestor@example.org" value={draft} disabled={disabled} aria-invalid={invalid} aria-describedby={`${inputId}-help`} onChange={(event) => { setDraft(event.target.value); setInvalid(false); }} /><button className="button button-secondary" type="submit" disabled={disabled}><Save size={15} aria-hidden="true" />Guardar correo local</button></div>
     <p id={`${inputId}-help`} className={invalid ? "delivery-validation" : "caption"}>{invalid ? "Ingresa una dirección de correo válida, sin espacios; puedes dejarla vacía para usar el correo verificado o configurado." : "Este cambio opcional se guarda solo en este navegador y proyecto. Si no indicas otro correo, se usará primero tu correo verificado y luego el destinatario configurado."}</p>
   </form>;
 }
 
-function ProjectEmailDeliveryPanel({ projectId }: { projectId: string }) {
+function ProjectEmailDeliveryPanel({
+  projectId,
+  compact = false,
+  idempotencyKey,
+  busyOverride = false,
+  onBusyChange,
+}: EmailDeliveryPanelProps) {
   const titleId = useId();
   const { recipient: savedRecipient, setRecipient } = useDeliveryPreferences(projectId);
   const projects = useProjects();
@@ -63,9 +77,12 @@ function ProjectEmailDeliveryPanel({ projectId }: { projectId: string }) {
   const [htmlPreview, setHtmlPreview] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
-  const idempotencyKey = useRef<string | null>(null);
+  const localIdempotencyKey = useRef<string | null>(null);
+  const deliveryKey = idempotencyKey ?? localIdempotencyKey;
   const inFlight = useRef(false);
+  const mounted = useRef(true);
   const canSend = Boolean(session?.authenticated && session.csrf_token && session.capabilities.includes("notifications:email_send"));
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   function previewEmail() {
     if (!recipient) return;
@@ -93,19 +110,21 @@ function ProjectEmailDeliveryPanel({ projectId }: { projectId: string }) {
   }
 
   async function sendEmail() {
-    if (!canSend || !session?.csrf_token || !recipient || !isDeliveryRecipient(recipient) || inFlight.current) return;
+    if (!canSend || !session?.csrf_token || !recipient || !isDeliveryRecipient(recipient) || inFlight.current || busyOverride) return;
     inFlight.current = true;
+    onBusyChange?.(true);
     setPreviewError("");
     setPreviewLoading(false);
-    idempotencyKey.current ??= crypto.randomUUID();
+    deliveryKey.current ??= crypto.randomUUID();
     try {
       const result = await mutation.mutateAsync({
         projectId,
         payload: { recipient_email: recipient },
         csrfToken: session.csrf_token,
-        idempotencyKey: idempotencyKey.current,
+        idempotencyKey: deliveryKey.current,
       });
-      idempotencyKey.current = null;
+      deliveryKey.current = null;
+      if (!mounted.current) return;
       setDelivery(result);
       setConfirmationOpen(false);
       setLocalPreview(null);
@@ -125,28 +144,36 @@ function ProjectEmailDeliveryPanel({ projectId }: { projectId: string }) {
           setHtmlPreview(await api.getManagerEmailPreview(projectId, result.html_preview_url));
         } catch (error) {
           const problem = error instanceof Error ? error.message : "La vista previa protegida no pudo cargarse.";
-          setPreviewError(problem);
-          notify(problem, "error");
+          if (mounted.current) {
+            setPreviewError(problem);
+            notify(problem, "error");
+          }
         } finally {
-          setPreviewLoading(false);
+          if (mounted.current) setPreviewLoading(false);
         }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "El envío del correo no pudo completarse.";
-      setPreviewError(message);
-      notify(message, "error");
+      if (mounted.current) {
+        setPreviewError(message);
+        notify(message, "error");
+      }
     } finally {
       inFlight.current = false;
+      onBusyChange?.(false);
     }
   }
 
-  const busy = mutation.isPending || inFlight.current;
-  return <section className="panel email-delivery-panel" aria-labelledby={titleId}>
-    <div className="section-heading"><div><p className="eyebrow">ALERTAS DE RETRASOS · RIESGOS · REPORTES SEMANALES</p><h2 id={titleId}>Configuración de Entrega por Correo Electrónico al Gestor</h2></div><Mail size={21} aria-hidden="true" /></div>
+  const busy = mutation.isPending || inFlight.current || busyOverride;
+  const panelTitle = compact ? "Destinatario y entrega" : "Configuración de Entrega por Correo Electrónico al Gestor";
+  const sendButtonLabel = compact ? (canSend ? "Enviar correo" : "Vista previa local")
+    : canSend ? "Enviar Alerta/Reporte al Correo Ahora" : "Enviar Notificación por Correo al Gestor";
+  return <section className={`panel email-delivery-panel${compact ? " email-delivery-panel-compact" : ""}`} aria-labelledby={titleId}>
+    <div className="section-heading"><div>{!compact && <p className="eyebrow">ALERTAS DE RETRASOS · RIESGOS · REPORTES SEMANALES</p>}<h2 id={titleId}>{panelTitle}</h2></div><Mail size={21} aria-hidden="true" /></div>
     <div className="delivery-status-row"><Pill tone={canSend ? "positive" : "warning"}>{canSend ? "Envío protegido disponible" : "Vista previa local · envío deshabilitado"}</Pill><span>{canSend ? "El sistema informará si el mensaje fue aceptado por el servicio de correo o quedó guardado localmente." : session?.authenticated ? "Tu sesión no tiene permiso para enviar correos; la vista previa local no realiza envíos." : "Inicia sesión para enviar un correo; la vista previa local no realiza envíos."}</span></div>
-    <RecipientEditor key={`${savedRecipient}:${recipient}`} recipient={recipient} onSave={value => { setRecipient(value); setSaved(true); setLocalPreview(null); setDelivery(null); setHtmlPreview(null); setPreviewError(""); idempotencyKey.current = null; }} />
+    <RecipientEditor key={`${savedRecipient}:${recipient}`} recipient={recipient} disabled={compact && busy} onSave={value => { setRecipient(value); setSaved(true); setLocalPreview(null); setDelivery(null); setHtmlPreview(null); setPreviewError(""); deliveryKey.current = null; }} />
     {saved && <p role="status" className="delivery-saved">Cambio de correo local guardado</p>}
-    <div className="delivery-preview-actions"><button className="button button-primary" type="button" disabled={!recipient || !isDeliveryRecipient(recipient) || busy} onClick={requestSend}>{canSend ? "Enviar Alerta/Reporte al Correo Ahora" : "Enviar Notificación por Correo al Gestor"}</button><span className="caption">{canSend ? "Requiere confirmar el destinatario antes de enviar." : "No se hace ninguna solicitud de entrega."}</span></div>
+    <div className="delivery-preview-actions"><button className="button button-primary" type="button" disabled={!recipient || !isDeliveryRecipient(recipient) || busy} onClick={requestSend}>{sendButtonLabel}</button><span className="caption">{canSend ? "Requiere confirmar el destinatario antes de enviar." : "No se hace ninguna solicitud de entrega."}</span></div>
     {confirmationOpen && <section className="delivery-confirmation" aria-label="Confirmar destinatario del correo"><p>Confirma el envío a <strong>{recipient}</strong></p><p>El resultado indicará si el servicio de correo aceptó el mensaje o si quedó guardado localmente; esto no confirma su llegada a una bandeja.</p><div className="delivery-preview-actions"><button className="button button-primary" type="button" disabled={busy} onClick={() => void sendEmail()}>{busy ? "Enviando correo…" : `Confirmar envío a ${recipient}`}</button><button className="button button-secondary" type="button" disabled={busy} onClick={() => setConfirmationOpen(false)}>Cancelar</button></div></section>}
     {previewError && <p role="alert" className="delivery-validation">{previewError}</p>}
     {delivery && <section className="delivery-result" aria-live="polite"><div className="delivery-status-row"><Pill tone={delivery.delivery_channel === "smtp_email_sent" ? "positive" : "warning"}>{deliveryChannelLabel(delivery.delivery_channel)}</Pill><strong>{deliveryStatusLabel(delivery.status)}</strong><span>Para: {delivery.recipient_email}</span></div><p>Referencia del envío: <code>{delivery.delivery_id}</code></p>{delivery.delivery_channel === "smtp_email_failed" ? <p>No se confirmó la entrega por correo.</p> : delivery.delivery_channel === "smtp_email_sent" ? <p>El servicio de correo aceptó el mensaje; la llegada a la bandeja no está confirmada.</p> : <p>Guardado localmente; no se envió a una bandeja de correo.</p>}</section>}

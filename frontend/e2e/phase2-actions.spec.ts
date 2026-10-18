@@ -1,6 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { assigneeProposalDetail, findingDetail, installApi, priorityProposalDetail, proposalDetail } from "./fixtures";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === "http://127.0.0.1:4173") return route.continue();
+    return route.abort();
+  });
+});
+
 const capabilities = ["governance:proposal_execute", "quality:decide", "notifications:email_send"];
 const phase2Finding = {
   ...findingDetail,
@@ -208,13 +216,14 @@ test("manager email confirms the recipient, sends once, and shows the protected 
   expect(requests[0].key).toBeTruthy();
 });
 
-test("global agent workflow opens the reusable delivery panel on demand", async ({ page }) => {
+test("the header email dialog opens the reusable delivery panel on demand", async ({ page }) => {
   await installApi(page);
   await page.goto("/");
-  await page.getByText("Enviar alerta / reporte al gestor", { exact: true }).click();
-  const panel = page.getByRole("region", { name: "Configuración de Entrega por Correo Electrónico al Gestor" });
+  await page.getByRole("banner").getByRole("button", { name: "Enviar correo" }).click();
+  const dialog = page.getByRole("dialog", { name: "Enviar correo al gestor" });
+  const panel = dialog.getByRole("region", { name: "Destinatario y entrega" });
   await expect(panel).toBeVisible();
-  await expect(panel.getByRole("button", { name: "Enviar Notificación por Correo al Gestor", exact: true })).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "Vista previa local", exact: true })).toBeDisabled();
 });
 
 test("a locally saved email is never presented as inbox delivery", async ({ page }) => {

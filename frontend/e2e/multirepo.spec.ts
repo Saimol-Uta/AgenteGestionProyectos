@@ -206,15 +206,31 @@ test("repository history refreshes when a tracked analysis job reaches terminal 
   const backend = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backend).toContainText("Ejecución run-previous");
   const initialHistoryReads = repositoryResultsReads;
-  await page.getByRole("button", { name: "Sincronizar y Analizar Proyecto" }).click();
-  await page.getByLabel("Autorizo el uso de servicios en la nube").check();
-  await page.getByRole("button", { name: "Confirmar análisis", exact: true }).click();
+  const header = page.getByRole("banner");
+  const trigger = header.getByRole("button", { name: "Sincronizar proyecto" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Sincronizar y analizar proyecto" });
+  expect(api.analysisWrites).toHaveLength(0);
+  await dialog.getByRole("button", { name: "Preparar análisis" }).click();
+  await dialog.getByLabel("Autorizo el uso de servicios en la nube").check();
+  await dialog.getByRole("button", { name: "Confirmar análisis", exact: true }).click();
+  await expect.poll(() => api.jobPollRequests, { timeout: 5_000 }).toBeGreaterThan(0);
 
-  await expect(page.getByText(/Estado del análisis: Completado/)).toBeVisible({ timeout: 20_000 });
-  await expect.poll(() => api.jobPollRequests, { timeout: 5_000 }).toBe(2);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeEnabled();
+  await expect.poll(() => api.jobPollRequests, { timeout: 10_000 }).toBe(2);
   await expect.poll(() => repositoryResultsReads, { timeout: 10_000 }).toBeGreaterThan(initialHistoryReads);
   await expect(backend).toContainText("Ejecución run-current");
   await expect(backend).toContainText("38833954051");
+
+  await trigger.click();
+  const statusDialog = page.getByRole("dialog", { name: "Sincronizar y analizar proyecto" });
+  await expect(statusDialog.getByText(/Estado del análisis: Completado/)).toBeVisible();
+  expect(api.analysisWrites.map((write) => write.path)).toEqual([
+    "/api/v1/projects/hormigestio/analysis/prepare",
+    "/api/v1/projects/hormigestio/analysis/confirm",
+  ]);
 });
 
 test("known repository scope rejects finding details with missing or contradictory repository identity", async ({ page }) => {

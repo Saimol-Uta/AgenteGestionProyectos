@@ -1,6 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { installApi, managerCredentials, outboxDetail, project, secondProject } from "./fixtures";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === "http://127.0.0.1:4173") return route.continue();
+    return route.abort();
+  });
+});
+
 const panelName = "Configuración de Entrega por Correo Electrónico al Gestor";
 
 test("recipient is validated, persisted across pages, and isolated by project", async ({ page }) => {
