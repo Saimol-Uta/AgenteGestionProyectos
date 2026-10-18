@@ -289,7 +289,8 @@ class CompositeSourcesAdapter(SourceCollectionPort):
         pinned_sha: Optional[str] = None
         target_sha = commit_sha or self._default_commit_sha
         t0 = time.perf_counter()
-        code_succeeded = False
+        code_validated = False
+        code_incomplete_reason: Optional[str] = None
         try:
             raw_diffs = self._code_source.get_diffs(project_id, commit_sha=target_sha)
 
@@ -316,13 +317,28 @@ class CompositeSourcesAdapter(SourceCollectionPort):
             if pinned_sha:
                 self._check_no_secrets(pinned_sha, SourceProvider.github)
 
-            # Check code completeness (e.g. missing patch metadata for binary/large files)
+            # Preserve incomplete-but-validated source output separately from actual failures.
             if hasattr(self._code_source, "last_collection_complete"):
-                if not self._code_source.last_collection_complete:
+                collection_complete = self._code_source.last_collection_complete
+                if not isinstance(collection_complete, bool):
                     raise SourceError(
-                        SourceProvider.github,
-                        SourceErrorCategory.limit_exceeded,
+                        SourceProvider.github, SourceErrorCategory.malformed_payload,
                     )
+                if not collection_complete:
+                    unavailable_paths = getattr(self._code_source, "unavailable_file_paths", [])
+                    if (not isinstance(unavailable_paths, (list, tuple))
+                            or any(not isinstance(path, str) or not path for path in unavailable_paths)):
+                        raise SourceError(
+                            SourceProvider.github, SourceErrorCategory.malformed_payload,
+                        )
+                    self._check_no_secrets(unavailable_paths, SourceProvider.github)
+                    if unavailable_paths:
+                        code_incomplete_reason = (
+                            "GitHub code collection incomplete; patch unavailable for: "
+                            + ", ".join(unavailable_paths)
+                        )
+                    else:
+                        code_incomplete_reason = "GitHub code collection incomplete."
 
             for d in raw_diffs:
                 self._check_no_secrets(d, SourceProvider.github)
@@ -371,11 +387,13 @@ class CompositeSourcesAdapter(SourceCollectionPort):
                     attempt_count=1,
                 )
             )
-            code_succeeded = True
+            code_validated = True
             self._last_resolved_commit_sha = pinned_sha
+            if code_incomplete_reason:
+                failure_reasons.append(code_incomplete_reason)
         except Exception as exc:
             self._last_resolved_commit_sha = None
-            code_succeeded = False
+            code_validated = False
             err_info = _canonicalize_error_info(SourceProvider.github, exc)
             records.append(
                 SourceExecutionRecord(
@@ -391,8 +409,8 @@ class CompositeSourcesAdapter(SourceCollectionPort):
         # 4. CI Runs & Evidence (GitHub Actions)
         ci_runs: list[CIRunResult] = []
         ci_skipped = False
-        if not (code_succeeded and pinned_sha):
-            # Cannot query CI without validated successful code unit and pinned target SHA
+        if not (code_validated and pinned_sha):
+            # CI requires validated code output and a trusted pinned target SHA
             ci_skipped = True
             failure_reasons.append(
                 "CI collection skipped due to missing validated code unit or pinned target commit SHA dependency."
@@ -560,7 +578,7 @@ class CompositeSourcesAdapter(SourceCollectionPort):
             incomplete_reason=incomplete_reason,
         )
 
-        effective_sha = pinned_sha if code_succeeded else None
+        effective_sha = pinned_sha if code_validated else None
 
         result = SourceCollectionResult(
             snapshot=snapshot,

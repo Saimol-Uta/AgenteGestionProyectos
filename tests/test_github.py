@@ -391,6 +391,8 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         def dynamic_get(url, params=None, headers=None, timeout_seconds=None):
             call_record = {"url": url, "params": params, "headers": headers}
             transport.calls.append(call_record)
+            if "/contents/" in url:
+                return HttpResponse(status_code=404, body={})
             page = (params or {}).get("page", 1)
             if page == 1:
                 return HttpResponse(
@@ -679,6 +681,127 @@ class TestGitHubCodeSourceAdapter(unittest.TestCase):
         self.assertEqual(len(img_ev), 1)
         self.assertFalse(img_ev[0].provenance.payload["patch_available"])
         self.assertEqual(img_ev[0].provenance.payload["reason"], "patch_unavailable")
+
+    def test_missing_patch_recovery_keeps_full_file_separate_and_collection_incomplete(self):
+        source = ".button { color: blue; }\n"
+        path = "styles/site.css"
+        contents_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        transport = FakeTransport({
+            self.commit_url: HttpResponse(status_code=200, body={
+                "sha": self.valid_sha_1,
+                "files": [{
+                    "filename": path, "status": "modified", "patch": None,
+                    "sha": "b" * 40,
+                }],
+            }),
+            contents_url: HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(source.encode()).decode(),
+                "sha": "b" * 40,
+                "size": len(source.encode()),
+            }),
+        })
+        adapter = GitHubCodeSourceAdapter(owner=self.owner, repo=self.repo, transport=transport)
+
+        snippets = adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
+        evidence = adapter.get_evidence("proj1", commit_sha=self.valid_sha_1)
+
+        self.assertEqual(len(snippets), 1)
+        self.assertEqual(snippets[0].evidence_scope, "full_file")
+        self.assertEqual(snippets[0].content, source)
+        self.assertFalse(adapter.last_collection_complete)
+        self.assertEqual(adapter.unavailable_file_paths, [path])
+        file_evidence = next(item for item in evidence if item.provenance.file_path == path)
+        self.assertFalse(file_evidence.provenance.payload["patch_available"])
+        self.assertTrue(file_evidence.provenance.payload["full_file_available"])
+        self.assertEqual(file_evidence.provenance.payload["reason"], "patch_unavailable")
+
+    def test_unrecoverable_missing_patch_preserves_valid_sibling_diff(self):
+        css_path = "styles/site.css"
+        binary_path = "images/logo.png"
+        sibling_path = "src/app.py"
+        css_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{css_path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        binary_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{binary_path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        binary_content = bytes([137]) + b"PNG" + bytes([13, 10, 26, 10])
+        transport = FakeTransport({
+            self.commit_url: HttpResponse(status_code=200, body={
+                "sha": self.valid_sha_1,
+                "files": [
+                    {"filename": css_path, "status": "modified", "patch": None},
+                    {
+                        "filename": binary_path, "status": "added", "patch": None,
+                        "sha": "e" * 40,
+                    },
+                    {
+                        "filename": sibling_path, "status": "modified",
+                        "patch": "@@ -1 +1 @@\n-old\n+new\n",
+                    },
+                ],
+            }),
+            css_url: HttpResponse(status_code=404, body={}),
+            binary_url: HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(binary_content).decode(),
+                "sha": "e" * 40,
+                "size": len(binary_content),
+            }),
+        })
+        adapter = GitHubCodeSourceAdapter(owner=self.owner, repo=self.repo, transport=transport)
+
+        snippets = adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
+
+        self.assertEqual([item.file_path for item in snippets], [sibling_path])
+        self.assertFalse(adapter.last_collection_complete)
+        self.assertEqual(adapter.unavailable_file_paths, [css_path, binary_path])
+
+    def test_full_file_validation_and_access_failures_are_not_optional_absence(self):
+        path = "styles/site.css"
+        contents_url = (
+            f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{path}"
+            f"?ref={self.valid_sha_1}"
+        )
+        cases = (
+            ("blob mismatch", HttpResponse(status_code=200, body={
+                "encoding": "base64", "content": base64.b64encode(b"safe\n").decode(),
+                "sha": "c" * 40, "size": len(b"safe\n"),
+            }), SourceErrorCategory.malformed_payload),
+            ("secret echo", HttpResponse(status_code=200, body={
+                "encoding": "base64", "content": base64.b64encode(self.token.encode()).decode(),
+                "sha": "b" * 40, "size": len(self.token.encode()),
+            }), SourceErrorCategory.malformed_payload),
+            ("authentication", HttpResponse(status_code=401, body={}), SourceErrorCategory.authentication),
+            ("permission", HttpResponse(status_code=403, body={}), SourceErrorCategory.permission_denied),
+            ("provider mismatch", SourceError(SourceProvider.trello, SourceErrorCategory.not_found),
+             SourceErrorCategory.malformed_payload),
+        )
+        for label, contents_response, expected_category in cases:
+            with self.subTest(label=label):
+                transport = FakeTransport({
+                    self.commit_url: HttpResponse(status_code=200, body={
+                        "sha": self.valid_sha_1,
+                        "files": [{
+                            "filename": path, "status": "modified", "patch": None,
+                            "sha": "b" * 40,
+                        }],
+                    }),
+                    contents_url: contents_response,
+                })
+                adapter = GitHubCodeSourceAdapter(
+                    owner=self.owner, repo=self.repo, token=self.token, transport=transport,
+                )
+
+                with self.assertRaises(SourceError) as context:
+                    adapter.get_diffs("proj1", commit_sha=self.valid_sha_1)
+                self.assertEqual(context.exception.category, expected_category)
 
     # 8. Finding validation integration
     def test_semantic_validator_anchors_with_adapter_snippets(self):

@@ -1,5 +1,6 @@
 """Tests for normalized composite real-source collection boundary (T5a)."""
 
+import base64
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import unittest
@@ -38,6 +39,7 @@ from agente_gestion.adapters.sources.http_transport import (
     HttpResponse,
 )
 from agente_gestion.adapters.sources.actions import GitHubActionsSourceAdapter
+from agente_gestion.adapters.sources.github import GitHubCodeSourceAdapter
 
 # Import under test - will fail RED before implementation exists
 from agente_gestion.adapters.sources.composite import CompositeSourcesAdapter
@@ -459,11 +461,29 @@ class TestCompositeSourcesAdapter(unittest.TestCase):
         self.assertEqual(result.target_commit_sha, SAMPLE_SHA)
         self.assertEqual(ci_src.calls[0], (self.project_id, SAMPLE_SHA))
 
-    def test_missing_patch_metadata_marks_code_incomplete_and_skips_ci(self) -> None:
-        """When code collection has missing patches, code fails and CI is skipped with 0 calls."""
+    def test_partial_code_preserves_evidence_and_queries_ci_for_pinned_sha(self) -> None:
+        """Validated partial diffs remain useful, but missing patch metadata keeps the snapshot incomplete."""
         task, task_ev = _make_sample_task(self.project_id)
         diff, diff_ev = _make_sample_diff(self.project_id, SAMPLE_SHA)
         ci, ci_ev = _make_sample_ci(self.project_id, SAMPLE_SHA)
+        ci = ci.model_copy(update={
+            "workflow_name": "Quality",
+            "status": "failure",
+            "workflow_path": ".github/workflows/quality.yml",
+            "run_attempt": 2,
+        })
+        ci_ev = ci_ev.model_copy(update={
+            "summary": "CI workflow Quality status failure",
+            "provenance": ci_ev.provenance.model_copy(update={
+                "payload": {
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "workflow_path": ".github/workflows/quality.yml",
+                    "run_id": "run-1",
+                    "run_attempt": 2,
+                },
+            }),
+        })
         policy = _make_sample_policy()
 
         tasks_src = FakeTaskSource([task], [task_ev])
@@ -486,20 +506,100 @@ class TestCompositeSourcesAdapter(unittest.TestCase):
 
         result = adapter.collect_snapshot(self.project_id, self.cutoff)
         self.assertFalse(result.snapshot.is_complete)
-        self.assertIsNotNone(result.snapshot.incomplete_reason)
-        # CI must NOT be called when code collection fails
-        self.assertEqual(len(ci_src.calls), 0)
-        # GitHub execution record is marked failed
+        self.assertIn("large.bin", result.snapshot.incomplete_reason)
+        self.assertEqual(result.snapshot.code_diffs, [diff])
+        self.assertEqual([item for item in result.evidence if item.provenance.source == EvidenceSource.github], [diff_ev])
+        self.assertEqual(ci_src.calls, [(self.project_id, SAMPLE_SHA)])
+        self.assertEqual(result.snapshot.ci_runs[0].status, "failure")
+        self.assertEqual(result.snapshot.ci_runs[0].workflow_path, ".github/workflows/quality.yml")
+        self.assertEqual(result.snapshot.ci_runs[0].run_attempt, 2)
+        ci_evidence = next(item for item in result.evidence if item.provenance.source == EvidenceSource.github_actions)
+        self.assertEqual(ci_evidence.provenance.external_id, "run-1")
+        self.assertEqual(ci_evidence.provenance.payload["workflow_path"], ".github/workflows/quality.yml")
+        self.assertEqual(ci_evidence.provenance.payload["run_attempt"], 2)
+        self.assertEqual(result.target_commit_sha, SAMPLE_SHA)
         code_record = next(r for r in result.records if r.provider == SourceProvider.github)
-        self.assertEqual(code_record.status, SourceExecutionStatus.failed)
-        self.assertIsNotNone(code_record.error)
-        # No fabricated CI execution record
-        self.assertNotIn(SourceProvider.github_actions, {r.provider for r in result.records})
-        # Last resolved SHA is NOT published on failed code unit
-        self.assertIsNone(adapter.last_resolved_commit_sha)
-        # Other independent sources continue
+        self.assertEqual(code_record.status, SourceExecutionStatus.success)
+        self.assertIsNone(code_record.error)
+        ci_record = next(r for r in result.records if r.provider == SourceProvider.github_actions)
+        self.assertEqual(ci_record.status, SourceExecutionStatus.success)
+        self.assertEqual(adapter.last_resolved_commit_sha, SAMPLE_SHA)
+        # Other independent sources continue.
         self.assertEqual(len(result.snapshot.tasks), 1)
         self.assertEqual(len(result.snapshot.policies), 1)
+
+    def test_full_file_recovery_security_and_access_errors_discard_partial_code(self) -> None:
+        path = "styles/site.css"
+        contents_url = f"https://api.github.com/repos/owner/repo/contents/{path}?ref={SAMPLE_SHA}"
+        secret = "RECOVERY_SECRET_TOKEN"
+        cases = (
+            ("blob mismatch", HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(b"safe\n").decode(),
+                "sha": "c" * 40,
+                "size": len(b"safe\n"),
+            }), SourceErrorCategory.malformed_payload, None),
+            ("secret echo", HttpResponse(status_code=200, body={
+                "encoding": "base64",
+                "content": base64.b64encode(secret.encode()).decode(),
+                "sha": "d" * 40,
+                "size": len(secret.encode()),
+            }), SourceErrorCategory.malformed_payload, secret),
+            ("authentication", HttpResponse(status_code=401, body={}), SourceErrorCategory.authentication, None),
+            ("permission", HttpResponse(status_code=403, body={}), SourceErrorCategory.permission_denied, None),
+        )
+        for label, content_response, expected_category, known_secret in cases:
+            with self.subTest(label=label):
+                transport = FakeTransport({
+                    f"https://api.github.com/repos/owner/repo/contents/src/sibling.py?ref={SAMPLE_SHA}": HttpResponse(
+                        status_code=200, body={},
+                    ),
+                    f"https://api.github.com/repos/owner/repo/commits/{SAMPLE_SHA}": HttpResponse(
+                        status_code=200,
+                        body={
+                            "sha": SAMPLE_SHA,
+                            "files": [
+                                {
+                                    "filename": "src/sibling.py", "status": "modified",
+                                    "patch": "@@ -1 +1 @@\n-old\n+new\n",
+                                },
+                                {
+                                    "filename": path, "status": "modified", "patch": None,
+                                    "sha": "d" * 40,
+                                },
+                            ],
+                        },
+                    ),
+                    contents_url: content_response,
+                })
+                code_source = GitHubCodeSourceAdapter(
+                    owner="owner", repo="repo", token=known_secret, transport=transport,
+                )
+                task, task_ev = _make_sample_task(self.project_id)
+                ci, ci_ev = _make_sample_ci(self.project_id, SAMPLE_SHA)
+                ci_source = FakeCISource([ci], [ci_ev])
+                adapter = CompositeSourcesAdapter(
+                    task_source=FakeTaskSource([task], [task_ev]),
+                    code_source=code_source,
+                    ci_source=ci_source,
+                    policy_source=FakePolicySource([_make_sample_policy()]),
+                    default_commit_sha=SAMPLE_SHA,
+                    known_secret_values=[known_secret] if known_secret else None,
+                )
+
+                result = adapter.collect_snapshot(self.project_id, self.cutoff)
+
+                self.assertEqual(result.snapshot.code_diffs, [])
+                self.assertFalse(any(item.provenance.source == EvidenceSource.github for item in result.evidence))
+                self.assertEqual(result.target_commit_sha, None)
+                self.assertEqual(result.snapshot.ci_runs, [])
+                self.assertEqual(ci_source.calls, [])
+                code_record = next(item for item in result.records if item.provider == SourceProvider.github)
+                self.assertEqual(code_record.status, SourceExecutionStatus.failed)
+                self.assertEqual(code_record.error.category, expected_category)
+                self.assertNotIn(SourceProvider.github_actions, {item.provider for item in result.records})
+                if known_secret:
+                    self.assertNotIn(known_secret, result.model_dump_json())
 
     def test_known_secret_in_code_skips_ci(self) -> None:
         """When code payload contains a known secret, code fails and CI is skipped with 0 calls."""

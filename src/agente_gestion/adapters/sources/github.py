@@ -514,37 +514,71 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         requests_count[0] += 1
         try:
             response = self._transport.get(url=url, headers=self._auth_headers())
-        except Exception:
-            return None
+        except SourceError as exc:
+            if exc.provider != SourceProvider.github:
+                raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+            if exc.category in {
+                SourceErrorCategory.not_found,
+                SourceErrorCategory.network,
+                SourceErrorCategory.timeout,
+                SourceErrorCategory.rate_limit,
+            }:
+                return None
+            raise SourceError(SourceProvider.github, exc.category) from None
         total_bytes[0] += response.bytes_received
         if total_bytes[0] > self._max_total_bytes:
             raise SourceError(SourceProvider.github, SourceErrorCategory.limit_exceeded) from None
-        body = response.body
-        if response.status_code != 200 or not isinstance(body, dict) or body.get("encoding") != "base64":
+
+        if response.status_code == 404:
             return None
+        if response.status_code == 401:
+            raise SourceError(SourceProvider.github, SourceErrorCategory.authentication) from None
+        if response.status_code == 403:
+            headers = {key.lower(): str(value) for key, value in response.headers.items()}
+            if headers.get("x-ratelimit-remaining") == "0" or "retry-after" in headers:
+                return None
+            raise SourceError(SourceProvider.github, SourceErrorCategory.permission_denied) from None
+        if response.status_code == 429 or 500 <= response.status_code < 600:
+            return None
+        if response.status_code != 200:
+            raise SourceError(SourceProvider.github, SourceErrorCategory.network) from None
+
+        body = response.body
+        if not isinstance(body, dict):
+            raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+        if not body:
+            return None
+        encoding = body.get("encoding")
+        if encoding == "none":
+            return None
+        if encoding != "base64":
+            raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
         encoded = body.get("content")
         blob_sha = body.get("sha")
         if (not isinstance(encoded, str) or not isinstance(blob_sha, str)
                 or not FULL_SHA_RE.fullmatch(blob_sha)):
-            return None
+            raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
         expected_blob_sha = entry.get("sha")
-        if expected_blob_sha is not None and expected_blob_sha != blob_sha:
-            return None
+        if expected_blob_sha is not None:
+            if not isinstance(expected_blob_sha, str) or not FULL_SHA_RE.fullmatch(expected_blob_sha):
+                raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+            if expected_blob_sha.lower() != blob_sha.lower():
+                raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
         try:
             content_bytes = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
+        try:
             content = content_bytes.decode("utf-8")
-        except (ValueError, UnicodeError):
+        except UnicodeError:
             return None
+        self._assert_no_credential_echo(content)
+        size = body.get("size")
+        if size is not None and (type(size) is not int or size != len(content_bytes)):
+            raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
         if len(content_bytes) > min(MAX_FULL_FILE_BYTES, self._max_total_bytes):
             return None
         if len(content.splitlines()) > self._max_lines:
-            return None
-        size = body.get("size")
-        if size is not None and (type(size) is not int or size != len(content_bytes)):
-            return None
-        try:
-            self._assert_no_credential_echo(content)
-        except SourceError:
             return None
         line_count = len(content.splitlines())
         return CodeDiffSnippet(

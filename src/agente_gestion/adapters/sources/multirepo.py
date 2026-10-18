@@ -127,6 +127,10 @@ class _BudgetedCodeSource(CodeSourcePort):
     def last_collection_complete(self):
         return self._source.last_collection_complete
 
+    @property
+    def unavailable_file_paths(self):
+        return self._source.unavailable_file_paths
+
     def get_diffs(self, project_id: str, commit_sha: Optional[str] = None) -> list[CodeDiffSnippet]:
         self._diffs = self._source.get_diffs(project_id, commit_sha=commit_sha)
         return [item.model_copy(deep=True) for item in self._diffs]
@@ -580,6 +584,19 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
                 scoped_evidence = []
                 reason_parts.append(SourceErrorInfo(provider=SourceProvider.github, category=category).message)
 
+        code_collection_complete = getattr(code_source, "last_collection_complete", True)
+        if (raw_code_record is not None
+                and raw_code_record.status == SourceExecutionStatus.success
+                and code_collection_complete is False):
+            unavailable_paths = getattr(code_source, "unavailable_file_paths", [])
+            if unavailable_paths:
+                reason_parts.append(
+                    "GitHub code collection incomplete; patch unavailable for: "
+                    + ", ".join(unavailable_paths)
+                )
+            else:
+                reason_parts.append("GitHub code collection incomplete.")
+
         if raw_ci_record is not None:
             try:
                 ci_record = _copy_repository_record(raw_ci_record, identity, target_sha)
@@ -628,6 +645,7 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
             reason_parts.append("Repository source budget exhausted.")
         complete = (
             resolved
+            and code_collection_complete is True
             and any(item.status == SourceExecutionStatus.success and item.provider == SourceProvider.github
                     for item in records)
             and any(item.status == SourceExecutionStatus.success and item.provider == SourceProvider.github_actions

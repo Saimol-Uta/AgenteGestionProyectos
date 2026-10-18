@@ -385,6 +385,94 @@ class MultiRepoCollectionTests(unittest.TestCase):
         self.assertTrue(all(call["method"] == "GET" for call in self.transport.calls))
         self.assertTrue(all(record.repository_identity is None for record in result.records))
 
+    def test_partial_backend_code_keeps_ci_provenance_and_isolates_frontend(self):
+        class PartialBackendTransport(ScriptedTransport):
+            def get(inner_self, url, params=None, headers=None, timeout_seconds=None):
+                _owner, repo, endpoint = inner_self._repo_parts(url)
+                if repo == "backend" and endpoint.startswith("/commits/") and isinstance(params, dict):
+                    inner_self.calls.append({"url": url, "params": params, "method": "GET"})
+                    return inner_self._response({
+                        "sha": SHA_A,
+                        "files": [
+                            {"filename": "styles/site.css", "status": "modified", "patch": None},
+                            {"filename": "images/logo.png", "status": "added", "patch": None},
+                            {
+                                "filename": "src/backend.py", "status": "modified",
+                                "patch": "@@ -1 +1 @@\n-old\n+new\n",
+                                "sha": "d" * 40,
+                            },
+                        ],
+                    })
+                if repo == "backend" and endpoint.startswith("/contents/"):
+                    inner_self.calls.append({"url": url, "params": params, "method": "GET"})
+                    return inner_self._response({}, status=404)
+                if repo == "backend" and endpoint == "/actions/runs":
+                    inner_self.calls.append({"url": url, "params": params, "method": "GET"})
+                    run = _run(1200, SHA_A)
+                    run.update({
+                        "conclusion": "failure",
+                        "path": ".github/workflows/quality.yml",
+                        "run_attempt": 3,
+                    })
+                    return inner_self._response({"total_count": 1, "workflow_runs": [run]})
+                return super(PartialBackendTransport, inner_self).get(
+                    url, params=params, headers=headers, timeout_seconds=timeout_seconds,
+                )
+
+        self.transport = PartialBackendTransport()
+        self.transport.branch_shas = {
+            "example-org/backend": [SHA_A],
+            "example-org/frontend": [SHA_B],
+        }
+        original_consume = CollectionBudgetLedger.consume_estimated_tokens
+        token_charges = []
+
+        def track_token_charge(ledger, identity, amount):
+            token_charges.append(identity.id if identity is not None else None)
+            return original_consume(ledger, identity, amount)
+
+        with patch.object(CollectionBudgetLedger, "consume_estimated_tokens", new=track_token_charge):
+            result = self.collect(_settings([
+                _repo("backend", "backend"), _repo("frontend", "frontend"),
+            ]))
+
+        backend, frontend = result.repository_results
+        self.assertFalse(backend.is_complete)
+        self.assertIn("styles/site.css", backend.incomplete_reason)
+        self.assertIn("images/logo.png", backend.incomplete_reason)
+        self.assertTrue(frontend.is_complete)
+        self.assertEqual([item.file_path for item in backend.code_diffs], ["src/backend.py"])
+        self.assertTrue(frontend.code_diffs)
+        backend_file_evidence = {
+            item.provenance.file_path: item for item in backend.evidence
+            if item.provenance.file_path in {"styles/site.css", "images/logo.png"}
+        }
+        self.assertEqual(set(backend_file_evidence), {"styles/site.css", "images/logo.png"})
+        for item in backend_file_evidence.values():
+            self.assertFalse(item.provenance.payload["patch_available"])
+            self.assertEqual(item.provenance.payload["reason"], "patch_unavailable")
+        self.assertEqual(backend.budget_receipt.files, 3)
+        self.assertEqual(frontend.budget_receipt.files, 1)
+        self.assertFalse(backend.budget_receipt.exhausted)
+        self.assertFalse(frontend.budget_receipt.exhausted)
+        self.assertEqual(token_charges, [None, "backend", "backend", "frontend", "frontend"])
+
+        backend_ci = backend.ci_runs[0]
+        self.assertEqual(backend_ci.id, "1200")
+        self.assertEqual(backend_ci.status, "failure")
+        self.assertEqual(backend_ci.workflow_path, ".github/workflows/quality.yml")
+        self.assertEqual(backend_ci.run_attempt, 3)
+        self.assertEqual(backend_ci.provenance.repository_identity, backend.repository_state.identity)
+        self.assertEqual(backend_ci.provenance.commit_sha, SHA_A)
+        self.assertEqual(backend_ci.provenance.workflow_path, ".github/workflows/quality.yml")
+        self.assertEqual(backend_ci.provenance.run_id, "1200")
+        self.assertEqual(backend_ci.provenance.run_attempt, 3)
+        self.assertEqual(
+            [call["params"]["head_sha"] for call in self.transport.calls
+             if call["params"] and "head_sha" in call["params"]],
+            [SHA_A, SHA_B],
+        )
+
     def test_explicit_pins_are_independent_and_skip_branch_resolution(self):
         self.transport.actions_shas = {"example-org/backend": [SHA_A], "example-org/frontend": [SHA_C]}
         result = self.collect(_settings([
