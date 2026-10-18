@@ -28,6 +28,9 @@ _URL_CREDENTIAL = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
 _LONG_OPAQUE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9_-]{48,}(?![A-Za-z0-9])")
 _COMMIT_RE = re.compile(r"^(?:[0-9a-fA-F]{7,64})$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+FINDING_IDENTIFIER_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+)
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,14 @@ def sanitize_text(value: str | None, *, secrets_to_redact: tuple[str, ...] = (),
 
 def safe_identifier(value: object) -> str | None:
     if not isinstance(value, str) or not IDENTIFIER_PATTERN.fullmatch(value):
+        return None
+    return value
+
+
+def safe_finding_identifier(value: object) -> str | None:
+    """Validate legacy or repository-namespaced finding IDs without relaxing other IDs."""
+    if (not isinstance(value, str) or len(value) > 128
+            or not FINDING_IDENTIFIER_PATTERN.fullmatch(value)):
         return None
     return value
 

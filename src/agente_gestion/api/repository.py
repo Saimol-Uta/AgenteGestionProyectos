@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.application.tasks_query import TaskDetailView, TaskFilter, TaskPlanSummary, query_tasks_view
 from agente_gestion.domain.code import CodeDiffSnippet
-from agente_gestion.domain.code_action import CodeSourceSnapshot
+from agente_gestion.domain.code_action import CodeSourceSnapshot, FindingActionOrigin
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.policies import RuleEvaluationStatus
@@ -69,6 +69,7 @@ from agente_gestion.api.schemas import (
 )
 from agente_gestion.api.security import (
     safe_commit_sha,
+    safe_finding_identifier,
     safe_identifier,
     safe_lines,
     safe_relative_path,
@@ -426,7 +427,7 @@ class SQLiteQueryRepository:
         verification_views: list[RepositoryVerificationView] = []
         for group_status, candidates in finding_groups:
             for candidate in candidates:
-                finding_id = safe_identifier(candidate.id)
+                finding_id = safe_finding_identifier(candidate.id)
                 if finding_id is None:
                     continue
                 verification = verifications_by_finding.get(candidate.id)
@@ -1363,7 +1364,7 @@ class SQLiteQueryRepository:
         verifications = self._verification_rows(run_id)
         views: list[FindingSummary] = []
         for row in rows:
-            finding_id = safe_identifier(row.get("finding_id", row.get("id")))
+            finding_id = safe_finding_identifier(row.get("finding_id", row.get("id")))
             if finding_id is None:
                 raise DataIntegrityError("Stored finding identifier is unsafe")
             candidate = report_findings.get(finding_id)
@@ -1436,7 +1437,7 @@ class SQLiteQueryRepository:
         verifications: dict[str, dict[str, object]],
         repository_identity: RepositoryIdentity | None = None,
     ) -> FindingSummary:
-        finding_id = safe_identifier(row.get("finding_id", row.get("id")))
+        finding_id = safe_finding_identifier(row.get("finding_id", row.get("id")))
         if finding_id is None:
             raise DataIntegrityError("Stored finding identifier is unsafe")
         candidate = report_findings.get(finding_id)
@@ -1512,22 +1513,82 @@ class SQLiteQueryRepository:
             raise DataIntegrityError("Stored run project identifier is unsafe")
         return project_id
 
+    def finding_action_audit_origin(self, project_id: str, audit_event_id: str) -> dict[str, str] | None:
+        """Expose origin only when the durable decision request stored a validated T8 context."""
+        if (safe_identifier(project_id) is None or safe_identifier(audit_event_id) is None
+                or not audit_event_id.startswith("audit-finding-")):
+            return None
+        event_id = audit_event_id[len("audit-"):]
+        with self._connect() as connection:
+            if connection is None:
+                return None
+            tables = self._tables(connection)
+            if not {"security_audit_log", "finding_decision_requests"}.issubset(tables):
+                return None
+            audit = connection.execute(
+                "SELECT project_id, permission_checked FROM security_audit_log WHERE event_id=?",
+                (audit_event_id,),
+            ).fetchone()
+            if (audit is None or audit["project_id"] != project_id
+                    or audit["permission_checked"] != "web:finding_decision"):
+                return None
+            request = connection.execute(
+                "SELECT project_id, run_id, finding_id, request_json FROM finding_decision_requests "
+                "WHERE project_id=? AND event_id=?",
+                (project_id, event_id),
+            ).fetchone()
+        if request is None or request["project_id"] != project_id:
+            return None
+        try:
+            payload = json.loads(request["request_json"])
+            origin = FindingActionOrigin.model_validate(payload.get("origin"))
+        except (ValueError, TypeError, AttributeError):
+            return None
+        if (origin.project_id != project_id
+                or origin.run_id != request["run_id"] or origin.finding_id != request["finding_id"]
+                or safe_finding_identifier(origin.finding_id) is None
+                or origin.repository is None or origin.commit_sha is None):
+            return None
+        owner, name = origin.repository.split("/", 1)
+        details = {
+            "finding_id": origin.finding_id,
+            "repository_owner": owner,
+            "repository_name": name,
+            "source_commit_sha": origin.commit_sha,
+        }
+        if origin.repository_identity is not None:
+            details["repository_id"] = origin.repository_identity.id
+        return details
+
     def finding_action_context(
         self, run_id: str, finding_id: str,
-    ) -> tuple[CandidateFinding, str, CodeSourceSnapshot | None, str | None]:
-        """Return a stored candidate and its exact captured patch context, never a guessed source."""
+    ) -> tuple[CandidateFinding, str, CodeSourceSnapshot | None, str | None, FindingActionOrigin]:
+        """Return the stored finding and a repository/SHA-bound captured patch context."""
         run_row = self._run_row(run_id)
-        if not safe_identifier(finding_id):
+        if safe_finding_identifier(finding_id) is None:
             raise LookupError("finding_not_found")
+        project_id = safe_identifier(run_row.get("project_id"))
+        if project_id is None:
+            raise DataIntegrityError("Stored run project identifier is unsafe")
         row = next((item for item in self._finding_rows(run_id)
                     if item.get("id", item.get("finding_id")) == finding_id), None)
         if row is None:
             raise LookupError("finding_not_found")
-        candidate = self._report_findings(self._report_for_run(run_row)).get(finding_id)
+        report = self._report_for_run(run_row)
+        candidate = self._report_findings(report).get(finding_id)
         if candidate is None:
             raise LookupError("finding_not_actionable")
-        if (safe_relative_path(candidate.file_path) != candidate.file_path
-                or safe_commit_sha(candidate.commit_sha) is None):
+        candidate_sha = safe_commit_sha(candidate.commit_sha)
+        if safe_relative_path(candidate.file_path) != candidate.file_path or candidate_sha is None:
+            raise LookupError("finding_source_unavailable")
+        if (row.get("commit_sha") is not None and safe_commit_sha(row.get("commit_sha")) != candidate_sha
+                or row.get("file_path") is not None
+                and safe_relative_path(row.get("file_path")) != candidate.file_path):
+            raise LookupError("finding_source_unavailable")
+        if candidate.provenance is not None and (
+                candidate.provenance.certifies_target is False
+                or (candidate.provenance.commit_sha is not None
+                    and candidate.provenance.commit_sha != candidate_sha)):
             raise LookupError("finding_source_unavailable")
 
         suggestion = row.get("suggested_code")
@@ -1542,54 +1603,201 @@ class SQLiteQueryRepository:
             "commit_sha_applied": row.get("commit_sha_applied"),
         })
 
-        source = None
-        repository = None
+        identities: list[RepositoryIdentity] = []
+
+        def add_identity(identity: RepositoryIdentity | None) -> None:
+            if identity is None:
+                return
+            if not any(_same_repository(identity, existing) for existing in identities):
+                identities.append(identity)
+
+        add_identity(candidate.repository_identity)
+        if candidate.provenance is not None:
+            add_identity(candidate.provenance.repository_identity)
+        report_states = []
+        if report is not None:
+            for result in report.repository_results:
+                grouped = [
+                    *result.confirmed_findings, *result.rejected_findings,
+                    *result.insufficient_findings, *result.pending_findings,
+                ]
+                reported = next((item for item in grouped if item.id == finding_id), None)
+                if reported is None:
+                    continue
+                if (reported.commit_sha.lower() != candidate_sha
+                        or reported.file_path != candidate.file_path
+                        or reported.evidence != candidate.evidence):
+                    raise LookupError("finding_source_unavailable")
+                state = result.repository_state
+                if (state.target_commit_sha is not None
+                        and state.target_commit_sha.lower() != candidate_sha):
+                    raise LookupError("finding_source_unavailable")
+                add_identity(state.identity)
+                report_states.append(state)
+        if len(identities) > 1:
+            raise LookupError("finding_source_unavailable")
+        identity = identities[0] if identities else None
+
         adapter = self._adapter()
         snapshot_id = safe_identifier(run_row.get("snapshot_id"))
-        if adapter is not None and snapshot_id is not None:
-            snapshot = adapter.get_snapshot(snapshot_id)
-            if snapshot is not None and snapshot.project_id == run_row.get("project_id"):
-                matching: list[CodeDiffSnippet] = []
-                for raw in snapshot.code_diffs:
-                    try:
-                        snippet = raw if isinstance(raw, CodeDiffSnippet) else CodeDiffSnippet.model_validate(raw)
-                    except (ValueError, TypeError):
-                        continue
-                    if snippet.commit_sha == candidate.commit_sha and snippet.file_path == candidate.file_path:
-                        matching.append(snippet)
-                complete = [snippet for snippet in matching
-                            if snippet.evidence_scope == "full_file" and snippet.is_complete and not snippet.truncated]
-                if len(complete) > 1:
-                    raise LookupError("finding_source_ambiguous")
-                if len(complete) == 1:
-                    chosen = complete[0]
-                    source_repository = safe_repository(chosen.repository)
-                    source_hash = chosen.source_sha256
-                    if (source_repository and source_hash
-                            and hashlib.sha256(chosen.content.encode("utf-8")).hexdigest() == source_hash
-                            and chosen.total_lines == len(chosen.content.splitlines())):
-                        try:
-                            source = CodeSourceSnapshot(
-                                content=chosen.content,
-                                is_complete=True,
-                                repository=source_repository,
-                                commit_sha=chosen.commit_sha,
-                                file_path=chosen.file_path,
-                                source_sha256=source_hash,
-                                source_blob_sha=chosen.source_blob_sha,
-                                total_lines=chosen.total_lines,
-                            )
-                            repository = source_repository
-                        except ValueError:
-                            source = None
-                            repository = None
+        snapshot = adapter.get_snapshot(snapshot_id) if adapter is not None and snapshot_id is not None else None
+        if snapshot is not None and snapshot.project_id != project_id:
+            raise LookupError("finding_source_unavailable")
+        multi_repository = bool(
+            (report is not None and len(report.repository_results) > 1)
+            or (snapshot is not None and len(snapshot.repository_results) > 1)
+        )
 
-        excerpt = candidate.evidence or ""
-        return candidate, excerpt, source, repository
+        source_entries: dict[str, dict[str, object]] = {}
+        if snapshot is not None:
+            scoped_snippets = [(raw, None) for raw in snapshot.code_diffs]
+            for result in snapshot.repository_results:
+                scoped_snippets.extend((raw, result.repository_state) for raw in result.code_diffs)
+            for raw, state in scoped_snippets:
+                try:
+                    snippet = raw if isinstance(raw, CodeDiffSnippet) else CodeDiffSnippet.model_validate(raw)
+                except (ValueError, TypeError):
+                    continue
+                if snippet.commit_sha.lower() != candidate_sha or snippet.file_path != candidate.file_path:
+                    continue
+                key = snippet.model_dump_json()
+                entry = source_entries.setdefault(key, {"snippet": snippet, "states": []})
+                if state is not None:
+                    entry["states"].append(state)
+
+        entries = list(source_entries.values())
+        if identity is not None:
+            expected_repository = f"{identity.owner}/{identity.repo}"
+            for entry in entries:
+                snippet = entry["snippet"]
+                snippet_repository = safe_repository(snippet.repository)
+                if snippet_repository is None:
+                    if (snippet.repository_identity is not None
+                            and _same_repository(snippet.repository_identity, identity)):
+                        raise LookupError("finding_source_unavailable")
+                    continue
+                if snippet_repository.casefold() != expected_repository.casefold():
+                    continue
+                for snippet_identity in (
+                    snippet.repository_identity,
+                    snippet.provenance.repository_identity if snippet.provenance is not None else None,
+                ):
+                    if snippet_identity is not None and not _same_repository(snippet_identity, identity):
+                        raise LookupError("finding_source_unavailable")
+        else:
+            explicit_source_identities = []
+            repository_names = set()
+            for entry in entries:
+                snippet = entry["snippet"]
+                repository_name = safe_repository(snippet.repository)
+                if repository_name is None:
+                    continue
+                repository_names.add(repository_name.casefold())
+                add_identity(snippet.repository_identity)
+                if snippet.provenance is not None:
+                    add_identity(snippet.provenance.repository_identity)
+                for state in entry["states"]:
+                    add_identity(state.identity)
+            if len(identities) > 1 or len(repository_names) > 1:
+                raise LookupError("finding_source_ambiguous")
+            identity = identities[0] if identities else None
+            if identity is not None:
+                expected_repository = f"{identity.owner}/{identity.repo}".casefold()
+                if repository_names and repository_names != {expected_repository}:
+                    raise LookupError("finding_source_unavailable")
+
+        repository = (
+            f"{identity.owner}/{identity.repo}" if identity is not None else None
+        )
+        if repository is None:
+            matching_names = {
+                safe_repository(entry["snippet"].repository)
+                for entry in entries
+                if safe_repository(entry["snippet"].repository) is not None
+            }
+            if len(matching_names) > 1:
+                raise LookupError("finding_source_ambiguous")
+            repository = next(iter(matching_names), None)
+
+        expected_repo_key = repository.casefold() if repository is not None else None
+        matching_entries = [
+            entry for entry in entries
+            if expected_repo_key is not None
+            and safe_repository(entry["snippet"].repository) is not None
+            and safe_repository(entry["snippet"].repository).casefold() == expected_repo_key
+        ]
+        source_states = [state for entry in matching_entries for state in entry["states"]]
+        for state in [*report_states, *source_states]:
+            if state.target_commit_sha is not None and state.target_commit_sha.lower() != candidate_sha:
+                raise LookupError("finding_source_unavailable")
+            if identity is not None and not _same_repository(state.identity, identity):
+                raise LookupError("finding_source_unavailable")
+        branches = {state.branch for state in [*report_states, *source_states]}
+        if len(branches) > 1:
+            raise LookupError("finding_source_unavailable")
+        stored_branch = next(iter(branches), None)
+
+        complete = [
+            entry["snippet"] for entry in matching_entries
+            if entry["snippet"].evidence_scope == "full_file"
+            and entry["snippet"].is_complete and not entry["snippet"].truncated
+        ]
+        if len(complete) > 1:
+            raise LookupError("finding_source_ambiguous")
+        source = None
+        source_hash = None
+        source_blob_sha = None
+        if len(complete) == 1:
+            chosen = complete[0]
+            if chosen.provenance is not None and chosen.provenance.certifies_target is False:
+                raise LookupError("finding_source_unavailable")
+            source_repository = safe_repository(chosen.repository)
+            source_hash = chosen.source_sha256
+            source_blob_sha = chosen.source_blob_sha
+            if (source_repository is None or source_hash is None
+                    or hashlib.sha256(chosen.content.encode("utf-8")).hexdigest() != source_hash
+                    or chosen.total_lines != len(chosen.content.splitlines())
+                    or candidate.line not in chosen.lines):
+                raise LookupError("finding_source_unavailable")
+            excerpt = candidate.evidence or ""
+            if excerpt and chosen.content.count(excerpt) != 1:
+                raise LookupError("finding_source_unavailable")
+            try:
+                source = CodeSourceSnapshot(
+                    content=chosen.content,
+                    is_complete=True,
+                    repository=source_repository,
+                    commit_sha=chosen.commit_sha.lower(),
+                    file_path=chosen.file_path,
+                    source_sha256=source_hash,
+                    source_blob_sha=source_blob_sha,
+                    total_lines=chosen.total_lines,
+                )
+            except ValueError:
+                raise LookupError("finding_source_unavailable") from None
+            repository = source_repository
+        else:
+            excerpt = candidate.evidence or ""
+
+        origin = FindingActionOrigin(
+            project_id=project_id,
+            run_id=run_id,
+            finding_id=finding_id,
+            repository_identity=identity,
+            repository=repository,
+            commit_sha=candidate_sha,
+            file_path=candidate.file_path,
+            source_sha256=source_hash,
+            excerpt_sha256=hashlib.sha256(excerpt.encode("utf-8")).hexdigest() if excerpt else None,
+            source_blob_sha=source_blob_sha,
+            base_branch=stored_branch,
+            multi_repository=multi_repository,
+        )
+        return candidate, excerpt, source, repository, origin
 
     def finding_detail(self, run_id: str, finding_id: str) -> FindingDetail:
         run_row = self._run_row(run_id)
-        if not safe_identifier(finding_id):
+        if safe_finding_identifier(finding_id) is None:
             raise LookupError("finding_not_found")
         rows = self._finding_rows(run_id)
         row = next((item for item in rows if item.get("id") == finding_id), None)
@@ -1902,7 +2110,7 @@ class SQLiteQueryRepository:
             status_counts = {"candidate": 0, "confirmed": 0, "rejected": 0,
                              "insufficient": 0, "pending": 0, "unknown": 0}
             for finding_row in findings:
-                finding_id = safe_identifier(finding_row.get("finding_id", finding_row.get("id")))
+                finding_id = safe_finding_identifier(finding_row.get("finding_id", finding_row.get("id")))
                 candidate = report_findings.get(finding_id) if finding_id is not None else None
                 view = self._finding_summary(
                     run_id, finding_row, report_findings, verification_rows,

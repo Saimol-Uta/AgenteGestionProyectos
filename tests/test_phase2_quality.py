@@ -146,7 +146,7 @@ class Phase2QualityTests(unittest.TestCase):
             self.assertIsNone(stored_view.branch_name)
             self.assertIsNone(stored_view.branch_url)
             self.assertIsNone(stored_view.commit_sha_applied)
-            action_candidate, _excerpt, _source, _repository = SQLiteQueryRepository(
+            action_candidate, _excerpt, _source, _repository, _origin = SQLiteQueryRepository(
                 settings,
             ).finding_action_context(RUN_ID, FINDING_ID)
             self.assertEqual(action_candidate.suggested_code, "")
@@ -170,6 +170,13 @@ class Phase2QualityTests(unittest.TestCase):
         fixture = build_web_api_fixture(root, governance_enabled=True)
         self.addCleanup(fixture.client.close)
         app = fixture.client.app
+        settings = app.state.settings.model_copy(update={
+            "github_repository": "acme/h5-test",
+            "github_base_branch": "main",
+            "external_writes_enabled": False,
+        })
+        app.state.settings = settings
+        app.state.repository = SQLiteQueryRepository(settings)
         app.include_router(finding_actions_router)
         storage = SQLiteStorageAdapter(str(fixture.database_path))
         snapshot = storage.get_snapshot("snapshot-current")
@@ -194,12 +201,19 @@ class Phase2QualityTests(unittest.TestCase):
         storage.save_report(report.model_copy(update={
             "candidate_findings": [finding], "insufficient_findings": [finding],
         }), report_id=REPORT_ID, run_id=RUN_ID)
-        stored_candidate, _excerpt, _source, _repository = SQLiteQueryRepository(
+        stored_candidate, _excerpt, _source, _repository, _origin = SQLiteQueryRepository(
             fixture.client.app.state.settings,
         ).finding_action_context(RUN_ID, FINDING_ID)
         self.assertEqual(stored_candidate.suggested_code, "    return value.strip()")
         self.assertEqual(stored_candidate.improvement_summary, "Normaliza el valor de entrada.")
         return fixture, storage
+
+    def _configured_action_origin(self, fixture, origin):
+        from agente_gestion.api.finding_actions import _configured_origin
+
+        settings = fixture.client.app.state.settings
+        project = next(item for item in settings.projects if item.id == PROJECT_ID)
+        return _configured_origin(origin, settings, project)
 
     def test_approve_without_complete_source_is_rejected_before_any_durable_or_branch_write(self):
         from agente_gestion.api.app import create_app
@@ -383,7 +397,7 @@ class Phase2QualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             fixture, storage = self._action_fixture(Path(tmp))
-            candidate, excerpt, source, repo = SQLiteQueryRepository(
+            candidate, excerpt, source, repo, origin = SQLiteQueryRepository(
                 fixture.client.app.state.settings,
             ).finding_action_context(RUN_ID, FINDING_ID)
             result = FindingDecisionService(storage, UnexpectedPort()).decide(
@@ -391,7 +405,7 @@ class Phase2QualityTests(unittest.TestCase):
                 candidate=candidate, decision="request_changes", idempotency_key="changes-key-0001",
                 actor_id="gestor-local", session_cookie="cookie-fingerprint-only",
                 original_excerpt=excerpt, source=source, repository=repo, base_branch="main",
-                reason="Ajustar el ejemplo antes de aprobar.",
+                reason="Ajustar el ejemplo antes de aprobar.", origin=origin,
             )
             self.assertEqual(result["decision_status"], "changes_requested")
             self.assertEqual(result["execution_mode"], "sandbox")
@@ -412,9 +426,10 @@ class Phase2QualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             fixture, storage = self._action_fixture(Path(tmp))
-            candidate, excerpt, source, repo = SQLiteQueryRepository(
+            candidate, excerpt, source, repo, origin = SQLiteQueryRepository(
                 fixture.client.app.state.settings,
             ).finding_action_context(RUN_ID, FINDING_ID)
+            origin = self._configured_action_origin(fixture, origin)
             port = FailingPort()
             service = FindingDecisionService(storage, port)
             args = {
@@ -424,6 +439,7 @@ class Phase2QualityTests(unittest.TestCase):
                 "original_excerpt": excerpt, "source": source, "repository": repo,
                 "base_branch": "main", "suggested_code_override": None,
                 "target_branch": "quality/failure-replay", "reason": "Revisión explícita",
+                "origin": origin,
             }
             for _ in range(2):
                 with self.assertRaises(FindingDecisionError) as caught:
@@ -463,9 +479,10 @@ class Phase2QualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             fixture, storage = self._action_fixture(Path(tmp))
-            candidate, excerpt, source, repo = SQLiteQueryRepository(
+            candidate, excerpt, source, repo, origin = SQLiteQueryRepository(
                 fixture.client.app.state.settings,
             ).finding_action_context(RUN_ID, FINDING_ID)
+            origin = self._configured_action_origin(fixture, origin)
             port = BlockingPort()
             service = FindingDecisionService(storage, port)
             base = {
@@ -473,7 +490,7 @@ class Phase2QualityTests(unittest.TestCase):
                 "candidate": candidate, "decision": "approve", "actor_id": "gestor-local",
                 "session_cookie": "cookie-fingerprint-only", "original_excerpt": excerpt,
                 "source": source, "repository": repo, "base_branch": "main",
-                "suggested_code_override": None, "reason": None,
+                "suggested_code_override": None, "reason": None, "origin": origin,
             }
             with ThreadPoolExecutor(max_workers=2) as executor:
                 first = executor.submit(service.decide, **{

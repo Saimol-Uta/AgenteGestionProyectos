@@ -373,6 +373,10 @@ class FindingDecisionResponse(ApiModel):
     suggested_code: str
     improvement_summary: str
     execution_mode: Literal["live", "sandbox"]
+    repository_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    repository_owner: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    repository_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_commit_sha: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class FindingDetail(FindingSummary):

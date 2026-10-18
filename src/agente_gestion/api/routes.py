@@ -56,7 +56,12 @@ from agente_gestion.api.schemas import (
     TaskDetailResponse,
     EvidenceSummary,
 )
-from agente_gestion.api.security import OperatorSession, OperatorSessionStore, sanitize_text
+from agente_gestion.api.security import (
+    FINDING_IDENTIFIER_PATTERN,
+    OperatorSession,
+    OperatorSessionStore,
+    sanitize_text,
+)
 from agente_gestion.api.settings import ApiSettings, IDENTIFIER_PATTERN
 from agente_gestion.application.tasks_query import TaskDetailView, TaskPlanSummary
 from agente_gestion.domain.repository_history import RepositoryHistoryFilter
@@ -69,6 +74,7 @@ router = APIRouter(
     responses={status: {"model": ErrorEnvelope} for status in (401, 403, 404, 409, 422, 500, 503)},
 )
 _ID = IDENTIFIER_PATTERN.pattern
+_FINDING_ID = FINDING_IDENTIFIER_PATTERN.pattern
 
 
 def _session_view(
@@ -529,7 +535,7 @@ def list_run_findings(
 def get_run_finding(
     request: Request,
     run_id: Annotated[str, Path(pattern=_ID, max_length=128)],
-    finding_id: Annotated[str, Path(pattern=_ID, max_length=128)],
+    finding_id: Annotated[str, Path(pattern=_FINDING_ID, max_length=128)],
 ) -> FindingDetail:
     try:
         return _repository(request).finding_detail(run_id, finding_id)
@@ -835,8 +841,13 @@ def get_project_audit_event(
 ) -> AuditEventDetail:
     _require_project_capability(request, project_id, "audit:read", mutation=False)
     try:
-        _repository(request).require_project(project_id)
-        return request.app.state.control_plane.audit_detail(project_id, event_id)
+        repository = _repository(request)
+        repository.require_project(project_id)
+        detail = request.app.state.control_plane.audit_detail(project_id, event_id)
+        origin = repository.finding_action_audit_origin(project_id, event_id)
+        if origin is not None:
+            detail = detail.model_copy(update={"details": {**detail.details, **origin}})
+        return detail
     except LookupError as exc:
         _raise_lookup(exc)
 

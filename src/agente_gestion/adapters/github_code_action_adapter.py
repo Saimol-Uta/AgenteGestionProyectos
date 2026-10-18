@@ -12,7 +12,7 @@ from urllib.parse import quote
 import requests
 
 from agente_gestion.domain.code import validate_source_syntax
-from agente_gestion.domain.code_action import BranchExecutionResult, CodeSourceSnapshot
+from agente_gestion.domain.code_action import BranchExecutionResult, CodeSourceSnapshot, FindingActionOrigin
 from agente_gestion.ports.code_action_port import CodeActionPort
 
 
@@ -20,6 +20,10 @@ _REPOSITORY = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
 _BRANCH_FORBIDDEN = re.compile(r"[\x00-\x20~^:?*\\\[]")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MAX_TEXT_BYTES = 5 * 1024 * 1024
+
+
+def _same_repository(left: str | None, right: str | None) -> bool:
+    return bool(left and right and left.casefold() == right.casefold())
 
 
 class CodeActionError(RuntimeError):
@@ -59,6 +63,7 @@ class GitHubCodeActionAdapter(CodeActionPort):
         project_mode: str = "fixtures",
         http_client=None,
         source_lookup: Callable[[str, str], CodeSourceSnapshot | None] | None = None,
+        origin: FindingActionOrigin | None = None,
     ):
         if not isinstance(branches_dir, str) or not branches_dir.strip():
             raise CodeActionError("sandbox_unconfigured", "No está configurada la carpeta local de ramas.", 503)
@@ -70,8 +75,19 @@ class GitHubCodeActionAdapter(CodeActionPort):
         self.project_mode = project_mode
         self.http_client = http_client or _RequestsGitHubClient()
         self.source_lookup = source_lookup
+        self.origin = origin
         if repository is not None:
             self._validate_repository(repository)
+        if origin is not None and (
+            not origin.configured_for_code_action or not origin.repository
+            or not origin.commit_sha or not origin.file_path or not origin.base_branch
+            or repository is None or not _same_repository(repository, origin.repository)
+            or self.base_branch != origin.base_branch
+        ):
+            raise CodeActionError(
+                "fuente_no_verificable",
+                "El adaptador no está enlazado al repositorio, SHA y rama base del hallazgo.", 409,
+            )
 
     @staticmethod
     def _validate_repository(repo: str) -> str:
@@ -142,16 +158,31 @@ class GitHubCodeActionAdapter(CodeActionPort):
         return updated
 
     def _source_snapshot(self, repo: str, file_path: str) -> CodeSourceSnapshot:
+        if self.origin is not None and (
+            not self.origin.configured_for_code_action
+            or not _same_repository(repo, self.origin.repository)
+            or not _same_repository(self.repository, self.origin.repository)
+            or file_path != self.origin.file_path
+        ):
+            raise CodeActionError(
+                "fuente_no_verificable", "El destino no coincide con el origen fijado del hallazgo.", 409,
+            )
         if self.source_lookup is None:
             raise CodeActionError(
                 "fuente_no_verificable", "No hay una fuente completa capturada para crear la rama.", 409,
             )
         value = self.source_lookup(repo, file_path)
         if (not isinstance(value, CodeSourceSnapshot) or not value.is_complete
-                or value.repository != repo or value.file_path != file_path
+                or not _same_repository(value.repository, repo) or value.file_path != file_path
                 or not value.commit_sha or not value.source_sha256
                 or hashlib.sha256(value.content.encode("utf-8")).hexdigest() != value.source_sha256
-                or value.total_lines != len(value.content.splitlines())):
+                or value.total_lines != len(value.content.splitlines())
+                or (self.origin is not None and (
+                    value.commit_sha.lower() != self.origin.commit_sha
+                    or value.source_sha256 != self.origin.source_sha256
+                    or (self.origin.source_blob_sha is not None
+                        and value.source_blob_sha != self.origin.source_blob_sha)
+                ))):
             raise CodeActionError(
                 "fuente_no_verificable", "No hay una fuente completa y coherente para crear la rama.", 409,
             )
@@ -173,9 +204,14 @@ class GitHubCodeActionAdapter(CodeActionPort):
             raise CodeActionError("sandbox_no_disponible", "La carpeta sandbox no es un directorio.", 503)
         return resolved
 
-    def _write_sandbox(self, branch: str, file_path: str, content: str) -> None:
+    def _write_sandbox(self, branch: str, file_path: str, content: str, repo: str | None = None) -> None:
         root = self._sandbox_root()
-        relative_parts = [*branch.split("/"), *file_path.split("/")]
+        scope_parts: list[str] = []
+        if (self.origin is not None and repo is not None
+                and (self.origin.multi_repository or self.origin.repository_identity is not None)):
+            scope = hashlib.sha256(repo.casefold().encode("utf-8")).hexdigest()[:16]
+            scope_parts = ["repositories", scope]
+        relative_parts = [*scope_parts, *branch.split("/"), *file_path.split("/")]
         destination = root
         for part in relative_parts[:-1]:
             destination = destination / part
@@ -326,18 +362,38 @@ class GitHubCodeActionAdapter(CodeActionPort):
         repo = self._validate_repository(repo)
         base_branch = self._validate_branch(base_branch)
         target_branch = self._validate_branch(target_branch)
+        if self.repository is not None and not _same_repository(repo, self.repository):
+            raise CodeActionError(
+                "fuente_no_verificable", "El repositorio solicitado no coincide con el destino configurado.", 409,
+            )
         if target_branch == base_branch:
             raise CodeActionError("rama_destino_invalida", "La rama destino debe ser distinta de la rama base.", 422)
         file_path = self._validate_file_path(file_path)
-        if not isinstance(finding_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", finding_id):
+        if (not isinstance(finding_id, str) or len(finding_id) > 128
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)*", finding_id)):
             raise CodeActionError("hallazgo_invalido", "El identificador del hallazgo no es válido.", 422)
         if not isinstance(actor, str) or not actor.strip() or _CONTROL.search(actor):
             raise CodeActionError("actor_invalido", "El actor de la decisión no es válido.", 422)
         original_excerpt = self._validate_text(original_excerpt, "original_excerpt")
         suggested_code = self._validate_text(suggested_code, "suggested_code")
+        if self.origin is not None and (
+            not self.origin.configured_for_code_action
+            or not _same_repository(repo, self.origin.repository)
+            or not _same_repository(self.repository, self.origin.repository)
+            or base_branch != self.origin.base_branch
+            or finding_id != self.origin.finding_id
+            or file_path != self.origin.file_path
+            or self.origin.commit_sha is None
+            or self.origin.excerpt_sha256 is None
+            or hashlib.sha256(original_excerpt.encode("utf-8")).hexdigest() != self.origin.excerpt_sha256
+        ):
+            raise CodeActionError(
+                "fuente_no_verificable", "La solicitud no coincide con el origen fijado del hallazgo.", 409,
+            )
         snapshot = self._source_snapshot(repo, file_path)
         if len(snapshot.content.encode("utf-8")) > _MAX_TEXT_BYTES:
             raise CodeActionError("fuente_demasiado_grande", "La fuente capturada supera el tamaño permitido.", 422)
+        patched = self._patch(snapshot.content, original_excerpt, suggested_code, file_path, complete=True)
         if self._live_ready(repo):
             live_result = self._live_branch(
                 repo, base_branch, target_branch, file_path, original_excerpt,
@@ -346,7 +402,6 @@ class GitHubCodeActionAdapter(CodeActionPort):
             if live_result is not None:
                 return live_result
 
-        patched = self._patch(snapshot.content, original_excerpt, suggested_code, file_path, complete=True)
         digest_input = json.dumps({
             "actor": actor.strip(), "base_commit_sha": snapshot.commit_sha,
             "branch": target_branch, "file_path": file_path,
@@ -354,7 +409,7 @@ class GitHubCodeActionAdapter(CodeActionPort):
             "repo": repo, "source_sha256": snapshot.source_sha256,
         }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         commit_sha = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
-        self._write_sandbox(target_branch, file_path, patched)
+        self._write_sandbox(target_branch, file_path, patched, repo)
         return BranchExecutionResult(
             execution_mode="sandbox", branch_name=target_branch,
             branch_url=f"sandbox://branches/{quote(target_branch, safe='/')}",
