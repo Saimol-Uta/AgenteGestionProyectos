@@ -1,16 +1,22 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRight, FolderKanban, Layers3 } from "lucide-react";
-import { useProjects } from "../../api/queries";
+import { useProject, useProjects } from "../../api/queries";
 import { formatDate } from "../../api/formatters";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState } from "../../components/States";
+import { RepositoryResultsPanel } from "../../components/RepositoryResultsPanel";
 
 export function ProjectsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const pageValue = Number(searchParams.get("page") ?? "1");
   const page = Number.isInteger(pageValue) && pageValue > 0 ? pageValue : 1;
   const projectsQuery = useProjects(page, 100);
-  const { setSelectedProjectId } = useWorkspace();
+  const { selectedProjectId, setSelectedProjectId } = useWorkspace();
+  const listedProject = projectsQuery.data?.items.find((project) => project.id === selectedProjectId);
+  const selectedProjectQuery = useProject(selectedProjectId, Boolean(selectedProjectId && !listedProject));
+  const repositoryProjectId = listedProject?.id
+    ?? selectedProjectQuery.data?.id
+    ?? (!selectedProjectId ? projectsQuery.data?.items[0]?.id ?? null : null);
   const navigate = useNavigate();
 
   if (projectsQuery.isPending) return <LoadingState label="Consultando proyectos configurados…" />;
@@ -73,6 +79,7 @@ export function ProjectsPage() {
           </article>
         ))}
       </div>
+      <RepositoryResultsPanel projectId={repositoryProjectId} />
       {projectsQuery.data.total > projectsQuery.data.page_size && (
         <div className="table-footer project-pagination">
           <span>Mostrando página {projectsQuery.data.page} de {Math.ceil(projectsQuery.data.total / projectsQuery.data.page_size)} · {projectsQuery.data.total} proyectos</span>

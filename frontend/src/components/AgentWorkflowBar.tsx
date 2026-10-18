@@ -60,7 +60,7 @@ function Workflow({ projectId }: { projectId: string | null }) {
     const job = tracked.data;
     if (!job || !projectId || ["queued", "running"].includes(job.status) || refreshedJob.current === job.job_id) return;
     refreshedJob.current = job.job_id;
-    for (const name of ["summary", "executive-summary", "quality", "proposals", "reports", "history", "runs", "analysis-jobs"]) {
+    for (const name of ["summary", "executive-summary", "quality", "proposals", "reports", "history", "runs", "analysis-jobs", "repository-results"]) {
       void client.invalidateQueries({ queryKey: [name, projectId] });
     }
   }, [client, projectId, tracked.data]);

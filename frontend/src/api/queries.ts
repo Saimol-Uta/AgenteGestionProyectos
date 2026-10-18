@@ -10,6 +10,8 @@ import type {
   SendManagerEmailRequest,
   ReportDetail,
   ReportHumanDecision,
+  RepositoryHistoryFilters,
+  RunFindingFilters,
   TaskQuery,
   WeeklyCycleJob,
 } from "./types";
@@ -27,12 +29,34 @@ export const queryKeys = {
   executive: (projectId: string) => ["executive-summary", projectId] as const,
   quality: (projectId: string) => ["quality", projectId] as const,
   policies: (projectId: string) => ["policies", projectId] as const,
+  repositoryResults: (
+    projectId: string,
+    filters: RepositoryHistoryFilters,
+    page: number,
+    pageSize: number,
+    scopeRunId?: string | null,
+  ) => ["repository-results", projectId, page, pageSize, filters, scopeRunId === undefined
+    ? { scope: "project" } : { scope: "run", runId: scopeRunId }] as const,
   runs: (projectId: string, page: number, pageSize: number) => ["runs", projectId, page, pageSize] as const,
-  run: (runId: string) => ["run", runId] as const,
-  runStages: (runId: string) => ["run-stages", runId] as const,
-  findings: (runId: string, page: number, pageSize: number) => ["findings", runId, page, pageSize] as const,
-  finding: (runId: string, findingId: string) => ["finding", runId, findingId] as const,
-  evidence: (runId: string, page: number, pageSize: number) => ["run-evidence", runId, page, pageSize] as const,
+  run: (runId: string, projectId?: string | null) => projectId
+    ? ["run", projectId, runId] as const : ["run", runId] as const,
+  runStages: (runId: string, projectId?: string | null) => projectId
+    ? ["run-stages", projectId, runId] as const : ["run-stages", runId] as const,
+  findings: (
+    runId: string,
+    page: number,
+    pageSize: number,
+    projectId?: string | null,
+    filters: RunFindingFilters = {},
+  ) => projectId !== undefined || Object.keys(filters).length > 0
+    ? ["findings", projectId ?? null, runId, page, pageSize, filters] as const
+    : ["findings", runId, page, pageSize] as const,
+  finding: (runId: string, findingId: string, projectId?: string | null, repositoryId?: string | null) =>
+    projectId !== undefined || repositoryId !== undefined
+      ? ["finding", projectId ?? null, runId, repositoryId ?? null, findingId] as const
+      : ["finding", runId, findingId] as const,
+  evidence: (runId: string, page: number, pageSize: number, projectId?: string | null) => projectId
+    ? ["run-evidence", projectId, runId, page, pageSize] as const : ["run-evidence", runId, page, pageSize] as const,
   analysisJobs: (projectId: string, page: number, pageSize: number) => ["analysis-jobs", projectId, page, pageSize] as const,
   analysisJob: (jobId: string) => ["analysis-job", jobId] as const,
   proposals: (projectId: string, page: number, pageSize: number) => ["proposals", projectId, page, pageSize] as const,
@@ -131,47 +155,75 @@ export function useRuns(projectId: string | null, page = 1, pageSize = 25) {
   });
 }
 
-export function useRun(runId: string | null) {
+export function useRepositoryResults(
+  projectId: string | null,
+  filters: RepositoryHistoryFilters = {},
+  page = 1,
+  pageSize = 100,
+  scopeRunId?: string | null,
+  enabled = true,
+) {
   return useQuery({
-    queryKey: queryKeys.run(runId ?? ""),
-    queryFn: () => api.getRun(runId!),
-    enabled: Boolean(runId),
-    staleTime: 10_000,
-  });
-}
-
-export function useRunStages(runId: string | null) {
-  return useQuery({
-    queryKey: queryKeys.runStages(runId ?? ""),
-    queryFn: () => api.getRunStages(runId!),
-    enabled: Boolean(runId),
-    staleTime: 10_000,
-  });
-}
-
-export function useRunFindings(runId: string | null, page = 1, pageSize = 25) {
-  return useQuery({
-    queryKey: queryKeys.findings(runId ?? "", page, pageSize),
-    queryFn: () => api.getRunFindings(runId!, page, pageSize),
-    enabled: Boolean(runId),
+    queryKey: queryKeys.repositoryResults(projectId ?? "", filters, page, pageSize, scopeRunId),
+    queryFn: () => api.getRepositoryResults(projectId!, filters, page, pageSize),
+    enabled: Boolean(projectId) && enabled,
     staleTime: 15_000,
   });
 }
 
-export function useFinding(runId: string | null, findingId: string | null) {
+export function useRun(runId: string | null, projectId?: string | null, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.finding(runId ?? "", findingId ?? ""),
+    queryKey: queryKeys.run(runId ?? "", projectId),
+    queryFn: () => api.getRun(runId!),
+    enabled: Boolean(runId) && enabled,
+    staleTime: 10_000,
+  });
+}
+
+export function useRunStages(runId: string | null, projectId?: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.runStages(runId ?? "", projectId),
+    queryFn: () => api.getRunStages(runId!),
+    enabled: Boolean(runId) && enabled,
+    staleTime: 10_000,
+  });
+}
+
+export function useRunFindings(
+  runId: string | null,
+  page = 1,
+  pageSize = 25,
+  projectId?: string | null,
+  filters: RunFindingFilters = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: queryKeys.findings(runId ?? "", page, pageSize, projectId, filters),
+    queryFn: () => api.getRunFindings(runId!, page, pageSize, filters),
+    enabled: Boolean(runId) && enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useFinding(
+  runId: string | null,
+  findingId: string | null,
+  projectId?: string | null,
+  repositoryId?: string | null,
+) {
+  return useQuery({
+    queryKey: queryKeys.finding(runId ?? "", findingId ?? "", projectId, repositoryId),
     queryFn: () => api.getFinding(runId!, findingId!),
     enabled: Boolean(runId && findingId),
     staleTime: 15_000,
   });
 }
 
-export function useRunEvidence(runId: string | null, page = 1, pageSize = 25) {
+export function useRunEvidence(runId: string | null, page = 1, pageSize = 25, projectId?: string | null, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.evidence(runId ?? "", page, pageSize),
+    queryKey: queryKeys.evidence(runId ?? "", page, pageSize, projectId),
     queryFn: () => api.getRunEvidence(runId!, page, pageSize),
-    enabled: Boolean(runId),
+    enabled: Boolean(runId) && enabled,
     staleTime: 15_000,
   });
 }
@@ -303,11 +355,16 @@ export function useDecideCodeFindingMutation() {
       payload: DecideCodeFindingRequest;
       csrfToken: string;
       idempotencyKey: string;
+      projectId?: string | null;
+      repositoryId?: string | null;
     }) => api.decideCodeFinding(variables.runId, variables.findingId, variables.payload, variables.csrfToken, variables.idempotencyKey),
     onSuccess: async (_result, variables) => {
+      const findingsPrefix = variables.projectId !== undefined
+        ? ["findings", variables.projectId ?? null, variables.runId]
+        : ["findings", variables.runId];
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.finding(variables.runId, variables.findingId), refetchType: "none" }),
-        queryClient.invalidateQueries({ queryKey: ["findings", variables.runId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.finding(variables.runId, variables.findingId, variables.projectId, variables.repositoryId), refetchType: "none" }),
+        queryClient.invalidateQueries({ queryKey: findingsPrefix }),
       ]);
     },
   });

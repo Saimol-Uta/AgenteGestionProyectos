@@ -3,6 +3,7 @@ import { ArrowRight, Clock3, FileSearch, GitCommitHorizontal } from "lucide-reac
 import { formatDate, formatDurationSeconds, providerAttemptLabel, runStatusLabel, stageNameLabel, stageStatusLabel } from "../../api/formatters";
 import { useRun, useRunEvidence, useRunStages } from "../../api/queries";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
+import { RepositoryResultsPanel } from "../../components/RepositoryResultsPanel";
 import type { StageView } from "../../api/types";
 
 function stageTone(stage: StageView): "neutral" | "positive" | "warning" | "danger" | "unknown" | "accent" {
@@ -54,10 +55,11 @@ function StageCard({ stage }: { stage: StageView }) {
   );
 }
 
-export function RunDetailPanel({ runId, onClose }: { runId: string; onClose: () => void }) {
-  const runQuery = useRun(runId);
-  const stagesQuery = useRunStages(runId);
-  const evidenceQuery = useRunEvidence(runId);
+export function RunDetailPanel({ runId, projectId, onClose }: { runId: string; projectId: string; onClose: () => void }) {
+  const runQuery = useRun(runId, projectId);
+  const runMatchesProject = runQuery.data?.project_id === projectId;
+  const stagesQuery = useRunStages(runId, projectId, runMatchesProject);
+  const evidenceQuery = useRunEvidence(runId, 1, 25, projectId, runMatchesProject);
 
   if (runQuery.isPending) return <LoadingState label="Consultando la ejecución persistida…" />;
   if (runQuery.isError) {
@@ -65,6 +67,9 @@ export function RunDetailPanel({ runId, onClose }: { runId: string; onClose: () 
   }
 
   const run = runQuery.data;
+  if (run.project_id !== projectId) {
+    return <ErrorState title="La ejecución no pertenece al proyecto activo" message="No se mostrarán etapas, evidencias ni repositorios de una ejecución con otro contexto de proyecto." onRetry={() => void runQuery.refetch()} />;
+  }
   return (
     <section className="panel run-detail-panel" aria-labelledby="run-detail-heading">
       <div className="section-heading run-detail-heading">
@@ -86,6 +91,7 @@ export function RunDetailPanel({ runId, onClose }: { runId: string; onClose: () 
         <div><dt>Informe asociado</dt><dd>{run.report_id ?? "Sin informe informado"}</dd></div>
       </dl>
       {run.error_code && <p className="stage-error">El análisis registró un problema. Revisa las evidencias o solicita ayuda al administrador del proyecto.</p>}
+      <RepositoryResultsPanel projectId={projectId} runId={run.run_id} />
 
       <section className="run-detail-section" aria-labelledby="stages-heading">
         <div className="section-heading compact-heading">

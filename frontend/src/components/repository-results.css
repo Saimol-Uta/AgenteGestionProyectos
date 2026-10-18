@@ -1,0 +1,212 @@
+.repository-results-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.repository-summary-heading {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -.02em;
+}
+
+.repository-summary-note,
+.repository-evidence-note,
+.repository-artifact-status,
+.repository-finding-count {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.repository-entry-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 13px;
+}
+
+.repository-entry {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.repository-entry-heading,
+.repository-ci-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.repository-entry-heading h3 {
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-size: 15px;
+}
+
+.repository-entry-heading p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.repository-entry-heading > .pill,
+.repository-ci-heading > .pill {
+  flex: 0 0 auto;
+}
+
+.repository-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  gap: 10px 14px;
+  margin: 15px 0 0;
+}
+
+.repository-facts > div {
+  min-width: 0;
+}
+
+.repository-facts dt {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+
+.repository-facts dd {
+  overflow-wrap: anywhere;
+  margin: 3px 0 0;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.repository-observation {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.repository-observation-scope {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.repository-configuration-facts {
+  margin-top: 12px;
+}
+
+.repository-ci-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.repository-ci-list h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.repository-unassigned-ci {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.repository-unassigned-ci-run {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.repository-unassigned-ci-run > strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.repository-unassigned-ci h4,
+.repository-unassigned-ci > p {
+  margin: 0;
+  font-size: 11px;
+}
+
+.repository-unassigned-ci > p {
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.repository-ci-run {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.repository-ci-heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-top: 2px;
+  font-size: 12px;
+}
+
+.repository-ci-facts,
+.repository-ci-metrics {
+  margin-top: 10px;
+}
+
+.repository-artifact-status {
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
+
+.repository-problems {
+  margin: 9px 0 0;
+  padding-left: 18px;
+  color: var(--warning);
+  font-size: 11px;
+}
+
+.repository-finding-count {
+  margin-top: 12px;
+}
+
+.repository-history-more {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.repository-history-more summary {
+  padding-top: 10px;
+  cursor: pointer;
+}
+
+.repository-history-more > .repository-observation + .repository-observation {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 560px) {
+  .repository-entry,
+  .repository-ci-run {
+    padding: 12px;
+  }
+
+  .repository-entry-heading,
+  .repository-ci-heading {
+    flex-direction: column;
+  }
+}

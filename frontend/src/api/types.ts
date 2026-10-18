@@ -199,6 +199,9 @@ export type FindingVerificationStatus = "pending" | "confirmed" | "rejected" | "
 export interface FindingSummary {
   finding_id: string;
   run_id: string;
+  repository_id?: string;
+  repository_owner?: string;
+  repository_name?: string;
   category: string | null;
   severity: string | null;
   rule_id: string | null;
@@ -208,6 +211,142 @@ export interface FindingSummary {
   confidence: number | null;
   candidate: true;
   verification_status: FindingVerificationStatus;
+}
+
+export interface ConfiguredRepositoryView {
+  repository_id: string;
+  owner: string;
+  repo: string;
+  branch?: string;
+  configured_commit_sha?: string;
+  quality_workflow_path?: string;
+}
+
+export interface RepositoryIdentityView {
+  repository_id: string;
+  owner: string;
+  repo: string;
+}
+
+export interface RepositoryTestSuiteView {
+  tests: number | null;
+  failed: number | null;
+  passed: number | null;
+  cancelled: number | null;
+  skipped: number | null;
+  todo: number | null;
+  success: boolean | null;
+}
+
+export interface RepositoryMetricsView {
+  total_tests: number | null;
+  failed_tests: number | null;
+  coverage_percentage: number | null;
+  coverage_metric: string | null;
+  coverage_basis: string | null;
+  test_suites?: Record<string, RepositoryTestSuiteView | null> | null;
+  e2e_status?: string | null;
+}
+
+export interface RepositoryArtifactValidationView {
+  outcome: string;
+  source_metrics_certified: boolean;
+  schema_valid: boolean;
+  semantics_valid: boolean;
+  identity_bound: boolean;
+  workflow_status_matches: boolean;
+  reason: string | null;
+  artifact_name: string | null;
+  source_document_metrics: RepositoryMetricsView | null;
+}
+
+export interface RepositoryCIRunView {
+  run_id: string;
+  workflow_name: string;
+  workflow_path: string | null;
+  commit_sha: string | null;
+  status: string;
+  actual_attempt: number | null;
+  artifact_id: string | null;
+  artifact_name: string | null;
+  timestamp: string | null;
+  repository: RepositoryIdentityView | null;
+  source_artifact_validation: RepositoryArtifactValidationView | null;
+  report_metrics_eligible: boolean | null;
+  report_metrics: RepositoryMetricsView | null;
+  report_artifact_outcome: string | null;
+  report_artifact_reason: string | null;
+}
+
+export interface RepositoryFindingView {
+  finding_id: string;
+  repository_id: string;
+  commit_sha: string | null;
+  category: string | null;
+  severity: string | null;
+  rule_id: string | null;
+  file_path: string | null;
+  line: number | null;
+  confidence: number | null;
+  claim: string;
+  improvement_summary: string;
+  verification_status: FindingVerificationStatus;
+}
+
+export interface RepositoryVerificationView {
+  finding_id: string;
+  verdict: "confirmed" | "rejected" | "insufficient";
+  reason: string;
+  verified_by: string;
+  evidence_ids: string[];
+}
+
+export interface RepositoryHistoryView {
+  capture_id: string;
+  snapshot_id: string;
+  source_scope: "repository" | "legacy" | "unknown";
+  source_item_key?: string;
+  analysis_run_id?: string;
+  report_id?: string;
+  repository: RepositoryIdentityView | null;
+  branch: string | null;
+  target_commit_sha: string | null;
+  commit_resolution_status: "pending" | "resolved" | "failed" | "unknown";
+  access_status: "unknown" | "allowed" | "denied";
+  availability_status: "unknown" | "available" | "unavailable";
+  source_complete: boolean | null;
+  incomplete_reason: string | null;
+  code_diff_count: number;
+  coverage_percentage: number | null;
+  coverage_basis: string | null;
+  ci_runs: RepositoryCIRunView[];
+  source_problems: string[];
+  quality_status: StageStatus | null;
+  quality_reason: string | null;
+  verification_status: StageStatus | null;
+  verification_reason: string | null;
+  evaluation_status: StageStatus | null;
+  evaluation_reason: string | null;
+  findings: RepositoryFindingView[];
+  verifications: RepositoryVerificationView[];
+}
+
+export interface RepositoryHistoryFilters {
+  repository_id?: string;
+  repository_owner?: string;
+  repository_name?: string;
+  commit_sha?: string;
+  ci_run_id?: string;
+  attempt?: number;
+}
+
+export type RunFindingFilters = Pick<RepositoryHistoryFilters, "repository_id">;
+
+export interface RepositoryResultsCollection extends Paginated<RepositoryHistoryView> {
+  project_id: string;
+  availability: "available" | "unknown";
+  message?: string | null;
+  repositories: ConfiguredRepositoryView[];
 }
 
 export interface VerificationView {

@@ -1,13 +1,14 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ArrowRight, Code2, FileSearch, GitBranch, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { analysisExecutionModeLabel, formatDate, findingVerificationLabel, formatPercentage, stageStatusLabel } from "../../api/formatters";
 import {
-  useDecideCodeFindingMutation, useFinding, usePolicies, useProject, useProjects, useQuality, useRunFindings, useRuns,
+  useDecideCodeFindingMutation, useFinding, usePolicies, useProject, useProjects, useQuality, useRepositoryResults, useRun, useRunFindings, useRuns,
 } from "../../api/queries";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
+import { RepositoryResultsPanel } from "../../components/RepositoryResultsPanel";
 import type { CodeFindingDecision, DecideCodeFindingResponse, FindingDetail, FindingSummary } from "../../api/types";
 import { PolicyResults } from "./PolicyResults";
 import { useSession } from "../auth/SessionProvider";
@@ -36,7 +37,20 @@ function findingMeta(finding: FindingSummary) {
   ];
 }
 
-function QualityRecommendation({ detail, projectId }: { detail: FindingDetail; projectId: string }) {
+function findingRepositoryLabel(finding: FindingSummary) {
+  if (finding.repository_owner && finding.repository_name) return `${finding.repository_owner}/${finding.repository_name}`;
+  return finding.repository_id ?? "Origen de repositorio desconocido";
+}
+
+interface FindingSelection {
+  projectId: string;
+  runId: string;
+  repositoryId: string | null;
+  filterRepositoryId: string | null;
+  findingId: string;
+}
+
+function QualityRecommendation({ detail, projectId, repositoryId }: { detail: FindingDetail; projectId: string; repositoryId: string | null }) {
   const suggestion = useMemo(() => codeSuggestionFor(detail), [detail]);
   const [suggestedCode, setSuggestedCode] = useState(suggestion?.code ?? "");
   const [branchName, setBranchName] = useState(() => validQualityBranch(detail.branch_name ?? "")
@@ -73,7 +87,7 @@ function QualityRecommendation({ detail, projectId }: { detail: FindingDetail; p
     const payload = action === "approve"
       ? { decision: action, ...(codeEdited ? { suggested_code_override: suggestedCode } : {}), target_branch: branchName }
       : { decision: action, reason: reasonText.trim() };
-    const identityKey = JSON.stringify([projectId, detail.run_id, detail.finding_id, payload]);
+    const identityKey = JSON.stringify([projectId, repositoryId, detail.run_id, detail.finding_id, payload]);
     const idempotencyKey = requestKeys.current.get(identityKey) ?? crypto.randomUUID();
     requestKeys.current.set(identityKey, idempotencyKey);
     submitting.current = true;
@@ -84,6 +98,8 @@ function QualityRecommendation({ detail, projectId }: { detail: FindingDetail; p
         payload,
         csrfToken: session.csrf_token,
         idempotencyKey,
+        projectId,
+        repositoryId,
       });
       requestKeys.current.delete(identityKey);
       setBackendDecision(response);
@@ -156,16 +172,27 @@ function FindingDetailDialog({
   runId,
   findingId,
   projectId,
+  repositoryId,
+  filterRepositoryId,
   onClose,
 }: {
   runId: string | null;
   findingId: string | null;
   projectId: string | null;
+  repositoryId: string | null;
+  filterRepositoryId: string | null;
   onClose: () => void;
 }) {
-  const detailQuery = useFinding(runId, findingId);
+  // The filter ID partitions the read cache only; decision handling receives the finding's own optional identity below.
+  const queryRepositoryScopeId = repositoryId ?? filterRepositoryId;
+  const detailQuery = useFinding(runId, findingId, projectId, queryRepositoryScopeId);
   const open = Boolean(runId && findingId);
   const detail = detailQuery.data;
+  const expectedRepositoryIds = [repositoryId, filterRepositoryId].filter((id): id is string => id !== null);
+  const detailMatchesScope = Boolean(detail
+    && detail.run_id === runId
+    && detail.finding_id === findingId
+    && expectedRepositoryIds.every((expectedRepositoryId) => detail.repository_id === expectedRepositoryId));
   const excerpt = detail?.code_excerpt;
   const excerptIsPartial = excerpt ? excerpt.is_partial || excerpt.evidence_scope !== "full_file" : false;
 
@@ -177,7 +204,7 @@ function FindingDetailDialog({
           <div className="drawer-header">
             <div>
               <p className="eyebrow">REVISIÓN DE CALIDAD</p>
-              <Dialog.Title className="drawer-title">{detail ? `Hallazgo candidato · ${detail.finding_id}` : "Hallazgo candidato"}</Dialog.Title>
+              <Dialog.Title className="drawer-title">{detailMatchesScope && detail ? `Hallazgo candidato · ${detail.finding_id}` : "Hallazgo candidato"}</Dialog.Title>
               <Dialog.Description id="finding-detail-description" className="drawer-task-id">La candidatura no significa que el defecto esté confirmado.</Dialog.Description>
             </div>
             <Dialog.Close asChild><button className="icon-button" type="button" aria-label="Cerrar detalle del hallazgo"><X aria-hidden="true" size={18} /></button></Dialog.Close>
@@ -185,7 +212,8 @@ function FindingDetailDialog({
           <div className="drawer-content-scroll finding-detail-content">
             {detailQuery.isPending && <LoadingState label="Consultando detalle y evidencia segura…" />}
             {detailQuery.isError && <ErrorState title="No se pudo cargar el hallazgo" message={detailQuery.error.message} onRetry={() => void detailQuery.refetch()} />}
-            {detail && (
+            {detail && !detailMatchesScope && <ErrorState title="La identidad del hallazgo no coincide" message="El detalle no coincide con el proyecto, ejecución o repositorio consultado; no se habilitan decisiones." />}
+            {detail && detailMatchesScope && (
               <>
                 <div className="finding-status-row">
                   <Pill tone="accent">Hallazgo candidato</Pill>
@@ -193,6 +221,7 @@ function FindingDetailDialog({
                   {detail.severity && <Pill tone={detail.severity === "critical" || detail.severity === "high" ? "danger" : "warning"}>Severidad: {severityLabel(detail.severity)} · <code>{detail.severity}</code></Pill>}
                 </div>
                 <dl className="finding-facts">
+                  <div><dt>Repositorio de origen</dt><dd>{detail.repository_owner && detail.repository_name ? `${detail.repository_owner}/${detail.repository_name}` : detail.repository_id ?? "Identidad desconocida"}</dd></div>
                   <div><dt>Regla</dt><dd>{detail.rule_id ?? "Sin dato"}</dd></div>
                   <div><dt>Categoría</dt><dd>{detail.category ?? "Sin dato"}</dd></div>
                   <div><dt>Archivo</dt><dd>{detail.file_path ?? "Sin dato"}</dd></div>
@@ -248,7 +277,7 @@ function FindingDetailDialog({
                       <p className="excerpt-lines">Líneas persistidas: {excerpt.lines.length ? excerpt.lines.join(", ") : "Sin dato"} · Alcance: <code>{excerpt.evidence_scope}</code></p>
                     </>
                   )}
-                  {projectId && <QualityRecommendation key={`${projectId}:${detail.run_id}:${detail.finding_id}:${qualityDisplayFingerprint(JSON.stringify([detail.commit_sha, detail.code_excerpt, detail.suggested_code]))}`} detail={detail} projectId={projectId} />}
+                  {projectId && <QualityRecommendation key={`${projectId}:${repositoryId ?? "unfiltered"}:${detail.run_id}:${detail.finding_id}:${qualityDisplayFingerprint(JSON.stringify([detail.commit_sha, detail.code_excerpt, detail.suggested_code]))}`} detail={detail} projectId={projectId} repositoryId={repositoryId} />}
                 </section>
               </>
             )}
@@ -261,28 +290,121 @@ function FindingDetailDialog({
 
 export function QualityPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const [selectedFinding, setSelectedFinding] = useState<FindingSelection | null>(null);
+  const [observedRepositoryOptions, setObservedRepositoryOptions] = useState<{ projectId: string | null; options: Record<string, string> }>({ projectId: null, options: {} });
   const { selectedProjectId } = useWorkspace();
+  const { session } = useSession();
   const projectsQuery = useProjects();
   const listedProject = projectsQuery.data?.items.find((item) => item.id === selectedProjectId);
   const needsProjectLookup = Boolean(selectedProjectId && !listedProject);
   const selectedProjectQuery = useProject(selectedProjectId, needsProjectLookup);
   const project = listedProject ?? selectedProjectQuery.data ?? (!selectedProjectId ? projectsQuery.data?.items[0] ?? null : null);
   const requestedRunId = searchParams.get("run_id") || null;
+  const requestedRepositoryId = searchParams.get("repository_id") ?? "";
   const findingsPage = Number.isInteger(Number(searchParams.get("findings_page"))) && Number(searchParams.get("findings_page")) > 0
     ? Number(searchParams.get("findings_page"))
     : 1;
   const runsQuery = useRuns(project?.id ?? null, 1, 25);
   const latestRunId = runsQuery.data?.items[0]?.run_id ?? null;
   const runId = requestedRunId ?? latestRunId;
+  const selectedRunQuery = useRun(runId, project?.id ?? null);
+  const runMatchesProject = Boolean(project && selectedRunQuery.data?.project_id === project.id);
+  const canReadRepositoryHistory = Boolean(session?.authenticated && session.capabilities.includes("audit:read"));
+  const repositoryResultsQuery = useRepositoryResults(project?.id ?? null, {}, 1, 100, runId ?? undefined, canReadRepositoryHistory);
   const qualityQuery = useQuality(project?.id ?? null);
   const policiesQuery = usePolicies(project?.id ?? null);
-  const findingsQuery = useRunFindings(runId, findingsPage, 25);
+  const knownRepositoryOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    for (const repository of repositoryResultsQuery.data?.repositories ?? []) {
+      options.set(repository.repository_id, `${repository.owner}/${repository.repo}`);
+    }
+    const scopedObservedOptions = observedRepositoryOptions.projectId === project?.id ? observedRepositoryOptions.options : {};
+    for (const [repositoryId, label] of Object.entries(scopedObservedOptions)) options.set(repositoryId, label);
+    return [...options].map(([id, label]) => ({ id, label }));
+  }, [observedRepositoryOptions, project?.id, repositoryResultsQuery.data?.repositories]);
+  const selectedRepositoryId = knownRepositoryOptions.some((option) => option.id === requestedRepositoryId)
+    ? requestedRepositoryId : "";
+  const findingsQuery = useRunFindings(
+    runId,
+    findingsPage,
+    25,
+    project?.id ?? null,
+    selectedRepositoryId ? { repository_id: selectedRepositoryId } : {},
+    runMatchesProject,
+  );
+  const repositoryFilterOptions = useMemo(() => {
+    const options = new Map(knownRepositoryOptions.map(({ id, label }) => [id, label]));
+    for (const finding of findingsQuery.data?.items ?? []) {
+      if (finding.repository_id) {
+        options.set(finding.repository_id, finding.repository_owner && finding.repository_name
+          ? `${finding.repository_owner}/${finding.repository_name}` : finding.repository_id);
+      }
+    }
+    return [...options].map(([id, label]) => ({ id, label }));
+  }, [findingsQuery.data?.items, knownRepositoryOptions]);
+  const selectionMatchesCurrentScope = Boolean(selectedFinding
+    && selectedFinding.projectId === project?.id
+    && selectedFinding.runId === runId
+    && selectedFinding.filterRepositoryId === (selectedRepositoryId || null));
+  const currentFinding = selectionMatchesCurrentScope ? selectedFinding : null;
 
-  const findingDetails = useMemo(() => ({ runId, findingId: selectedFindingId }), [runId, selectedFindingId]);
+  useEffect(() => {
+    const discovered: Record<string, string> = {};
+    for (const repository of repositoryResultsQuery.data?.repositories ?? []) {
+      discovered[repository.repository_id] = `${repository.owner}/${repository.repo}`;
+    }
+    for (const finding of findingsQuery.data?.items ?? []) {
+      if (finding.repository_id) {
+        discovered[finding.repository_id] = finding.repository_owner && finding.repository_name
+          ? `${finding.repository_owner}/${finding.repository_name}` : finding.repository_id;
+      }
+    }
+    if (Object.keys(discovered).length > 0) {
+      setObservedRepositoryOptions((previous) => {
+        const previousOptions = previous.projectId === project?.id ? previous.options : {};
+        const nextOptions = { ...previousOptions, ...discovered };
+        const unchanged = previous.projectId === project?.id
+          && Object.keys(discovered).every((id) => previousOptions[id] === discovered[id]);
+        return unchanged ? previous : { projectId: project?.id ?? null, options: nextOptions };
+      });
+    }
+  }, [findingsQuery.data?.items, project?.id, repositoryResultsQuery.data?.repositories]);
+
+  useEffect(() => {
+    if (!selectedFinding || selectionMatchesCurrentScope) return;
+    setSelectedFinding(null);
+  }, [selectedFinding, selectionMatchesCurrentScope]);
+
+  useEffect(() => {
+    if (!requestedRepositoryId) return;
+    const repositoryHistorySettled = !canReadRepositoryHistory || repositoryResultsQuery.isSuccess || repositoryResultsQuery.isError;
+    const runCannotProvideFindings = Boolean(selectedRunQuery.isError || (selectedRunQuery.data && !runMatchesProject));
+    const findingsSettled = !runId || runCannotProvideFindings || findingsQuery.isSuccess || findingsQuery.isError;
+    const repositoryKnown = repositoryFilterOptions.some((option) => option.id === requestedRepositoryId);
+    if (!repositoryHistorySettled || !findingsSettled || repositoryKnown) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("repository_id");
+    setSearchParams(next, { replace: true });
+  }, [canReadRepositoryHistory, findingsQuery.isError, findingsQuery.isSuccess, repositoryFilterOptions, repositoryResultsQuery.isError, repositoryResultsQuery.isSuccess, requestedRepositoryId, runId, runMatchesProject, searchParams, selectedRunQuery.data, selectedRunQuery.isError, setSearchParams]);
 
   function closeFinding() {
-    setSelectedFindingId(null);
+    setSelectedFinding(null);
+  }
+
+  function changeRepositoryFilter(repositoryId: string) {
+    const next = new URLSearchParams(searchParams);
+    if (repositoryId) next.set("repository_id", repositoryId);
+    else next.delete("repository_id");
+    next.delete("findings_page");
+    setSearchParams(next, { replace: true });
+  }
+
+  function changeRunFilter(nextRunId: string) {
+    const next = new URLSearchParams(searchParams);
+    if (nextRunId) next.set("run_id", nextRunId);
+    else next.delete("run_id");
+    next.delete("findings_page");
+    setSearchParams(next, { replace: true });
   }
 
   function changeFindingsPage(nextPage: number) {
@@ -311,6 +433,8 @@ export function QualityPage() {
         {runId && <Link className="button button-secondary" to={`/analysis?run_id=${encodeURIComponent(runId)}`}>Ver ejecución <ArrowRight aria-hidden="true" size={14} /></Link>}
       </div>
 
+      <RepositoryResultsPanel projectId={project.id} runId={runId ?? undefined} />
+
       <section className="panel quality-summary-panel" aria-labelledby="quality-summary-heading">
         <div className="section-heading">
           <div><p className="eyebrow">ÚLTIMO RESUMEN DEL PROYECTO</p><h2 id="quality-summary-heading">Calidad y CI</h2><p className="section-subtitle">El endpoint informa el registro más reciente del proyecto; los hallazgos pueden pertenecer a la ejecución seleccionada.</p></div>
@@ -333,7 +457,8 @@ export function QualityPage() {
             )}
             {!qualityQuery.data.finding_counts && <p className="capability-note">El backend no dispone de conteos de hallazgos para este resumen.</p>}
             <div className="ci-summary">
-              <h3>Integración continua y cobertura</h3>
+              <h3>Integración continua del resumen heredado</h3>
+              <p>Este campo no incluye identidad de repositorio; se conserva por compatibilidad y no se asigna a un repositorio de la colección.</p>
               {!qualityQuery.data.ci && <p>Resultados de CI y cobertura no disponibles en el registro del backend.</p>}
               {qualityQuery.data.ci && (
                 <dl className="finding-facts">
@@ -369,25 +494,46 @@ export function QualityPage() {
           <div>
             <p className="eyebrow">{runId ? `EJECUCIÓN · ${runId}` : "SIN EJECUCIÓN SELECCIONADA"}</p>
             <h2 id="findings-heading">Hallazgos candidatos</h2>
-            <p className="section-subtitle">La candidatura y su estado de verificación son campos independientes.</p>
+            <p className="section-subtitle">La candidatura y su estado de verificación son campos independientes; el filtro de repositorio se aplica en la API.</p>
           </div>
           {findingsQuery.data && <Pill tone="neutral">{findingsQuery.data.total} registros</Pill>}
+        </div>
+        <div className="quality-finding-filters" aria-label="Filtros de hallazgos">
+          <label className="filter-control"><span>Filtrar hallazgos por ejecución</span><select aria-label="Filtrar hallazgos por ejecución" value={requestedRunId ?? ""} onChange={(event) => changeRunFilter(event.target.value)}>
+            <option value="">Última ejecución disponible{latestRunId ? ` · ${latestRunId}` : ""}</option>
+            {(runsQuery.data?.items ?? []).map((run) => <option value={run.run_id} key={run.run_id}>{run.run_id} · {run.status}</option>)}
+            {requestedRunId && !(runsQuery.data?.items ?? []).some((run) => run.run_id === requestedRunId) && <option value={requestedRunId}>{requestedRunId} · identidad por verificar</option>}
+          </select></label>
+          <label className="filter-control"><span>Filtrar hallazgos por repositorio</span><select aria-label="Filtrar hallazgos por repositorio" value={selectedRepositoryId} onChange={(event) => changeRepositoryFilter(event.target.value)}>
+            <option value="">Todos los repositorios</option>
+            {repositoryFilterOptions.map((repository) => <option value={repository.id} key={repository.id}>{repository.label}</option>)}
+          </select></label>
         </div>
         {!runId && runsQuery.isPending && <LoadingState label="Buscando la ejecución más reciente…" />}
         {!runId && runsQuery.isError && <ErrorState title="No se pudieron consultar las ejecuciones" message={runsQuery.error.message} onRetry={() => void runsQuery.refetch()} />}
         {!runId && runsQuery.data?.items.length === 0 && <EmptyState title="Sin ejecuciones" message="No se pueden listar hallazgos sin una ejecución persistida." />}
-        {findingsQuery.isPending && runId && <LoadingState label="Consultando hallazgos de la ejecución…" />}
+        {runId && selectedRunQuery.isPending && <LoadingState label="Verificando la ejecución para el proyecto activo…" />}
+        {runId && selectedRunQuery.isError && <ErrorState title="No se pudo verificar la ejecución" message={selectedRunQuery.error.message} onRetry={() => void selectedRunQuery.refetch()} />}
+        {runId && selectedRunQuery.data && !runMatchesProject && <p className="capability-note" role="status">La ejecución no pertenece al proyecto activo; no se mostrarán sus hallazgos.</p>}
+        {requestedRepositoryId && !selectedRepositoryId && (repositoryResultsQuery.isPending || findingsQuery.isPending) && <LoadingState label="Verificando el filtro de repositorio…" />}
+        {findingsQuery.isPending && runMatchesProject && !requestedRepositoryId && <LoadingState label="Consultando hallazgos de la ejecución…" />}
         {findingsQuery.isError && <ErrorState title="No se pudieron cargar los hallazgos" message={findingsQuery.error.message} onRetry={() => void findingsQuery.refetch()} />}
         {findingsQuery.data && (findingsQuery.data.items.length ? (
           <>
             <ul className="finding-list">
               {findingsQuery.data.items.map((finding) => (
                 <li key={finding.finding_id}>
-                  <button type="button" className="finding-row" aria-label={`Revisar hallazgo ${finding.finding_id}`} onClick={() => setSelectedFindingId(finding.finding_id)}>
+                  <button type="button" className="finding-row" aria-label={`Revisar hallazgo ${finding.finding_id}`} onClick={() => setSelectedFinding({
+                    projectId: project.id,
+                    runId: finding.run_id,
+                    repositoryId: finding.repository_id ?? null,
+                    filterRepositoryId: selectedRepositoryId || null,
+                    findingId: finding.finding_id,
+                  })}>
                     <span className="finding-row-main">
                       <strong>{finding.file_path ?? finding.finding_id}</strong>
                       <span><Pill tone="accent">Hallazgo candidato</Pill><Pill tone={verificationTone(finding.verification_status)}>{findingVerificationLabel(finding.verification_status)}</Pill></span>
-                      <small>{findingMeta(finding).join(" · ")} · Verificación: <code>{finding.verification_status}</code></small>
+                      <small>{findingRepositoryLabel(finding)} · {findingMeta(finding).join(" · ")} · Verificación: <code>{finding.verification_status}</code></small>
                     </span>
                     <span className="finding-row-location"><code>{finding.file_path ?? "Archivo sin dato"}{finding.line === null ? "" : `:${finding.line}`}</code><ArrowRight aria-hidden="true" size={15} /></span>
                   </button>
@@ -408,7 +554,15 @@ export function QualityPage() {
       </section>
 
       <div className="quality-security-note"><Pill tone="neutral">Decisión del gestor</Pill><span>La pantalla presenta hallazgos candidatos y evidencia acotada. Las decisiones se aplican en la nube o localmente; un resultado local no crea cambios en el repositorio.</span></div>
-      <FindingDetailDialog runId={findingDetails.runId} findingId={findingDetails.findingId} projectId={project.id} onClose={closeFinding} />
+      {currentFinding && <FindingDetailDialog
+        key={`${currentFinding.projectId}:${currentFinding.runId}:${currentFinding.filterRepositoryId ?? "unfiltered"}:${currentFinding.repositoryId ?? "unknown"}:${currentFinding.findingId}`}
+        runId={currentFinding.runId}
+        findingId={currentFinding.findingId}
+        projectId={currentFinding.projectId}
+        repositoryId={currentFinding.repositoryId}
+        filterRepositoryId={currentFinding.filterRepositoryId}
+        onClose={closeFinding}
+      />}
     </section>
   );
 }

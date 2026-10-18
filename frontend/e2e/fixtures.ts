@@ -214,6 +214,66 @@ export const quality = {
   ci: null,
 };
 
+export const backendRepositorySha = "a".repeat(40);
+
+/** Backend-shaped repository history for offline MultiRepo UI coverage. */
+export const multiRepoResults = {
+  project_id: "hormigestio",
+  availability: "available",
+  repositories: [
+    { repository_id: "backend", owner: "Josu-F1", repo: "hormigestion-backend", branch: "develop", configured_commit_sha: null, quality_workflow_path: ".github/workflows/ci.yml" },
+    { repository_id: "frontend", owner: "Josu-F1", repo: "hormigestion-frontend", branch: "develop", configured_commit_sha: null, quality_workflow_path: ".github/workflows/ci-quality.yml" },
+  ],
+  items: [
+    {
+      capture_id: "capture-current", snapshot_id: "snapshot-current", source_scope: "repository", source_item_key: "backend:develop",
+      analysis_run_id: "run-current", report_id: "report-current",
+      repository: { repository_id: "backend", owner: "Josu-F1", repo: "hormigestion-backend" },
+      branch: "develop", target_commit_sha: backendRepositorySha, commit_resolution_status: "resolved",
+      access_status: "allowed", availability_status: "available", source_complete: true, incomplete_reason: null,
+      code_diff_count: 2, coverage_percentage: 0, coverage_basis: "Backend source line coverage; generated files excluded",
+      ci_runs: [{
+        run_id: "38833954051", workflow_name: "Backend quality", workflow_path: ".github/workflows/ci.yml",
+        commit_sha: backendRepositorySha, status: "completed", actual_attempt: 2, artifact_id: "artifact-backend-1",
+        artifact_name: `ci-quality-${backendRepositorySha}-38833954051-2`, timestamp: "2026-01-12T10:06:00Z",
+        repository: { repository_id: "backend", owner: "Josu-F1", repo: "hormigestion-backend" },
+        source_artifact_validation: {
+          outcome: "validated", source_metrics_certified: true, schema_valid: true, semantics_valid: true,
+          identity_bound: true, workflow_status_matches: true, reason: null,
+          artifact_name: `ci-quality-${backendRepositorySha}-38833954051-2`,
+          source_document_metrics: { total_tests: 1, failed_tests: 0, coverage_percentage: 0, coverage_metric: "line", coverage_basis: "Backend source line coverage; generated files excluded", test_suites: null, e2e_status: null },
+        },
+        report_metrics_eligible: true,
+        report_metrics: { total_tests: 1, failed_tests: 0, coverage_percentage: 0, coverage_metric: "line", coverage_basis: "Backend source line coverage; generated files excluded", test_suites: null, e2e_status: null },
+        report_artifact_outcome: "validated", report_artifact_reason: null,
+      }],
+      source_problems: [], quality_status: "completed", quality_reason: null,
+      verification_status: "completed", verification_reason: null,
+      evaluation_status: "completed", evaluation_reason: null,
+      findings: [], verifications: [],
+    },
+    {
+      capture_id: "capture-current", snapshot_id: "snapshot-current", source_scope: "repository", source_item_key: "frontend:develop",
+      analysis_run_id: "run-current", report_id: "report-current",
+      repository: { repository_id: "frontend", owner: "Josu-F1", repo: "hormigestion-frontend" },
+      branch: "develop", target_commit_sha: null, commit_resolution_status: "failed",
+      access_status: "denied", availability_status: "unavailable", source_complete: false,
+      incomplete_reason: "Repository access was denied.", code_diff_count: 0,
+      coverage_percentage: null, coverage_basis: null, ci_runs: [],
+      source_problems: ["Repository access was denied."], quality_status: "needs_attention",
+      quality_reason: "Repository access was denied.", verification_status: "needs_attention",
+      verification_reason: "No repository evidence was available.", evaluation_status: "needs_attention",
+      evaluation_reason: "Evidence is insufficient.", findings: [], verifications: [],
+    },
+  ],
+  total: 2, page: 1, page_size: 100,
+};
+
+export const secondaryRepositoryResults = {
+  project_id: secondProject.id, availability: "unknown",
+  message: "Repository history is unavailable.", repositories: [], items: [], total: 0, page: 1, page_size: 100,
+};
+
 export const policies = {
   project_id: "hormigestio",
   run_id: "run-current",
@@ -500,6 +560,9 @@ export async function installApi(page: Page, options: {
   loginStatus?: number;
   projectStatus?: number;
   projectPagination?: boolean;
+  projectsPayload?: unknown;
+  repositoryResultsPayload?: unknown;
+  repositoryResultsByProject?: Record<string, unknown>;
   summaryPayload?: unknown;
   historyPayload?: unknown;
   criticalStatus?: number;
@@ -644,9 +707,27 @@ export async function installApi(page: Page, options: {
 
     if (path.endsWith("/projects") && request.method() === "GET") {
       const pageNumber = Number(url.searchParams.get("page") ?? 1);
-      await json(route, options.projectPagination
+      await json(route, options.projectsPayload ?? (options.projectPagination
         ? { items: pageNumber === 1 ? [project] : [secondProject], total: 101, page: pageNumber, page_size: 100 }
-        : { items: [project], total: 1, page: 1, page_size: 100 }, options.projectStatus ?? 200);
+        : { items: [project], total: 1, page: 1, page_size: 100 }), options.projectStatus ?? 200);
+      return;
+    }
+
+    const projectDetailMatch = path.match(/^\/api\/v1\/projects\/([^/]+)$/);
+    if (projectDetailMatch && request.method() === "GET") {
+      const projectId = decodeURIComponent(projectDetailMatch[1]);
+      const selected = [project, secondProject].find((item) => item.id === projectId);
+      await json(route, selected ?? { error: { code: "project_not_found", message: "Proyecto no encontrado." } }, selected ? 200 : 404);
+      return;
+    }
+
+    const repositoryResultsMatch = path.match(/^\/api\/v1\/projects\/([^/]+)\/repository-results$/);
+    if (repositoryResultsMatch && request.method() === "GET") {
+      const projectId = decodeURIComponent(repositoryResultsMatch[1]);
+      const payload = options.repositoryResultsByProject?.[projectId]
+        ?? options.repositoryResultsPayload
+        ?? { project_id: projectId, availability: "unknown", message: "Repository history is unavailable.", repositories: [], items: [], total: 0, page: 1, page_size: 100 };
+      await json(route, payload);
       return;
     }
 
@@ -877,6 +958,11 @@ export async function installApi(page: Page, options: {
 
     if (path.endsWith("/runs") && request.method() === "GET") {
       await json(route, runHistory);
+      return;
+    }
+
+    if (path.endsWith("/runs/run-previous") && request.method() === "GET") {
+      await json(route, runPrevious);
       return;
     }
 

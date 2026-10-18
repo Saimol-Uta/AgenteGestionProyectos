@@ -10,6 +10,7 @@ import type { ReportHumanDecision } from "../../api/types";
 import { ConfirmActionDialog } from "../../components/ConfirmActionDialog";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 import { SafeMarkdown } from "../../components/SafeMarkdown";
+import { RepositoryResultsPanel } from "../../components/RepositoryResultsPanel";
 import { saveDownloadedFile } from "../../components/download";
 import { useToast } from "../../components/ToastProvider";
 import { useSession } from "../auth/SessionProvider";
@@ -135,6 +136,7 @@ export function ReportsPage() {
   return (
     <section className="governance-page reports-page">
       <header className="page-heading-row"><div><p className="eyebrow">EVIDENCIA Y DECISIÓN HUMANA</p><h1>Informes</h1><p className="page-subtitle">Consulta informes persistidos, descarga artefactos desde la API y registra una decisión humana versionada. La decisión del informe es independiente de la revisión de propuestas.</p></div><Pill tone="neutral">Solo lectura externa</Pill></header>
+      {project && (!reportId || report?.report_id === reportId) && <RepositoryResultsPanel projectId={project.id} runId={reportId ? report?.run_id ?? null : undefined} />}
       {project && <EmailDeliveryPanel projectId={project.id} />}
       <section className="module-toolbar panel" aria-label="Filtros de informes">
         <label className="filter-control"><span>Decisión humana</span><select value={decisionFilter} onChange={(event) => changeFilter(event.target.value)}><option value="">Todas las decisiones</option><option value="pending">Pendiente</option><option value="approved">Aprobado</option><option value="rejected">Rechazado</option><option value="changes_requested">Cambios solicitados</option><option value="postponed">Pospuesto</option></select></label>

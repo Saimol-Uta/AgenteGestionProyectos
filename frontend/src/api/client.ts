@@ -34,6 +34,9 @@ import type {
   ReportHumanDecision,
   ReportDecisionResponse,
   ReportDetail,
+  RepositoryHistoryFilters,
+  RepositoryResultsCollection,
+  RunFindingFilters,
   ScheduleCyclePreparation,
   ScheduleView,
   SystemHealth,
@@ -172,6 +175,14 @@ export const api = {
     request<Paginated<Project>>(`/projects${query({ page, page_size: pageSize })}`),
   getProject: (projectId: string) =>
     request<Project>(`/projects/${encodeURIComponent(projectId)}`),
+  getRepositoryResults: (projectId: string, filters: RepositoryHistoryFilters = {}, page = 1, pageSize = 100) =>
+    request<RepositoryResultsCollection>(
+      `/projects/${encodeURIComponent(projectId)}/repository-results${query({
+        ...filters,
+        page,
+        page_size: pageSize,
+      })}`,
+    ),
   getSummary: (projectId: string, captureId?: string) =>
     request<TaskPlanSummary>(
       `/projects/${encodeURIComponent(projectId)}/summary${query({ capture_id: captureId })}`,
@@ -211,8 +222,8 @@ export const api = {
     request<Paginated<RunSummary>>(`/runs${query({ project_id: projectId, page, page_size: pageSize })}`),
   getRun: (runId: string) => request<RunDetail>(`/runs/${encodeURIComponent(runId)}`),
   getRunStages: (runId: string) => request<RunStages>(`/runs/${encodeURIComponent(runId)}/stages`),
-  getRunFindings: (runId: string, page = 1, pageSize = 25) =>
-    request<Paginated<FindingSummary>>(`/runs/${encodeURIComponent(runId)}/findings${query({ page, page_size: pageSize })}`),
+  getRunFindings: (runId: string, page = 1, pageSize = 25, filters: RunFindingFilters = {}) =>
+    request<Paginated<FindingSummary>>(`/runs/${encodeURIComponent(runId)}/findings${query({ page, page_size: pageSize, ...filters })}`),
   getFinding: (runId: string, findingId: string) =>
     request<FindingDetail>(`/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(findingId)}`),
   decideCodeFinding: (runId: string, findingId: string, payload: DecideCodeFindingRequest, csrfToken: string, idempotencyKey: string) =>
