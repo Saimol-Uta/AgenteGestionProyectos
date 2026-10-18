@@ -442,7 +442,9 @@ class MultiRepoOrchestrationTests(unittest.TestCase):
         verifier_requests = [request for request in self.provider.requests if request.role == "verificador"]
         self.assertEqual(len(quality_requests), 2)
         self.assertEqual(len(verifier_requests), 2)
-        self.assertEqual(sum(request.max_generation_tokens for request in quality_requests), 768)
+        for request in quality_requests:
+            self.assertEqual(request.max_generation_tokens, 768)
+        self.assertEqual(sum(request.max_generation_tokens for request in quality_requests), 1536)
         self.assertEqual(sum(request.max_generation_tokens for request in verifier_requests), 1024)
         report_request = next(request for request in self.provider.requests if request.role == "aprobador")
         self.assertNotIn("repository_results", report_request.evidences)

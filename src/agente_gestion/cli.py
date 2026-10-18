@@ -94,7 +94,7 @@ def _build_orchestrator(
                 model=config.gemini_quality_model or config.gemini_monitoring_model or "gemini-3.5-flash-lite",
                 allow_remote_ai=True,
                 context_tokens=config.quality_context_window or 128000,
-                max_output_tokens=config.quality_max_output_tokens or 4096,
+                max_output_tokens=config.quality_max_output_tokens or 8192,
                 thinking_level=config.quality_thinking_level,
             ) if remote_models_allowed and gemini_key
             else FakeProvider(model="sandbox-quality")

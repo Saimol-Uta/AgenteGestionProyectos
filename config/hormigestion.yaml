@@ -18,7 +18,7 @@ providers:
     provider: gemini
     model: gemini-3.5-flash-lite
     context_window: 128000
-    max_output_tokens: 4096
+    max_output_tokens: 8192
     thinking_level: medium
   report:
     provider: gemini

@@ -548,7 +548,9 @@ def analyze_repository_results(
             quality_budget = min(configured, capabilities.max_output_tokens)
         except Exception:
             quality_budget = 0
-    quality_remaining = quality_budget
+    raw_global_budget = getattr(config, "global_quality_max_output_tokens", None)
+    global_quality_output_budget = int(raw_global_budget) if isinstance(raw_global_budget, (int, float)) and not isinstance(raw_global_budget, bool) else None
+    global_quality_output_remaining = global_quality_output_budget
     quality_context_builder = ContextBuilder()
 
     for work_index, work in enumerate(works):
@@ -573,68 +575,63 @@ def analyze_repository_results(
         elif not coordinator.budget_tracker.can_call():
             work.quality_status = StageStatus.needs_attention
             work.quality_reason = "Global LLM call budget exhausted before this repository's quality stage."
+        elif quality_budget <= 0 or (global_quality_output_remaining is not None and global_quality_output_remaining <= 0):
+            work.quality_status = StageStatus.needs_attention
+            work.quality_reason = "Shared quality output-token budget was exhausted before this repository."
         else:
-            remaining = max(1, sum(
-                bool(item.snippets and item.target_sha)
-                for item in works[work_index:]
-            ))
-            allocation = quality_remaining // remaining
-            if allocation <= 0:
-                work.quality_status = StageStatus.needs_attention
-                work.quality_reason = "Shared quality output-token budget was exhausted before this repository."
-            else:
-                timeout = min(settings.quality_timeout_seconds, quality_deadline - time.monotonic())
-                try:
-                    agent = CodeQualityAgent(
-                        provider=quality_provider,
-                        model=getattr(quality_provider, "model", "llama-3.3-70b-versatile"),
-                        coordinator=coordinator,
-                        timeout_seconds=timeout,
-                        max_output_tokens=allocation,
-                        safety_margin_tokens=settings.quality_context_margin,
-                        context_builder=quality_context_builder,
-                    )
-                    raw_findings = agent.run(
-                        project_id=project_id,
-                        draft=draft,
-                        snippets=work.snippets,
-                        rules=rules,
-                        evidence_ids=work.evidence_ids,
-                        repository_scope=_scope_payload(work),
-                        stage_name=f"quality:{work.stage_id}",
-                    )
-                    selection = getattr(agent, "last_selection", {})
-                    if selection.get("omitted_count", 0) > 0:
-                        work.code_is_complete = False
+            timeout = min(settings.quality_timeout_seconds, quality_deadline - time.monotonic())
+            try:
+                agent = CodeQualityAgent(
+                    provider=quality_provider,
+                    model=getattr(quality_provider, "model", "llama-3.3-70b-versatile"),
+                    coordinator=coordinator,
+                    timeout_seconds=timeout,
+                    max_output_tokens=quality_budget,
+                    safety_margin_tokens=settings.quality_context_margin,
+                    context_builder=quality_context_builder,
+                )
+                raw_findings = agent.run(
+                    project_id=project_id,
+                    draft=draft,
+                    snippets=work.snippets,
+                    rules=rules,
+                    evidence_ids=work.evidence_ids,
+                    repository_scope=_scope_payload(work),
+                    stage_name=f"quality:{work.stage_id}",
+                )
+                selection = getattr(agent, "last_selection", {})
+                if selection.get("omitted_count", 0) > 0:
+                    work.code_is_complete = False
 
-                    allowed = set(work.evidence_ids)
-                    for finding in raw_findings:
-                        bound, issue = _namespace_finding(finding, work, allowed)
-                        if issue:
-                            _append_once(work.source_problems, issue)
-                            work.code_is_complete = False
-                        if bound is not None:
-                            work.candidates.append(bound)
-                    work.quality_status = (
-                        StageStatus.completed if work.source_is_complete and work.code_is_complete
-                        else StageStatus.needs_attention
+                allowed = set(work.evidence_ids)
+                for finding in raw_findings:
+                    bound, issue = _namespace_finding(finding, work, allowed)
+                    if issue:
+                        _append_once(work.source_problems, issue)
+                        work.code_is_complete = False
+                    if bound is not None:
+                        work.candidates.append(bound)
+                work.quality_status = (
+                    StageStatus.completed if work.source_is_complete and work.code_is_complete
+                    else StageStatus.needs_attention
+                )
+                work.quality_reason = (
+                    None if work.quality_status == StageStatus.completed
+                    else (
+                        f"Reviewed {selection.get('selected_count', len(work.snippets))} of {len(work.snippets)} repository-scoped code item(s); "
+                        f"{selection.get('omitted_count', 0)} omitted due to context budget."
+                        if selection.get("omitted_count", 0) > 0
+                        else "Repository source or model output was incomplete; retained only identity-matched findings."
                     )
-                    work.quality_reason = (
-                        None if work.quality_status == StageStatus.completed
-                        else (
-                            f"Reviewed {selection.get('selected_count', len(work.snippets))} of {len(work.snippets)} repository-scoped code item(s); "
-                            f"{selection.get('omitted_count', 0)} omitted due to context budget."
-                            if selection.get("omitted_count", 0) > 0
-                            else "Repository source or model output was incomplete; retained only identity-matched findings."
-                        )
-                    )
-                    work.findings_complete = work.quality_status == StageStatus.completed
-                except Exception as exc:
-                    work.quality_status = StageStatus.needs_attention
-                    work.quality_reason = _safe_failure("quality", exc)
-                    work.findings_complete = False
-                finally:
-                    quality_remaining = max(0, quality_remaining - allocation)
+                )
+                work.findings_complete = work.quality_status == StageStatus.completed
+            except Exception as exc:
+                work.quality_status = StageStatus.needs_attention
+                work.quality_reason = _safe_failure("quality", exc)
+                work.findings_complete = False
+            finally:
+                if global_quality_output_remaining is not None:
+                    global_quality_output_remaining = max(0, global_quality_output_remaining - quality_budget)
 
         stage_name = f"quality:{work.stage_id}"
         outcome.stages[stage_name] = StageExecutionRecord(

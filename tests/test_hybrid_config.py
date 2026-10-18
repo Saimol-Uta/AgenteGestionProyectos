@@ -19,7 +19,7 @@ class UnifiedProviderConfigTests(unittest.TestCase):
         self.assertEqual(settings.gemini_quality_model, "gemini-3.5-flash-lite")
         self.assertEqual(settings.quality_thinking_level, "medium")
         self.assertEqual(settings.quality_context_window, 128000)
-        self.assertEqual(settings.quality_max_output_tokens, 4096)
+        self.assertEqual(settings.quality_max_output_tokens, 8192)
         self.assertEqual(settings.quality_context_margin, 64)
 
     def test_gemini_groq_and_mistral_providers_are_supported_and_retired_provider_is_rejected(self) -> None:
