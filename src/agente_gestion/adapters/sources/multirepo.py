@@ -15,7 +15,10 @@ from agente_gestion.adapters.sources.collection_budget import (
     CollectionBudgetLedger,
 )
 from agente_gestion.adapters.sources.composite import CompositeSourcesAdapter
-from agente_gestion.adapters.sources.github import GitHubCodeSourceAdapter
+from agente_gestion.adapters.sources.github import (
+    DEFAULT_MAX_REQUESTS,
+    GitHubCodeSourceAdapter,
+)
 from agente_gestion.adapters.sources.http_transport import BoundedGetTransport, HttpGetTransportPort
 from agente_gestion.application.config import Settings
 from agente_gestion.domain.code import CIRunResult, CodeDiffSnippet
@@ -42,6 +45,11 @@ from agente_gestion.ports.source_artifacts import BinaryGetTransportPort
 from agente_gestion.ports.source_errors import SourceError, SourceErrorCategory, SourceProvider
 from agente_gestion.ports.sources import CISourcePort, CodeSourcePort, PolicySourcePort, TaskSourcePort
 from agente_gestion.domain.snapshot import RepositorySnapshotResult, WeeklySnapshot
+
+CI_RESERVED_HTTP_CALLS = 2
+CI_RESERVED_ESTIMATED_TOKENS = 5_000
+CI_RESERVED_RESPONSE_BYTES = 1 * MIB
+DEFAULT_MULTIREPO_MAX_FULL_FILES = 8
 
 
 class _UnavailableCodeSource(CodeSourcePort):
@@ -132,7 +140,13 @@ class _BudgetedCodeSource(CodeSourcePort):
         return self._source.unavailable_file_paths
 
     def get_diffs(self, project_id: str, commit_sha: Optional[str] = None) -> list[CodeDiffSnippet]:
-        self._diffs = self._source.get_diffs(project_id, commit_sha=commit_sha)
+        raw = self._source.get_diffs(project_id, commit_sha=commit_sha)
+        deduped: dict[str, CodeDiffSnippet] = {}
+        for item in raw:
+            p = item.file_path
+            if p not in deduped or item.evidence_scope == "full_file":
+                deduped[p] = item
+        self._diffs = list(deduped.values())
         return [item.model_copy(deep=True) for item in self._diffs]
 
     def get_evidence(self, project_id: str, commit_sha: Optional[str] = None) -> list[EvidenceItem]:
@@ -165,7 +179,7 @@ class _BudgetedCISource(CISourcePort):
         self._runs: list[CIRunResult] = []
 
     def get_ci_results(self, project_id: str, commit_sha: Optional[str] = None) -> list[CIRunResult]:
-        if self._ledger.token_budget_exhausted(self._identity):
+        if self._ledger.ci_token_budget_exhausted(self._identity, CI_RESERVED_ESTIMATED_TOKENS):
             raise SourceError(SourceProvider.github_actions, SourceErrorCategory.limit_exceeded) from None
         self._runs = self._source.get_ci_results(project_id, commit_sha=commit_sha)
         return [item.model_copy(deep=True) for item in self._runs]
@@ -341,6 +355,11 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
 
     def _ledger(self) -> CollectionBudgetLedger:
         settings = self._settings
+        num_repos = max(1, len(self._repositories))
+        per_repo_tokens = min(
+            settings.multirepo_repository_max_estimated_tokens,
+            settings.multirepo_project_max_estimated_tokens // num_repos,
+        )
         return CollectionBudgetLedger(
             project_max_http_calls=settings.multirepo_project_max_http_calls,
             repository_max_http_calls=settings.multirepo_repository_max_http_calls,
@@ -351,7 +370,7 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
             project_timeout_seconds=settings.multirepo_project_timeout_seconds,
             repository_timeout_seconds=settings.multirepo_repository_timeout_seconds,
             project_max_estimated_tokens=settings.multirepo_project_max_estimated_tokens,
-            repository_max_estimated_tokens=settings.multirepo_repository_max_estimated_tokens,
+            repository_max_estimated_tokens=per_repo_tokens,
             default_request_timeout_seconds=settings.http_timeout_seconds,
             per_response_max_bytes=settings.http_max_response_bytes,
             clock=self._clock,
@@ -437,7 +456,7 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
     ) -> tuple[CodeSourcePort, CISourcePort, Optional[str], Optional[SourceErrorCategory], bool, bool]:
         target_sha = repository.commit_sha
         try:
-            if ledger.token_budget_exhausted(identity):
+            if ledger.token_budget_exhausted(identity, reserve=CI_RESERVED_ESTIMATED_TOKENS):
                 raise SourceError(SourceProvider.github, SourceErrorCategory.limit_exceeded) from None
             remaining_files = ledger.reserve_file_work(identity, SourceProvider.github)
             max_files = min(3000, remaining_files)
@@ -454,6 +473,7 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
                 transport=self._budgeted_transport(ledger, SourceProvider.github, identity),
                 max_files=max_files,
                 max_total_bytes=max_total_bytes,
+                max_full_files=DEFAULT_MULTIREPO_MAX_FULL_FILES,
             )
             access_confirmed = False
             if target_sha is None:

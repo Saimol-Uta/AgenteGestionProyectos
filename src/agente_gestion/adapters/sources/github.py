@@ -46,8 +46,26 @@ DEFAULT_MAX_REQUESTS = 32
 DEFAULT_MAX_TEXT_LENGTH = 65536
 DEFAULT_MAX_LINES = 5000
 DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024  # 10 MiB aggregate
+DEFAULT_MAX_FULL_FILES = 8
 MAX_FULL_FILE_BYTES = 5 * 1024 * 1024
 MAX_CACHE_ENTRIES = 20
+
+CORE_CODE_EXTENSIONS = (
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs",
+    ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php",
+)
+
+
+def _full_file_priority_key(entry: dict[str, Any]) -> tuple[int, str]:
+    filename = entry.get("filename") or ""
+    patch = entry.get("patch")
+    status = entry.get("status")
+    if patch is None and status != "removed":
+        return (0, filename)
+    lower = filename.lower()
+    if any(lower.endswith(ext) for ext in CORE_CODE_EXTENSIONS):
+        return (1, filename)
+    return (2, filename)
 
 
 def _validate_safe_string(val: Any) -> str:
@@ -117,6 +135,7 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         max_text_length: int = DEFAULT_MAX_TEXT_LENGTH,
         max_lines: int = DEFAULT_MAX_LINES,
         max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+        max_full_files: Optional[int] = None,
     ):
         self._owner = _validate_safe_string(owner)
         if not SAFE_OWNER_RE.match(self._owner):
@@ -172,6 +191,10 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         if type(max_total_bytes) is not int or max_total_bytes <= 0:
             raise SourceError(SourceProvider.github, SourceErrorCategory.configuration) from None
         self._max_total_bytes = max_total_bytes
+
+        if max_full_files is not None and (type(max_full_files) is not int or max_full_files < 0):
+            raise SourceError(SourceProvider.github, SourceErrorCategory.configuration) from None
+        self._max_full_files = max_full_files
 
         self._cache: OrderedDict[str, _CachedCollection] = OrderedDict()
         self._last_resolved_commit_sha: Optional[str] = None
@@ -790,11 +813,20 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
             )
         )
 
+        # Determine eligible non-removed files for bounded full_file capture
+        non_removed_files = [f for f in all_files if f.get("status") != "removed"]
+        sorted_candidates = sorted(non_removed_files, key=_full_file_priority_key)
+        full_file_cap = (
+            self._max_full_files if self._max_full_files is not None else len(sorted_candidates)
+        )
+        eligible_for_full_file = {f["filename"] for f in sorted_candidates[:full_file_cap]}
+
         for entry in all_files:
             filename = entry["filename"]
             status = entry["status"]
             patch = entry.get("patch")
             full_file = None
+            snip = None
 
             if patch is None:
                 if status == "removed":
@@ -827,17 +859,19 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
                         lines=lines_list,
                         content=content_str,
                     )
-                    snippets.append(snip)
 
                 patch_available = True
                 reason = "file_removed" if status == "removed" else None
 
-            if status != "removed":
+            if status != "removed" and filename in eligible_for_full_file:
                 full_file = self._capture_full_file(
                     filename, pinned_sha, entry, requests_count, total_bytes,
                 )
-                if full_file is not None:
-                    snippets.append(full_file)
+
+            if snip is not None:
+                snippets.append(snip)
+            if full_file is not None:
+                snippets.append(full_file)
 
             # File diff evidence item
             stable_hash = hashlib.sha256(

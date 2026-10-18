@@ -232,34 +232,63 @@ class CollectionBudgetLedger:
         if type(amount) is not int or amount < 0:
             self._mark_exhausted(identity)
             return False
-        self._project_tokens += amount
         row = self._repo(identity)
         if row is not None:
-            row["estimated_tokens"] = int(row["estimated_tokens"]) + amount
-        if (self._project_tokens > self.project_max_estimated_tokens
-                or (row is not None and int(row["estimated_tokens"]) > self.repository_max_estimated_tokens)):
-            if self._project_tokens > self.project_max_estimated_tokens:
+            current_repo = int(row["estimated_tokens"])
+            new_repo = current_repo + amount
+            row["estimated_tokens"] = new_repo
+            charged_before = min(current_repo, self.repository_max_estimated_tokens)
+            charged_after = min(new_repo, self.repository_max_estimated_tokens)
+            project_delta = max(0, charged_after - charged_before)
+            self._project_tokens += project_delta
+            if new_repo >= self.repository_max_estimated_tokens:
+                row["exhausted"] = True
+            if self._project_tokens >= self.project_max_estimated_tokens:
                 self._project_exhausted = True
-            self._mark_exhausted(identity)
-            return False
+            if (new_repo > self.repository_max_estimated_tokens
+                    or self._project_tokens > self.project_max_estimated_tokens):
+                return False
+            return True
+        else:
+            self._project_tokens += amount
+            if self._project_tokens >= self.project_max_estimated_tokens:
+                self._project_exhausted = True
+            if self._project_tokens > self.project_max_estimated_tokens:
+                return False
+            return True
+
+    def token_budget_exhausted(self, identity: RepositoryIdentity, reserve: int = 0) -> bool:
+        row = self._repo(identity)
+        repo_tokens = int(row["estimated_tokens"]) if row is not None else 0
+        effective_repo_reserve = (
+            min(reserve, max(0, self.repository_max_estimated_tokens - 1))
+            if self.repository_max_estimated_tokens > reserve else 0
+        )
+        effective_proj_reserve = (
+            min(reserve, max(0, self.project_max_estimated_tokens - 1))
+            if self.project_max_estimated_tokens > reserve else 0
+        )
+        project_exhausted = self._project_tokens >= (self.project_max_estimated_tokens - effective_proj_reserve)
+        repository_exhausted = (
+            row is not None and repo_tokens >= (self.repository_max_estimated_tokens - effective_repo_reserve)
+        )
         if self._project_tokens >= self.project_max_estimated_tokens:
             self._project_exhausted = True
-        if row is not None and int(row["estimated_tokens"]) >= self.repository_max_estimated_tokens:
-            row["exhausted"] = True
-        return True
+            self._mark_exhausted(identity)
+        elif row is not None and repo_tokens >= self.repository_max_estimated_tokens:
+            self._mark_exhausted(identity)
+        return bool(project_exhausted or repository_exhausted)
 
-    def token_budget_exhausted(self, identity: RepositoryIdentity) -> bool:
-        row = self._repo(identity)
+    def ci_token_budget_exhausted(self, identity: RepositoryIdentity, reserve: int = 5000) -> bool:
+        """Check if CI is allowed to run, honoring the CI reserved token pool."""
+        if self.repository_max_estimated_tokens <= reserve:
+            return self.token_budget_exhausted(identity)
         project_exhausted = self._project_tokens >= self.project_max_estimated_tokens
-        repository_exhausted = (
-            row is not None and int(row["estimated_tokens"]) >= self.repository_max_estimated_tokens
-        )
         if project_exhausted:
             self._project_exhausted = True
             self._mark_exhausted(identity)
-        elif repository_exhausted:
-            self._mark_exhausted(identity)
-        return bool(project_exhausted or repository_exhausted)
+            return True
+        return False
 
     def receipt(self) -> SourceBudgetReceipt:
         return SourceBudgetReceipt(

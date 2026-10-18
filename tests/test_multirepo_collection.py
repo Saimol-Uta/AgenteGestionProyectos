@@ -91,6 +91,7 @@ class ScriptedTransport:
         self.actions_sequences: dict[str, list[list[str]]] = {}
         self.actions_call_counts: dict[str, int] = {}
         self.failures: dict[str, SourceErrorCategory] = {}
+        self.diff_files_overrides: dict[str, list[dict[str, Any]]] = {}
 
     @staticmethod
     def _response(body: dict[str, Any] | list[Any], *, status: int = 200) -> HttpResponse:
@@ -128,7 +129,8 @@ class ScriptedTransport:
         if endpoint.startswith("/commits/") and isinstance(params, dict):
             requested = endpoint.rsplit("/", 1)[-1]
             sha = self.diff_sha_overrides.get(full_name, requested)
-            return self._response({"sha": sha, "files": [self._file_entry()]})
+            files = self.diff_files_overrides.get(full_name, [self._file_entry()])
+            return self._response({"sha": sha, "files": files})
 
         if endpoint.startswith("/contents/"):
             content = b"new source line\n"
@@ -1125,6 +1127,105 @@ class MultiRepoCollectionTests(unittest.TestCase):
         self.assertFalse(any("/actions/runs/" in call["url"] and call["url"].endswith("/artifacts")
                              for call in self.transport.calls))
         self.assertEqual(self.transport.write_calls, [])
+
+    def test_large_commit_does_not_monopolize_project_budget_or_block_second_repo(self):
+        """A repository with a large commit exhausts its repo budget, but project ledger clamping allows the second repo to collect cleanly."""
+        self.transport.branch_shas = {
+            "example-org/backend": [SHA_A],
+            "example-org/frontend": [SHA_B],
+        }
+        self.transport.actions_shas = {
+            "example-org/backend": [SHA_A],
+            "example-org/frontend": [SHA_B],
+        }
+        num_lines = 600
+        large_patch = f"@@ -1,1 +1,{num_lines} @@\n-old\n" + ("+large_line_content_item_with_extra_payload_for_testing\n" * num_lines)
+        self.transport.diff_files_overrides = {
+            "example-org/backend": [{
+                "filename": "src/large.py",
+                "status": "modified",
+                "patch": large_patch,
+                "sha": "d" * 40,
+            }],
+            "example-org/frontend": [{
+                "filename": "src/small.py",
+                "status": "modified",
+                "patch": "@@ -1 +1 @@\n-old\n+new",
+                "sha": "d" * 40,
+            }],
+        }
+        settings = _settings(
+            [_repo("backend", "backend"), _repo("frontend", "frontend")],
+            multirepo_repository_max_estimated_tokens=2500,
+            multirepo_project_max_estimated_tokens=10000,
+        )
+        result = self.collect(settings)
+
+        backend, frontend = result.repository_results
+
+        # Backend exceeded its 2500 token budget, marked exhausted and incomplete
+        self.assertGreater(backend.budget_receipt.estimated_tokens, 2500)
+        self.assertTrue(backend.budget_receipt.exhausted)
+        self.assertFalse(backend.is_complete)
+        self.assertIn("Repository source budget exhausted.", backend.incomplete_reason)
+
+        # Frontend was NOT blocked by backend! It resolved SHA, collected diffs and CI
+        self.assertEqual(frontend.repository_state.target_commit_sha, SHA_B)
+        self.assertEqual(frontend.repository_state.commit_resolution_status, CommitResolutionStatus.resolved)
+        self.assertTrue(frontend.code_diffs)
+        self.assertTrue(frontend.ci_runs)
+        self.assertFalse(frontend.budget_receipt.exhausted)
+        self.assertTrue(frontend.is_complete)
+
+        # Shared project pool clamped backend to 2500, so project is NOT exhausted
+        self.assertFalse(result.budget_receipt.exhausted)
+        self.assertLessEqual(result.budget_receipt.estimated_tokens, 10000)
+
+        # Overall snapshot is incomplete because partial evidence is never declared complete
+        self.assertFalse(result.snapshot.is_complete)
+        self.assertIn("Repository source budget exhausted.", result.snapshot.incomplete_reason)
+
+    def test_ci_budget_reservation_permits_actions_retrieval_when_tokens_reserved(self):
+        """When code collection consumes tokens within its code share, CI is not starved and executes within reserved pool."""
+        self.transport.branch_shas = {"example-org/backend": [SHA_A]}
+        self.transport.actions_shas = {"example-org/backend": [SHA_A]}
+        settings = _settings(
+            [_repo("backend", "backend")],
+            multirepo_repository_max_estimated_tokens=50000,
+            multirepo_project_max_estimated_tokens=100000,
+        )
+        result = self.collect(settings)
+
+        scoped = result.repository_results[0]
+        self.assertTrue(scoped.code_diffs)
+        self.assertTrue(scoped.ci_runs)
+        self.assertFalse(scoped.budget_receipt.exhausted)
+        self.assertTrue(scoped.is_complete)
+        self.assertTrue(any(call["url"].endswith("/actions/runs") for call in self.transport.calls))
+
+    def test_multirepo_snippet_deduplication_prefers_full_file_without_duplicate_diff(self):
+        """MultiRepo budgeted code source deduplicates snippets per file, preferring full_file."""
+        self.transport.branch_shas = {"example-org/backend": [SHA_A]}
+        self.transport.actions_shas = {"example-org/backend": [SHA_A]}
+        settings = _settings(
+            [_repo("backend", "backend")],
+            multirepo_repository_max_estimated_tokens=50000,
+            multirepo_project_max_estimated_tokens=100000,
+        )
+        result = self.collect(settings)
+
+        scoped = result.repository_results[0]
+        # In ScriptedTransport, src/shared.py has both diff and contents endpoint.
+        # code_diffs must contain exactly one snippet for src/shared.py with evidence_scope=full_file
+        file_snippets = [d for d in scoped.code_diffs if d.file_path == "src/shared.py"]
+        self.assertEqual(len(file_snippets), 1)
+        self.assertEqual(file_snippets[0].evidence_scope, "full_file")
+
+        # Evidence retains full provenance and availability flags
+        diff_ev = next(e for e in scoped.evidence if e.provenance.file_path == "src/shared.py")
+        self.assertTrue(diff_ev.provenance.payload["patch_available"])
+        self.assertTrue(diff_ev.provenance.payload["full_file_available"])
+        self.assertEqual(diff_ev.provenance.payload["source_sha256"], file_snippets[0].source_sha256)
 
 
 if __name__ == "__main__":
