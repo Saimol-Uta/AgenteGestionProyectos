@@ -126,9 +126,13 @@ class RepositoryFindingView(ApiModel):
     confidence: float | None = None
     claim: str
     improvement_summary: str
+    evidence: str = ""
+    suggested_code: str = ""
     verification_status: Literal[
         "pending", "confirmed", "rejected", "insufficient", "unknown",
     ] = "unknown"
+    verification_reason: str | None = None
+    suggested_code_validation_status: str = "not_validated"
 
 
 class RepositoryVerificationView(ApiModel):
@@ -299,6 +303,8 @@ class FindingSummary(ApiModel):
     line: int | None = None
     commit_sha: str | None = None
     confidence: float | None = None
+    claim: str = ""
+    evidence: str = ""
     suggested_code: str = ""
     improvement_summary: str = ""
     decision_status: Literal["pending", "approved", "rejected", "changes_requested", "failed"] = "pending"
@@ -309,6 +315,8 @@ class FindingSummary(ApiModel):
     verification_status: Literal[
         "pending", "confirmed", "rejected", "insufficient", "unknown",
     ] = "unknown"
+    verification_reason: str | None = None
+    suggested_code_validation_status: str = "not_validated"
 
 
 class VerificationView(ApiModel):

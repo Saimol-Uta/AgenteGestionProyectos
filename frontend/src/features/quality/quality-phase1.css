@@ -35,6 +35,8 @@
 .quality-decision-result:empty { display: none; }
 .quality-decision-result strong { color: var(--text-primary); font-size: 12px; }
 .quality-decision-result > span:not(.pill) { color: var(--text-secondary); font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.finding-row-claim { margin: 4px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.finding-row-reason { margin: 2px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 @media (max-width: 680px) {
   .quality-agent-trace, .quality-code-comparison { grid-template-columns: minmax(0, 1fr); }
   .quality-human-decision { padding: 11px; }

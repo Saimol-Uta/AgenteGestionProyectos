@@ -450,7 +450,14 @@ class SQLiteQueryRepository:
                                 and 0 <= float(candidate.confidence) <= 1 else None),
                     claim=self._safe_dto_text(candidate.claim, limit=2000) or "",
                     improvement_summary=self._safe_dto_text(candidate.improvement_summary, limit=1200) or "",
+                    evidence=self._safe_dto_text(candidate.evidence, limit=4000) or "",
+                    suggested_code=self._safe_dto_text(candidate.suggested_code, limit=10000) or "",
                     verification_status=verification_status,
+                    verification_reason=self._safe_dto_text(
+                        verification.reason if verification is not None else getattr(candidate, "verification_reason", None),
+                        limit=1200,
+                    ),
+                    suggested_code_validation_status="not_validated",
                 ))
                 if verification is not None:
                     verification_views.append(RepositoryVerificationView(
@@ -1507,6 +1514,8 @@ class SQLiteQueryRepository:
             line=line,
             commit_sha=safe_commit_sha(commit_value),
             confidence=confidence,
+            claim=sanitize_text(candidate.claim if candidate is not None else row.get("claim"), limit=2000) or "",
+            evidence=sanitize_text(candidate.evidence if candidate is not None else row.get("evidence"), limit=4000) or "",
             suggested_code=sanitize_text(suggested_code_raw, secrets_to_redact=self._configured_secrets(), limit=65536) or "",
             improvement_summary=sanitize_text(improvement_raw, secrets_to_redact=self._configured_secrets(), limit=1200) or "",
             decision_status=decision_status,
@@ -1514,6 +1523,11 @@ class SQLiteQueryRepository:
             branch_url=_safe_finding_branch_url(branch_url),
             commit_sha_applied=safe_commit_sha(commit_sha_applied),
             verification_status=verification_status,
+            verification_reason=sanitize_text(
+                candidate.verification_reason if candidate is not None else row.get("verification_reason"),
+                limit=1200,
+            ),
+            suggested_code_validation_status="not_validated",
         )
 
     def run_project_id(self, run_id: str) -> str:
@@ -1853,8 +1867,11 @@ class SQLiteQueryRepository:
             self._code_excerpt(run_row, candidate, evidence_items, repository_identity)
             if candidate else None
         )
+        dump = summary.model_dump()
+        dump.pop("claim", None)
+        dump.pop("evidence", None)
         return FindingDetail(
-            **summary.model_dump(),
+            **dump,
             claim=sanitize_text(candidate.claim, secrets_to_redact=self._configured_secrets(), limit=2000)
             if candidate else None,
             suggested_fix=sanitize_text(candidate.suggested_fix,

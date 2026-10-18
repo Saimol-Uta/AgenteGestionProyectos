@@ -15,7 +15,11 @@ from agente_gestion.agents.quality import CodeQualityAgent
 from agente_gestion.agents.verifier import VerifierAgent
 from agente_gestion.api.repository import SQLiteQueryRepository
 from agente_gestion.domain.code import CodeDiffSnippet
-from agente_gestion.domain.findings import CandidateFinding, VerificationVerdict
+from agente_gestion.domain.findings import (
+    CandidateFinding,
+    SuggestedCodeValidationStatus,
+    VerificationVerdict,
+)
 from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.report import MonitoringDraft
 from tests.web_fixtures import (
@@ -94,7 +98,8 @@ class Phase2QualityTests(unittest.TestCase):
             "project", [finding], [partial], evidence_ids=["a" * 40],
         )
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].verdict, VerificationVerdict.insufficient)
+        self.assertEqual(result[0].verdict, VerificationVerdict.confirmed)
+        self.assertEqual(result[0].suggested_code_validation_status, SuggestedCodeValidationStatus.not_validated)
 
     def test_fresh_finding_storage_preserves_unified_suggestions_and_branch_decision(self):
         with tempfile.TemporaryDirectory() as tmp:

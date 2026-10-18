@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { formatDate, formatPercentage } from "../api/formatters";
+import { formatDate, formatPercentage, findingVerificationLabel } from "../api/formatters";
 import { useRepositoryResults } from "../api/queries";
 import type {
   ConfiguredRepositoryView,
@@ -98,7 +98,49 @@ function RepositoryObservation({ item }: { item: RepositoryHistoryView }) {
           </dl>
         </div>)}
       </div>}
-      <p className="repository-finding-count">Hallazgos asociados a esta observación: {item.findings.length}</p>
+      <div className="repository-findings-list">
+        <h4>Hallazgos candidatos del repositorio ({item.findings.length})</h4>
+        {item.findings.length === 0 ? (
+          <p className="repository-evidence-note">No se registraron hallazgos candidatos para este repositorio.</p>
+        ) : (
+          <ul className="repository-findings-items">
+            {item.findings.map((finding) => (
+              <li className="repository-finding-item" key={finding.finding_id}>
+                <div className="repository-finding-item-header">
+                  <strong>{finding.file_path ?? finding.finding_id}{finding.line !== null ? `:${finding.line}` : ""}</strong>
+                  <Pill tone="accent">Candidato</Pill>
+                  <Pill tone={finding.verification_status === "confirmed" ? "positive" : finding.verification_status === "rejected" ? "danger" : "warning"}>
+                    {findingVerificationLabel(finding.verification_status)}
+                  </Pill>
+                  {finding.severity && (
+                    <Pill tone={finding.severity === "critical" || finding.severity === "high" ? "danger" : "warning"}>
+                      Severidad: {finding.severity}
+                    </Pill>
+                  )}
+                  {finding.confidence !== null && (
+                    <Pill tone="neutral">Confianza: {Math.round(finding.confidence * 100)}%</Pill>
+                  )}
+                  {finding.suggested_code_validation_status === "not_validated" && (
+                    <Pill tone="warning">Código sugerido no validado</Pill>
+                  )}
+                </div>
+                {finding.claim && <p className="repository-finding-claim"><strong>Afirmación:</strong> {finding.claim}</p>}
+                {finding.verification_reason && (
+                  <p className="repository-finding-reason">
+                    <strong>Motivo de verificación:</strong> {finding.verification_reason}
+                  </p>
+                )}
+                {finding.suggested_code && (
+                  <details className="repository-finding-code-details">
+                    <summary>Ver código sugerido (no validado)</summary>
+                    <pre><code>{finding.suggested_code}</code></pre>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

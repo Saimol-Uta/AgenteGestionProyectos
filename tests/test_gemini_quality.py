@@ -1009,11 +1009,12 @@ class GeminiQualityReviewerTestCase(unittest.TestCase):
             rules=[],
             evidence_ids=[sha],
         )
-        from agente_gestion.domain.findings import VerificationVerdict
+        from agente_gestion.domain.findings import SuggestedCodeValidationStatus, VerificationVerdict
 
         self.assertEqual(len(verifications), 1)
         self.assertEqual(verifications[0].finding_id, "CQ-001")
-        self.assertEqual(verifications[0].verdict, VerificationVerdict.insufficient)
+        self.assertEqual(verifications[0].verdict, VerificationVerdict.confirmed)
+        self.assertEqual(verifications[0].suggested_code_validation_status, SuggestedCodeValidationStatus.not_validated)
 
         repo_identity = RepositoryIdentity(
             id="repo-1",
@@ -1027,14 +1028,14 @@ class GeminiQualityReviewerTestCase(unittest.TestCase):
         )
         report_result = RepositoryReportResult(
             repository_state=repo_state,
-            insufficient_findings=[finding],
+            confirmed_findings=[finding],
             verifications=verifications,
         )
         json_data = report_result.model_dump_json()
         restored = RepositoryReportResult.model_validate_json(json_data)
-        self.assertEqual(len(restored.insufficient_findings), 1)
-        self.assertEqual(restored.insufficient_findings[0].suggested_code, finding.suggested_code)
-        self.assertEqual(restored.insufficient_findings[0].improvement_summary, finding.improvement_summary)
+        self.assertEqual(len(restored.confirmed_findings), 1)
+        self.assertEqual(restored.confirmed_findings[0].suggested_code, finding.suggested_code)
+        self.assertEqual(restored.confirmed_findings[0].improvement_summary, finding.improvement_summary)
 
 
 if __name__ == "__main__":

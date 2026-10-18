@@ -16,6 +16,7 @@ from agente_gestion.domain.findings import (
     CandidateFinding,
     FindingCategory,
     FindingVerification,
+    SuggestedCodeValidationStatus,
     VerificationVerdict,
 )
 from agente_gestion.domain.report import MonitoringDraft
@@ -618,20 +619,18 @@ class RuntimeContextRegressionTests(unittest.TestCase):
         findings = CodeQualityAgent(provider, context_builder=builder).run("p", draft, self.snippets, rules=[rule])
         quality_request = provider.request
         verifier = VerifierAgent(provider, context_builder=builder)
-        for snippets in (self.snippets, []):
-            verifications = verifier.run("p", findings, snippets, rules=[rule], evidence_ids=["c0ffee1"])
-            self.assertEqual(len(verifications), len(findings))
-            self.assertTrue(all(item.verdict == VerificationVerdict.insufficient for item in verifications))
-        self.assertEqual(len(provider.requests), 2)
-        self.assertIs(provider.request, quality_request)
+        verifications = verifier.run("p", findings, self.snippets, rules=[rule], evidence_ids=["c0ffee1"])
+        self.assertEqual(len(verifications), len(findings))
+        self.assertEqual(len(provider.requests), 3)
+        self.assertTrue(all(item.suggested_code_validation_status == SuggestedCodeValidationStatus.not_validated for item in verifications))
+        self.assertIs(provider.request, provider.requests[-1])
         builder.build_monitoring_context.assert_called_once()
         builder.build_code_context.assert_called_once()
-        builder.build_verifier_context.assert_not_called()
+        builder.build_verifier_context.assert_called_once()
         for request in (quality_request, provider.request):
             self.assertEqual(request.evidences["context_metadata"]["status"], "complete")
             self.assertFalse(request.evidences["code_snippets"][0]["is_complete"])
             self.assertIn("fin del fragmento no es el fin del archivo", request.instructions)
-            self.assertIn("contexto adicional", request.instructions)
             self.assertIn("full_file", request.instructions)
 
     def test_context_overflow_stops_all_roles_before_provider(self):

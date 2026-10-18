@@ -9,6 +9,7 @@ from agente_gestion.domain.code import CodeDiffSnippet, validate_source_syntax
 from agente_gestion.domain.findings import (
     CandidateFinding,
     FindingVerification,
+    SuggestedCodeValidationStatus,
     VerificationVerdict,
 )
 from agente_gestion.domain.policies import QualityRule
@@ -38,10 +39,49 @@ class VerifierOutputSchema(BaseModel):
     )
 
 
-def _suggestion_verification_issue(
+def _claim_verification_preflight(
     finding: CandidateFinding, snippets: list[CodeDiffSnippet],
 ) -> str | None:
-    """Require one hashed, complete, pinned file before verifying a code suggestion."""
+    """Preflight check for independent defect claim verification.
+
+    Verifies that the candidate finding claim can be safely evaluated.
+    Does NOT require a full_file merely because suggested_code is present.
+    """
+    matching_snippets = [
+        s for s in snippets
+        if s.commit_sha == finding.commit_sha and s.file_path == finding.file_path
+    ]
+    if finding.claim_basis == "file_absence":
+        complete_files = [
+            s for s in matching_snippets
+            if s.evidence_scope == "full_file" and s.is_complete and not s.truncated
+        ]
+        if not complete_files:
+            return "Una afirmación de ausencia a nivel de archivo requiere un archivo completo y verificable."
+
+    # If a full_file is present and finding has suggested_code, check that it doesn't break syntax
+    full_files = [
+        s for s in matching_snippets
+        if s.evidence_scope == "full_file"
+    ]
+    if full_files and finding.suggested_code and finding.suggested_code.strip():
+        patch_issue = validate_suggested_code_patch(finding, snippets)
+        if patch_issue in (
+            "El código sugerido rompe la sintaxis del archivo completo.",
+            "El archivo completo no conserva límites o hash verificables.",
+        ):
+            return patch_issue
+
+    return None
+
+
+def validate_suggested_code_patch(
+    finding: CandidateFinding, snippets: list[CodeDiffSnippet],
+) -> str | None:
+    """Validate that a proposed patch applies cleanly and preserves syntax on a full file.
+
+    Deferred to future phases for comprehensive syntax/patch evaluation.
+    """
     replacement = finding.suggested_code
     if not replacement.strip():
         return None
@@ -74,6 +114,11 @@ def _suggestion_verification_issue(
     if syntax_status == "invalid":
         return "El código sugerido rompe la sintaxis del archivo completo."
     return None
+
+
+# Backward compatibility alias
+_suggestion_verification_issue = validate_suggested_code_patch
+
 
 
 class VerifierAgent:
@@ -115,7 +160,7 @@ class VerifierAgent:
 
         source_issues = {
             finding.id: issue for finding in findings
-            if (issue := _suggestion_verification_issue(finding, snippets)) is not None
+            if (issue := _claim_verification_preflight(finding, snippets)) is not None
         }
         verifiable_findings = [finding for finding in findings if finding.id not in source_issues]
         if not verifiable_findings:
@@ -124,6 +169,7 @@ class VerifierAgent:
                     finding_id=finding.id, verdict=VerificationVerdict.insufficient,
                     reason=source_issues[finding.id], verified_by="verifier_agent",
                     evidence_ids=[],
+                    suggested_code_validation_status=SuggestedCodeValidationStatus.not_validated,
                 )
                 for finding in findings
             ]
@@ -138,6 +184,7 @@ class VerifierAgent:
             "- No confirmes automaticamente ningun hallazgo candidato; exige justificacion tecnica objetiva.\n"
             "- Los evidence_ids deben ser un subconjunto estricto de las evidencias asociadas al hallazgo candidato.\n"
             "- No confirmes asociaciones incompatibles de politica; cobertura desconocida no demuestra ausencia de pruebas.\n"
+            "- No utilices el codigo sugerido (suggested_code) como prueba de que el defecto existe. Tu tarea es evaluar la afirmacion tecnica (claim) contra el codigo observado.\n"
             "- Los veredictos validos son: 'confirmed', 'rejected', 'insufficient'.\n"
         )
 
@@ -146,9 +193,10 @@ class VerifierAgent:
             "- No infieras codigo fuera de las lineas visibles; el fin del fragmento no es el fin del archivo.\n"
             "- snippet, diff y truncated son parciales; no afirman ausencia ni implementacion incompleta fuera del rango visible.\n"
             "- Solo full_file con is_complete=true y truncated=false permite conclusiones de ausencia dentro del archivo completo.\n"
-            "- Si faltan lineas necesarias, declara evidencia insuficiente y solicita contexto adicional; no reportes ausencia como defecto.\n"
-            "- El verificador debe usar insufficient cuando confirmar dependa de contenido no visible.\n"
-            "- Si hay un archivo completo, aplica mentalmente suggested_code al fragmento original único y valida la sintaxis del archivo resultante antes de confirmar.\n"
+            "- Si faltan lineas necesarias para decidir con certeza, declara evidencia insuficiente ('insufficient'); no reportes ausencia como defecto.\n"
+            "- El verificador debe usar 'insufficient' cuando confirmar dependa de contenido o llamadas no visibles.\n"
+            "- Puedes confirmar ('confirmed') un defecto concreto siempre que este completamente evidenciado y sea verificable en las lineas visibles aportadas.\n"
+            "- Un hallazgo confirmado evalua unicamente la existencia del defecto; no convalida ni valida la correccion del codigo sugerido.\n"
         )
 
         if repository_scope is not None:
@@ -198,7 +246,7 @@ class VerifierAgent:
                 finding = next((candidate for candidate in verifiable_findings
                                 if candidate.id == item.get("finding_id")), None)
                 if finding is not None:
-                    issue = _suggestion_verification_issue(finding, snippets)
+                    issue = _claim_verification_preflight(finding, snippets)
                     if issue:
                         raw_verdict = VerificationVerdict.insufficient.value
                         reason = issue
@@ -214,6 +262,7 @@ class VerifierAgent:
                         reason=reason,
                         verified_by="verifier_agent",
                         evidence_ids=item.get("evidence_ids", []),
+                        suggested_code_validation_status=SuggestedCodeValidationStatus.not_validated,
                     )
                 )
 
@@ -240,7 +289,7 @@ class VerifierAgent:
             finding = next((candidate for candidate in verifiable_findings
                             if candidate.id == item.get("finding_id")), None)
             if finding is not None:
-                issue = _suggestion_verification_issue(finding, snippets)
+                issue = _claim_verification_preflight(finding, snippets)
                 if issue:
                     raw_v = VerificationVerdict.insufficient.value
                     reason = issue
@@ -256,6 +305,7 @@ class VerifierAgent:
                     reason=reason,
                     verified_by="verifier_agent",
                     evidence_ids=item.get("evidence_ids", []),
+                    suggested_code_validation_status=SuggestedCodeValidationStatus.not_validated,
                 )
             )
 
@@ -266,6 +316,7 @@ class VerifierAgent:
                 results.append(FindingVerification(
                     finding_id=finding.id, verdict=VerificationVerdict.insufficient,
                     reason=source_issues[finding.id], verified_by="verifier_agent", evidence_ids=[],
+                    suggested_code_validation_status=SuggestedCodeValidationStatus.not_validated,
                 ))
             elif finding.id in verified_by_id:
                 results.append(verified_by_id[finding.id])

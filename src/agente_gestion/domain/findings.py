@@ -21,6 +21,10 @@ class FindingSeverity(str, Enum):
     critical = "critical"
 
 
+class SuggestedCodeValidationStatus(str, Enum):
+    not_validated = "not_validated"
+
+
 class CandidateFinding(BaseModel):
     """Potential issue reported during code review stage with strict contract."""
     id: str = Field(min_length=1, description="Unique finding identifier (nonempty)")
@@ -57,6 +61,18 @@ class CandidateFinding(BaseModel):
     branch_name: Optional[str] = None
     branch_url: Optional[str] = None
     commit_sha_applied: Optional[str] = None
+    suggested_code_validation_status: SuggestedCodeValidationStatus = Field(
+        default=SuggestedCodeValidationStatus.not_validated,
+        description="Validation status of the suggested code fix proposal",
+    )
+    verification_status: Optional[str] = Field(
+        default="pending",
+        description="Independent verification status: pending, confirmed, rejected, insufficient",
+    )
+    verification_reason: Optional[str] = Field(
+        default=None,
+        description="Technical explanation supporting the verification verdict",
+    )
     repository_identity: Optional[RepositoryIdentity] = Field(
         default=None, exclude_if=lambda value: value is None,
     )
@@ -139,4 +155,8 @@ class FindingVerification(BaseModel):
     reason: str = Field(description="Technical explanation supporting verdict")
     verified_by: str = Field(default="system", description="Verifier role or engine name")
     evidence_ids: list[str] = Field(default_factory=list, description="Corroborating evidence IDs")
+    suggested_code_validation_status: SuggestedCodeValidationStatus = Field(
+        default=SuggestedCodeValidationStatus.not_validated,
+        description="Validation status of the code suggestion",
+    )
 

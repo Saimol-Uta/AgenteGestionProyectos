@@ -127,9 +127,14 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
         <li><strong>3. Agente Aprobador</strong><span>Decisión humana · {canDecide ? "backend" : "solo consulta"}</span></li>
       </ol>
       <div className="quality-example-note" role="note">
-        <Pill tone="warning">{hasBackendSuggestion ? "Código sugerido por el backend · pendiente de pruebas" : "Sugerencia de código no disponible"}</Pill>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+          <Pill tone="warning">{hasBackendSuggestion ? "Código sugerido por el backend · pendiente de pruebas" : "Sugerencia de código no disponible"}</Pill>
+          {detail.suggested_code_validation_status === "not_validated" && (
+            <Pill tone="warning">Código sugerido no validado</Pill>
+          )}
+        </div>
         <p>{displayedExplanation || "El backend no informó un ejemplo de código ni una explicación."}</p>
-        <p>La decisión no confirma por sí sola el defecto ni modifica el resultado del Agente Revisor. No se ejecuta código en el navegador.</p>
+        <p>La decisión no confirma por sí sola el defecto ni modifica el resultado del Agente Revisor. La verificación de la afirmación del defecto NO valida que el código sugerido compile o sea correcto en el archivo completo.</p>
       </div>
       <div className="quality-code-comparison">
         <section className="quality-code-panel quality-code-before" aria-label="Código actual observado">
@@ -219,6 +224,9 @@ function FindingDetailDialog({
                   <Pill tone="accent">Hallazgo candidato</Pill>
                   <Pill tone={verificationTone(detail.verification_status)}>{findingVerificationLabel(detail.verification_status)}</Pill>
                   {detail.severity && <Pill tone={detail.severity === "critical" || detail.severity === "high" ? "danger" : "warning"}>Severidad: {severityLabel(detail.severity)} · <code>{detail.severity}</code></Pill>}
+                  {detail.suggested_code_validation_status === "not_validated" && (
+                    <Pill tone="warning">Código sugerido no validado</Pill>
+                  )}
                 </div>
                 <dl className="finding-facts">
                   <div><dt>Repositorio de origen</dt><dd>{detail.repository_owner && detail.repository_name ? `${detail.repository_owner}/${detail.repository_name}` : detail.repository_id ?? "Identidad desconocida"}</dd></div>
@@ -243,7 +251,20 @@ function FindingDetailDialog({
                       <p>Verificador: <code>{detail.verification.verified_by}</code></p>
                       <p>Evidencias citadas: {detail.verification.evidence_ids.length ? detail.verification.evidence_ids.join(", ") : "Sin referencias"}</p>
                     </>
-                  ) : <p>Sin verificación persistida; el hallazgo sigue siendo candidato.</p>}
+                  ) : (
+                    <>
+                      <Pill tone={verificationTone(detail.verification_status)}>{findingVerificationLabel(detail.verification_status)}</Pill>
+                      <p>{detail.verification_reason ?? "Sin verificación persistida; el hallazgo sigue siendo candidato."}</p>
+                    </>
+                  )}
+                  {detail.suggested_code_validation_status && (
+                    <div style={{ marginTop: "8px" }}>
+                      <Pill tone="warning">Estado del parche propuesto: <code>{detail.suggested_code_validation_status}</code></Pill>
+                      <p className="field-help" style={{ marginTop: "4px" }}>
+                        La verificación independiente evalúa la existencia del defecto técnico en el archivo analizado, pero no valida el código de corrección sugerido.
+                      </p>
+                    </div>
+                  )}
                 </section>
                 <section className="finding-detail-section">
                   <h3><FileSearch aria-hidden="true" size={15} /> Evidencia disponible</h3>
@@ -532,8 +553,16 @@ export function QualityPage() {
                   })}>
                     <span className="finding-row-main">
                       <strong>{finding.file_path ?? finding.finding_id}</strong>
-                      <span><Pill tone="accent">Hallazgo candidato</Pill><Pill tone={verificationTone(finding.verification_status)}>{findingVerificationLabel(finding.verification_status)}</Pill></span>
+                      <span>
+                        <Pill tone="accent">Hallazgo candidato</Pill>
+                        <Pill tone={verificationTone(finding.verification_status)}>{findingVerificationLabel(finding.verification_status)}</Pill>
+                        {finding.suggested_code_validation_status === "not_validated" && (
+                          <Pill tone="warning">Código sugerido no validado</Pill>
+                        )}
+                      </span>
                       <small>{findingRepositoryLabel(finding)} · {findingMeta(finding).join(" · ")} · Verificación: <code>{finding.verification_status}</code></small>
+                      {finding.claim && <p className="finding-row-claim"><strong>Afirmación:</strong> {finding.claim}</p>}
+                      {finding.verification_reason && <p className="finding-row-reason"><small>Motivo de verificación: {finding.verification_reason}</small></p>}
                     </span>
                     <span className="finding-row-location"><code>{finding.file_path ?? "Archivo sin dato"}{finding.line === null ? "" : `:${finding.line}`}</code><ArrowRight aria-hidden="true" size={15} /></span>
                   </button>

@@ -196,6 +196,7 @@ export interface RunStages {
 }
 
 export type FindingVerificationStatus = "pending" | "confirmed" | "rejected" | "insufficient" | "unknown";
+export type SuggestedCodeValidationStatus = "not_validated" | "syntax_valid" | "syntax_invalid" | "patch_applied" | "unknown";
 
 export interface FindingSummary {
   finding_id: string;
@@ -210,8 +211,14 @@ export interface FindingSummary {
   line: number | null;
   commit_sha: string | null;
   confidence: number | null;
+  claim?: string | null;
+  evidence?: EvidenceCollection | string | null;
+  suggested_code?: string | null;
+  improvement_summary?: string | null;
   candidate: true;
   verification_status: FindingVerificationStatus;
+  verification_reason?: string | null;
+  suggested_code_validation_status?: SuggestedCodeValidationStatus | null;
 }
 
 export interface ConfiguredRepositoryView {
@@ -291,7 +298,11 @@ export interface RepositoryFindingView {
   confidence: number | null;
   claim: string;
   improvement_summary: string;
+  evidence?: string | null;
+  suggested_code?: string | null;
   verification_status: FindingVerificationStatus;
+  verification_reason?: string | null;
+  suggested_code_validation_status?: SuggestedCodeValidationStatus | null;
 }
 
 export interface RepositoryVerificationView {

@@ -182,6 +182,79 @@
   margin-top: 12px;
 }
 
+.repository-findings-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.repository-findings-list h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.repository-findings-items {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repository-finding-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.repository-finding-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.repository-finding-item-header strong {
+  font-size: 11px;
+}
+
+.repository-finding-claim {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.repository-finding-reason {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.repository-finding-code-details {
+  margin-top: 4px;
+  font-size: 10px;
+}
+
+.repository-finding-code-details summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.repository-finding-code-details pre {
+  margin: 4px 0 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-x: auto;
+}
+
 .repository-history-more {
   margin-top: 12px;
   border-top: 1px solid var(--border);

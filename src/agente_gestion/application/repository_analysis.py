@@ -31,6 +31,7 @@ from agente_gestion.domain.code import (
 from agente_gestion.domain.findings import (
     CandidateFinding,
     FindingVerification,
+    SuggestedCodeValidationStatus,
     VerificationVerdict,
 )
 from agente_gestion.domain.policies import (
@@ -663,7 +664,12 @@ def analyze_repository_results(
             rules_by_id=rules_by_id,
         )
         work.decisions = decisions
-        work.pending.extend(routine)
+        for routine_item in routine:
+            work.pending.append(routine_item.model_copy(update={
+                "verification_status": "pending",
+                "verification_reason": "No escalado para verificación independiente (severidad baja o sin regla mandatoria).",
+                "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+            }))
         if escalated:
             verifier_work.append((work, escalated))
 
@@ -730,15 +736,35 @@ def analyze_repository_results(
                         for finding in escalated:
                             verification = valid_verifications.get(finding.id)
                             if verification is None:
-                                work.pending.append(finding)
+                                work.pending.append(finding.model_copy(update={
+                                    "verification_status": "pending",
+                                    "verification_reason": "Verificación independiente pendiente.",
+                                    "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+                                }))
                             elif verification.verdict == VerificationVerdict.confirmed:
-                                work.confirmed.append(finding)
+                                work.confirmed.append(finding.model_copy(update={
+                                    "verification_status": VerificationVerdict.confirmed.value,
+                                    "verification_reason": verification.reason,
+                                    "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+                                }))
                             elif verification.verdict == VerificationVerdict.rejected:
-                                work.rejected.append(finding)
+                                work.rejected.append(finding.model_copy(update={
+                                    "verification_status": VerificationVerdict.rejected.value,
+                                    "verification_reason": verification.reason,
+                                    "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+                                }))
                             elif verification.verdict == VerificationVerdict.insufficient:
-                                work.insufficient.append(finding)
+                                work.insufficient.append(finding.model_copy(update={
+                                    "verification_status": VerificationVerdict.insufficient.value,
+                                    "verification_reason": verification.reason,
+                                    "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+                                }))
                             else:
-                                work.pending.append(finding)
+                                work.pending.append(finding.model_copy(update={
+                                    "verification_status": "pending",
+                                    "verification_reason": verification.reason,
+                                    "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+                                }))
                         if any(item.verdict == VerificationVerdict.insufficient for item in work.verifications) or any(
                             finding.id not in valid_verifications for finding in escalated
                         ) or work.source_problems:
@@ -749,7 +775,12 @@ def analyze_repository_results(
                         verifier_remaining = max(0, verifier_remaining - allocation)
                     except Exception as exc:
                         reason = _safe_failure("verifier", exc)
-                        work.pending.extend(escalated)
+                        for f in escalated:
+                            work.pending.append(f.model_copy(update={
+                                "verification_status": "pending",
+                                "verification_reason": reason,
+                                "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+                            }))
                         verifier_remaining = max(0, verifier_remaining - allocation)
         resolved_ids = {
             finding.id
@@ -758,7 +789,24 @@ def analyze_repository_results(
         }
         for finding in escalated:
             if finding.id not in resolved_ids:
-                work.pending.append(finding)
+                work.pending.append(finding.model_copy(update={
+                    "verification_status": "pending",
+                    "verification_reason": "No resuelto en la etapa de verificación.",
+                    "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+                }))
+        candidate_status_map = {
+            f.id: (f.verification_status, f.verification_reason)
+            for group in (work.confirmed, work.rejected, work.insufficient, work.pending)
+            for f in group
+        }
+        work.candidates = [
+            f.model_copy(update={
+                "verification_status": candidate_status_map.get(f.id, ("pending", None))[0],
+                "verification_reason": candidate_status_map.get(f.id, ("pending", None))[1],
+                "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+            })
+            for f in work.candidates
+        ]
         work.verifier_status = status
         work.verifier_reason = reason
         verifier_work_count = max(0, verifier_work_count - 1)

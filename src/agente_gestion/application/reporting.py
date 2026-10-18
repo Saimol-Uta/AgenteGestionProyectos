@@ -247,8 +247,12 @@ def generate_report_markdown(
     if report.confirmed_findings:
         for f in report.confirmed_findings:
             lines.append(f"- **[{f.id}] {f.category}** en `{f.file_path}:{f.line}` (commit `{f.commit_sha}`)")
-            lines.append(f"  - *Evidencia:* `{f.evidence}`")
+            lines.append(f"  - *Afirmación técnica:* {f.claim}")
+            lines.append(f"  - *Evidencia observada:* `{f.evidence}`")
             lines.append(f"  - *Solución sugerida:* {f.suggested_fix}")
+            if f.suggested_code:
+                lines.append(f"  - *Código sugerido (no validado):* `{f.suggested_code.strip()}`")
+                lines.append("    *(Nota: La confirmación técnica del defecto no implica que la propuesta de código haya sido validada sintáctica o funcionalmente).*")
     else:
         lines.append("No se confirmaron defectos de código en este ciclo.")
     lines.append("")
@@ -257,7 +261,8 @@ def generate_report_markdown(
     lines.append("## Hallazgos rechazados")
     if report.rejected_findings:
         for f in report.rejected_findings:
-            lines.append(f"- **[{f.id}]** en `{f.file_path}:{f.line}`: Desestimado tras verificación técnica independiente.")
+            reason = f.verification_reason or "Desestimado tras verificación técnica independiente."
+            lines.append(f"- **[{f.id}]** en `{f.file_path}:{f.line}`: {reason}")
     else:
         lines.append("No hay hallazgos descartados.")
     lines.append("")
@@ -266,7 +271,8 @@ def generate_report_markdown(
     lines.append("## Hallazgos con evidencia insuficiente")
     if report.insufficient_findings:
         for f in report.insufficient_findings:
-            lines.append(f"- **[{f.id}]** en `{f.file_path}:{f.line}`: La evidencia aportada no permite corroborar el defecto.")
+            reason = f.verification_reason or "La evidencia aportada no permite corroborar el defecto."
+            lines.append(f"- **[{f.id}]** en `{f.file_path}:{f.line}`: {reason}")
     else:
         lines.append("Ninguno.")
     lines.append("")
@@ -275,7 +281,8 @@ def generate_report_markdown(
     lines.append("## Hallazgos pendientes de verificación")
     if report.pending_findings:
         for f in report.pending_findings:
-            lines.append(f"- **[{f.id}] {f.category}** en `{f.file_path}:{f.line}`: Pendiente de inspección profunda.")
+            reason = f.verification_reason or "Pendiente de inspección profunda."
+            lines.append(f"- **[{f.id}] {f.category}** en `{f.file_path}:{f.line}`: {reason}")
     else:
         lines.append("No hay hallazgos pendientes de verificación.")
     lines.append("")
