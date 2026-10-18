@@ -96,14 +96,14 @@ class UnifiedPipelineProviderTests(unittest.TestCase):
         self.assertEqual(quality.max_output_tokens, 4096)
 
     def test_provider_exports_and_cli_choices_exclude_retired_adapters(self) -> None:
-        self.assertEqual(set(llm_adapters.__all__), {"FakeProvider", "GeminiProvider", "GroqProvider"})
-        for retired in ("OllamaProvider", "MistralProvider"):
+        self.assertEqual(set(llm_adapters.__all__), {"FakeProvider", "GeminiProvider", "GroqProvider", "MistralProvider"})
+        for retired in ("OllamaProvider",):
             self.assertFalse(hasattr(llm_adapters, retired))
 
         parser = build_parser()
         for arguments in (
             ["run", "--monitoring-provider", "ollama"],
-            ["run", "--quality-provider", "mistral"],
+            ["run", "--quality-provider", "ollama"],
             ["run", "--report-provider", "ollama"],
         ):
             with self.subTest(arguments=arguments), redirect_stderr(StringIO()), \
@@ -116,7 +116,6 @@ class UnifiedPipelineProviderTests(unittest.TestCase):
             parser.parse_args(["run", "--help"])
         self.assertEqual(error.exception.code, 0)
         self.assertNotIn("ollama", help_output.getvalue().lower())
-        self.assertNotIn("mistral", help_output.getvalue().lower())
 
 
 if __name__ == "__main__":

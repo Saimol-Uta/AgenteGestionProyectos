@@ -10,24 +10,22 @@ execution:
   max_llm_calls_per_run: 8
   quality_timeout_seconds: 120
   verifier_timeout_seconds: 120
-  quality_context_window: 6000
-  quality_max_output_tokens: 1024
 
 providers:
   remote:
     model: gemini-3.5-flash-lite
   quality:
-    provider: groq
-    model: qwen/qwen3.8-27b
-    context_window: 6000
-    max_output_tokens: 1024
+    provider: mistral
+    model: mistral-large-2512
+    context_window: 128000
+    max_output_tokens: 4096
   report:
     provider: gemini
     model: gemini-3.5-flash-lite
 
 roles:
   elaborador: gemini
-  revisor: groq
+  revisor: mistral
   aprobador: gemini
 
 sources:

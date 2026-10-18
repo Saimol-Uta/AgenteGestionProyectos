@@ -27,6 +27,7 @@ from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
 from agente_gestion.adapters.llm.gemini import GeminiProvider
 from agente_gestion.adapters.llm.groq import GroqProvider, RollingWindowTokenLimiter
+from agente_gestion.adapters.llm.mistral import MistralProvider
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.run import RunStatus
@@ -73,6 +74,7 @@ def _build_orchestrator(
     remote_models_allowed = config.allow_remote_ai and not config.is_fake
     gemini_key = config.gemini_api_key.get_secret_value() if config.gemini_api_key else ""
     groq_key = config.groq_api_key.get_secret_value() if config.groq_api_key else ""
+    mistral_key = config.mistral_api_key.get_secret_value() if config.mistral_api_key else os.environ.get("MISTRAL_API_KEY", "")
 
     if config.is_fake:
         print("INFO: Mode '--fake' activated. Using clearly simulated deterministic providers.")
@@ -85,25 +87,38 @@ def _build_orchestrator(
         ) if remote_models_allowed and gemini_key
         else FakeProvider(model="sandbox-monitoring")
     )
-    revisor = (
-        GroqProvider(
-            api_key=groq_key,
-            model=config.groq_model,
-            base_url=config.groq_base_url,
-            allow_remote_ai=True,
-            context_tokens=config.quality_context_window or 131072,
-            max_output_tokens=config.quality_max_output_tokens or 1024,
-            rate_limiter=(
-                RollingWindowTokenLimiter(
-                    limit_tokens=config.quality_context_window or 6000,
-                    window_seconds=60.0,
-                )
-                if config.quality_context_window
-                else None
-            ),
-        ) if remote_models_allowed and groq_key
-        else FakeProvider(model="sandbox-quality")
-    )
+    if config.quality_provider == "mistral":
+        revisor = (
+            MistralProvider(
+                api_key=mistral_key,
+                model=config.mistral_model,
+                base_url=config.mistral_base_url,
+                allow_remote_ai=True,
+                context_tokens=config.quality_context_window or 128000,
+                max_output_tokens=config.quality_max_output_tokens or 4096,
+            ) if remote_models_allowed and mistral_key
+            else FakeProvider(model="sandbox-quality")
+        )
+    else:
+        revisor = (
+            GroqProvider(
+                api_key=groq_key,
+                model=config.groq_model,
+                base_url=config.groq_base_url,
+                allow_remote_ai=True,
+                context_tokens=config.quality_context_window or 131072,
+                max_output_tokens=config.quality_max_output_tokens or 1024,
+                rate_limiter=(
+                    RollingWindowTokenLimiter(
+                        limit_tokens=config.quality_context_window or 6000,
+                        window_seconds=60.0,
+                    )
+                    if config.quality_context_window
+                    else None
+                ),
+            ) if remote_models_allowed and groq_key
+            else FakeProvider(model="sandbox-quality")
+        )
     aprobador = (
         GeminiProvider(
             api_key=gemini_key,
@@ -229,6 +244,8 @@ def run_command(args: argparse.Namespace, transport: Optional[HttpGetTransportPo
         overrides["report_provider"] = args.report_provider
     if getattr(args, "groq_model", None):
         overrides["groq_model"] = args.groq_model
+    if getattr(args, "mistral_model", None):
+        overrides["mistral_model"] = args.mistral_model
     if getattr(args, "gemini_model", None):
         overrides["gemini_model"] = args.gemini_model
     if getattr(args, "due_soon_days", None) is not None:
@@ -1014,8 +1031,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser_run.add_argument("--db-path", default=None, help="Path to SQLite database file")
     parser_run.add_argument("--output-dir", default=None, help="Directory to save runs artifacts")
     parser_run.add_argument("--monitoring-provider", choices=["gemini"], default=None, help="LLM provider for ProjectMonitoringAgent")
-    parser_run.add_argument("--quality-provider", choices=["groq"], default=None, help="LLM provider for CodeQualityAgent")
+    parser_run.add_argument("--quality-provider", choices=["groq", "mistral"], default=None, help="LLM provider for CodeQualityAgent")
     parser_run.add_argument("--groq-model", default=None, help="Model identifier for Groq quality reviewer")
+    parser_run.add_argument("--mistral-model", default=None, help="Model identifier for Mistral quality reviewer")
     parser_run.add_argument("--gemini-model", default=None, help="Model identifier for Gemini verifier")
     parser_run.add_argument("--report-provider", choices=["gemini"], default=None, help="LLM provider for ReportAgent")
     parser_run.add_argument("--env-file", default=None, help="Path to custom .env file (defaults to .env)")

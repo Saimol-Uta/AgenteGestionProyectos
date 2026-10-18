@@ -78,7 +78,10 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
             if "max_output_tokens" in q_sec:
                 merged["quality_max_output_tokens"] = q_sec["max_output_tokens"]
             if "model" in q_sec:
-                merged["groq_model"] = q_sec["model"]
+                if q_sec.get("provider") == "mistral":
+                    merged["mistral_model"] = q_sec["model"]
+                else:
+                    merged["groq_model"] = q_sec["model"]
             if "context_window" in q_sec:
                 merged["quality_context_window"] = q_sec["context_window"]
             if "quality_context_window" in q_sec:
@@ -100,8 +103,8 @@ def _load_yaml_file(config_path: Optional[str]) -> dict[str, Any]:
         roles_sec = file_data["roles"]
         if roles_sec.get("elaborador") == "gemini":
             merged["monitoring_provider"] = "gemini"
-        if roles_sec.get("revisor") == "groq":
-            merged["quality_provider"] = "groq"
+        if roles_sec.get("revisor") in ("groq", "mistral"):
+            merged["quality_provider"] = roles_sec.get("revisor")
         if roles_sec.get("aprobador") == "gemini":
             merged["report_provider"] = "gemini"
 
@@ -294,6 +297,20 @@ class Settings(BaseSettings):
     groq_base_url: str = Field(
         default="https://api.groq.com/openai/v1",
         description="Groq API base URL.",
+    )
+    mistral_api_key: Optional[SecretStr] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="Mistral API key. SecretStr excluded from repr, dumps, and fingerprints.",
+    )
+    mistral_model: str = Field(
+        default="mistral-large-2512",
+        description="Mistral model identifier for code quality review.",
+    )
+    mistral_base_url: str = Field(
+        default="https://api.mistral.ai/v1",
+        description="Mistral API base URL.",
     )
     quality_context_window: Optional[int] = Field(
         default=None,
@@ -605,13 +622,14 @@ class Settings(BaseSettings):
         if not isinstance(v, str):
             raise ValueError("quality_provider must be a string")
         cleaned = v.strip().lower()
-        if cleaned != "groq":
-            raise ValueError(f"Invalid quality_provider: '{v}'. Must be 'groq'.")
-        return "groq"
+        if cleaned not in ("groq", "mistral"):
+            raise ValueError(f"Invalid quality_provider: '{v}'. Must be 'groq' or 'mistral'.")
+        return cleaned
 
     @field_validator(
         "gemini_api_key",
         "groq_api_key",
+        "mistral_api_key",
         "trello_api_key",
         "trello_token",
         "github_token",
@@ -761,6 +779,7 @@ class Settings(BaseSettings):
         for fld in (
             "gemini_api_key",
             "groq_api_key",
+            "mistral_api_key",
             "trello_api_key",
             "trello_token",
             "github_token",
