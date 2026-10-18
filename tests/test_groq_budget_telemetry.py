@@ -360,6 +360,110 @@ class GroqBudgetAndTelemetryTestCase(unittest.TestCase):
         self.assertIn("AuthenticationError", reason_auth)
         self.assertIn("provider credentials rejected", reason_auth)
 
+    def test_build_code_context_reserves_metadata_headroom_for_runtime_payload(self):
+        """Verifica que build_code_context con strict_budget reserva margen para selection y context_metadata."""
+        builder = ContextBuilder()
+        snippets = [
+            CodeDiffSnippet(
+                repository="backend",
+                commit_sha="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                file_path=f"src/service_{i}.ts",
+                diff_side="RIGHT",
+                lines=[1],
+                content="const x = 1;\n" * 40,
+                evidence_scope="snippet",
+            )
+            for i in range(30)
+        ]
+        # Con presupuesto ajustado, no debe lanzar ContextBudgetExceededError al generar runtime_payload
+        ctx = builder.build_code_context(
+            project_id="PROJ",
+            draft=self.draft,
+            criteria=["seguridad"],
+            code_snippets=snippets,
+            budget_tokens=2500,
+            strict_budget=True,
+        )
+        self.assertTrue(ctx.is_truncated)
+        self.assertEqual(ctx.status, "incomplete")
+        self.assertLessEqual(ctx.estimated_tokens, 2500)
+
+        # runtime_payload debe ejecutarse limpiamente dentro del presupuesto
+        payload = builder.runtime_payload(
+            ctx,
+            instructions="Analiza el código.",
+            schema={"type": "object"},
+            output_tokens=768,
+            context_tokens=6000,
+            max_output_tokens=768,
+        )
+        self.assertIn("context_metadata", payload)
+        self.assertLessEqual(
+            payload["context_metadata"]["estimated_tokens"],
+            payload["context_metadata"]["budget_tokens"],
+        )
+
+    def test_groq_provider_deducts_pacing_wait_from_transport_timeout(self):
+        """Verifica que el tiempo consumido en pacing se descuente del socket timeout del transporte."""
+        captured_timeout = None
+
+        def mock_transport(url, headers, payload=None, timeout=30.0, **kwargs):
+            nonlocal captured_timeout
+            captured_timeout = timeout
+            return {
+                "status_code": 200,
+                "body": {"choices": [{"message": {"content": "{}"}}]},
+                "text": "{}",
+                "headers": {},
+            }
+
+        current_time = 100.0
+
+        def mock_time():
+            return current_time
+
+        def mock_sleep(seconds: float):
+            nonlocal current_time
+            current_time += seconds
+
+        limiter = RollingWindowTokenLimiter(
+            limit_tokens=6000,
+            window_seconds=60.0,
+            sleeper=mock_sleep,
+            time_fn=mock_time,
+        )
+        # Pre-consume 4000 tokens at t=100
+        limiter.acquire(4000, timeout=120.0)
+
+        # Advance to t=110
+        current_time = 110.0
+
+        provider = GroqProvider(
+            api_key="gsk_test_key",
+            allow_remote_ai=True,
+            transport=mock_transport,
+            rate_limiter=limiter,
+        )
+
+        # Second request wants ~3500 tokens -> 4000 + 3500 = 7500 > 6000 -> needs to wait ~50s until t=160
+        request = GenerationRequest(
+            role="revisor",
+            instructions="Revisar.",
+            evidences={"code": "x = 1\n" * 1600},  # ~3700 tokens
+            model="qwen/qwen3.8-27b",
+            timeout_seconds=120.0,
+        )
+
+        with patch("agente_gestion.adapters.llm.groq.time.monotonic", side_effect=lambda: current_time):
+            result = provider.generate(request)
+
+        self.assertEqual(result.status, GenerationStatus.complete)
+        self.assertIsNotNone(captured_timeout)
+        # 120s timeout - ~50s pacing wait = ~70s remaining for transport socket
+        self.assertLess(captured_timeout, 120.0)
+        self.assertGreaterEqual(captured_timeout, 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -419,19 +419,42 @@ class ContextBuilder:
 
         for s in sorted_snippets:
             candidate_snippets = current_snippets + [s.model_dump()]
-            candidate_data = dict(base_data)
-            candidate_data["code_snippets"] = candidate_snippets
-            if estimate_tokens_from_data(candidate_data) <= effective_budget:
+            cand_omitted = [sn for sn in sorted_snippets if sn not in selected_snippets and sn != s]
+            cand_data = dict(base_data)
+            cand_data["code_snippets"] = candidate_snippets
+            cand_data["selection"] = {
+                "total_snippets": len(code_snippets),
+                "selected_count": len(candidate_snippets),
+                "omitted_count": len(cand_omitted),
+                "omitted_files": sorted(list({sn.file_path for sn in cand_omitted})),
+                "status": "partial" if cand_omitted else "complete",
+                "is_complete": not cand_omitted,
+                "reason": (
+                    None if not cand_omitted
+                    else f"Context budget accommodated {len(candidate_snippets)} of {len(code_snippets)} code snippet(s); "
+                         f"{len(cand_omitted)} snippet(s) omitted to respect {effective_budget} token limit."
+                ),
+            }
+            # Reserve 160 tokens headroom for runtime_payload context_metadata insertion
+            if estimate_tokens_from_data(cand_data) + 160 <= effective_budget:
                 current_snippets = candidate_snippets
                 selected_snippets.append(s)
             else:
                 omitted_snippets.append(s)
 
         if code_snippets and not selected_snippets:
-            raise ContextBudgetExceededError(
-                f"Context budget ({effective_budget} tokens) is insufficient to include even the smallest code snippet. "
-                "Request additional context or increase the explicit context budget."
-            )
+            if sorted_snippets:
+                first = sorted_snippets[0]
+                cand_data = dict(base_data)
+                cand_data["code_snippets"] = [first.model_dump()]
+                if estimate_tokens_from_data(cand_data) <= effective_budget:
+                    selected_snippets = [first]
+                    omitted_snippets = sorted_snippets[1:]
+            if not selected_snippets:
+                raise ContextBudgetExceededError(
+                    f"Context budget ({effective_budget} tokens) is insufficient to include even the smallest code snippet. "
+                    "Request additional context or increase the explicit context budget."
+                )
 
         selected_shas = {s.commit_sha for s in selected_snippets}
         if evidence_ids is not None:

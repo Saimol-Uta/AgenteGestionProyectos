@@ -201,9 +201,11 @@ class CodeQualityAgent:
         output_tokens = min(self.max_output_tokens or 768, capabilities.max_output_tokens)
         safety_margin = self.safety_margin_tokens
 
+        envelope_overhead = 512
         instructions_overhead = (
             estimate_tokens_from_data(instructions)
             + estimate_tokens_from_data(output_json_schema)
+            + envelope_overhead
         )
         safe_input_budget = self.context_builder.calculate_safe_input_budget(
             context_window=capabilities.context_tokens,

@@ -165,11 +165,14 @@ class GroqProvider(LLMProviderPort):
             estimate_tokens_from_data(request.instructions)
             + estimate_tokens_from_data(request.evidences)
         )
+        elapsed_pacing = 0.0
         if self.rate_limiter is not None:
+            t0 = time.monotonic()
             acquired = self.rate_limiter.acquire(
                 estimated_prompt_tokens,
                 timeout=request.timeout_seconds,
             )
+            elapsed_pacing = time.monotonic() - t0
             if not acquired:
                 if estimated_prompt_tokens > self.rate_limiter.limit_tokens:
                     return GenerationResult(
@@ -218,6 +221,7 @@ class GroqProvider(LLMProviderPort):
 
         start_time = time.monotonic()
         call_transport = self.transport or self._default_transport
+        transport_timeout = max(5.0, request.timeout_seconds - elapsed_pacing)
 
         try:
             try:
@@ -226,7 +230,7 @@ class GroqProvider(LLMProviderPort):
                     headers=headers,
                     payload=body,
                     json=body,
-                    timeout=request.timeout_seconds,
+                    timeout=transport_timeout,
                 )
             except TypeError:
                 try:
@@ -234,14 +238,14 @@ class GroqProvider(LLMProviderPort):
                         endpoint,
                         headers=headers,
                         payload=body,
-                        timeout=request.timeout_seconds,
+                        timeout=transport_timeout,
                     )
                 except TypeError:
                     res = call_transport(
                         endpoint,
                         headers=headers,
                         json=body,
-                        timeout=request.timeout_seconds,
+                        timeout=transport_timeout,
                     )
         except Exception as e:
             duration = time.monotonic() - start_time
