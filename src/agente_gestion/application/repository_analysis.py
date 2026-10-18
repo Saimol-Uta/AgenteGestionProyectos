@@ -835,6 +835,20 @@ def analyze_repository_results(
             # Defensive fallback: every candidate remains pending if routing failed.
             work.pending.extend(item for item in work.candidates if item not in work.pending)
 
+        candidate_status_map = {
+            f.id: (f.verification_status, f.verification_reason)
+            for group in (work.confirmed, work.rejected, work.insufficient, work.pending)
+            for f in group
+        }
+        work.candidates = [
+            f.model_copy(update={
+                "verification_status": candidate_status_map.get(f.id, ("pending", None))[0],
+                "verification_reason": candidate_status_map.get(f.id, ("pending", None))[1],
+                "suggested_code_validation_status": SuggestedCodeValidationStatus.not_validated,
+            })
+            for f in work.candidates
+        ]
+
         ci_view = _safe_ci_view(work.ci_run, work.ci_metrics)
         policy_result = QualityEvaluator.evaluate(
             rules=rules,
