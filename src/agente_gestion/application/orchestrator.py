@@ -76,6 +76,49 @@ from agente_gestion.application.config import Settings, SystemConfig
 DEFAULT_TIMEZONE = ZoneInfo("America/Guayaquil")
 
 
+def _serialize_source_collection_summary(collection_result: Any) -> tuple[dict[str, Any], float]:
+    """Build bounded source diagnostics without duplicating code or evidence payloads."""
+    project_records = list(getattr(collection_result, "records", []))
+    repository_results = list(getattr(collection_result, "repository_results", []))
+    summary: dict[str, Any] = {
+        "target_commit_sha": collection_result.target_commit_sha,
+        "is_complete": collection_result.snapshot.is_complete,
+        "records": [record.model_dump(mode="json") for record in project_records],
+    }
+    all_records = list(project_records)
+
+    project_receipt = getattr(collection_result, "budget_receipt", None)
+    if project_receipt is not None:
+        summary["budget_receipt"] = project_receipt.model_dump(mode="json")
+
+    if repository_results:
+        serialized_repositories = []
+        for repository_result in repository_results:
+            state = getattr(repository_result, "repository_state", None)
+            identity = getattr(state, "identity", None)
+            records = list(getattr(repository_result, "records", []))
+            repository_summary: dict[str, Any] = {
+                "repository_identity": identity.model_dump(mode="json") if identity is not None else None,
+                "target_commit_sha": getattr(state, "target_commit_sha", None),
+                "records": [record.model_dump(mode="json") for record in records],
+                "is_complete": getattr(repository_result, "is_complete", None),
+                "incomplete_reason": getattr(repository_result, "incomplete_reason", None),
+            }
+            repository_receipt = getattr(repository_result, "budget_receipt", None)
+            if repository_receipt is not None:
+                repository_summary["budget_receipt"] = repository_receipt.model_dump(mode="json")
+            serialized_repositories.append(repository_summary)
+            all_records.extend(records)
+        summary["repository_results"] = serialized_repositories
+
+    incomplete_reason = getattr(collection_result.snapshot, "incomplete_reason", None)
+    if incomplete_reason is not None and (project_receipt is not None or repository_results):
+        summary["incomplete_reason"] = incomplete_reason
+
+    duration_seconds = sum(float(record.duration_seconds) for record in all_records)
+    return summary, duration_seconds
+
+
 class OrchestratorConfig:
     """Settings passed into the Orchestrator for run execution."""
 
@@ -195,6 +238,7 @@ class ProjectOrchestrator:
         rules = None
         task_evidence = []
         collection = self._last_collection_result
+        source_collection_summary_payload: Optional[dict[str, Any]] = None
         # Identity here ties evidence to this collection result, not to an equal
         # task ID/hash or a cached result from a previous load/execution.
         if collection is not None and collection.snapshot is snapshot:
@@ -271,23 +315,24 @@ class ProjectOrchestrator:
 
         # Record source_collection stage if composite collection occurred
         if self._last_collection_result:
-            collection_records_dump = [
-                r.model_dump() for r in getattr(self._last_collection_result, "records", [])
-            ]
-            source_summary = json.dumps({
-                "target_commit_sha": self._last_collection_result.target_commit_sha,
-                "is_complete": self._last_collection_result.snapshot.is_complete,
-                "records": collection_records_dump,
-            })
-            total_coll_duration = sum(
-                r.duration_seconds for r in getattr(self._last_collection_result, "records", [])
+            source_collection_summary_payload, total_coll_duration = _serialize_source_collection_summary(
+                self._last_collection_result
             )
+            source_summary = json.dumps(source_collection_summary_payload)
+            # Preserve the historical singleton hash when no diagnostics were added.
+            source_hash_payload = source_summary
+            if not any(key in source_collection_summary_payload
+                       for key in ("budget_receipt", "repository_results")):
+                source_hash_payload = [
+                    record.model_dump()
+                    for record in getattr(self._last_collection_result, "records", [])
+                ]
             run.stages["source_collection"] = StageExecutionRecord(
                 stage_name="source_collection",
                 status=StageStatus.completed,
                 duration_seconds=total_coll_duration,
                 output_summary=source_summary,
-                data_hash=compute_sha256(collection_records_dump),
+                data_hash=compute_sha256(source_hash_payload),
                 completed_at=datetime.now(ZoneInfo("UTC")),
             )
             self.sqlite.save_stage_result(run_id, run.stages["source_collection"])
@@ -842,12 +887,8 @@ class ProjectOrchestrator:
             "escalations": escalation_map,
             "total_llm_calls": budget_tracker.total_calls_made,
         }
-        if self._last_collection_result:
-            exec_metrics_payload["source_collection"] = {
-                "target_commit_sha": self._last_collection_result.target_commit_sha,
-                "is_complete": self._last_collection_result.snapshot.is_complete,
-                "records": [r.model_dump() for r in getattr(self._last_collection_result, "records", [])],
-            }
+        if source_collection_summary_payload is not None:
+            exec_metrics_payload["source_collection"] = source_collection_summary_payload
         report_md = generate_report_markdown(
             report=final_report,
             execution_metrics=exec_metrics_payload,
@@ -1059,11 +1100,8 @@ class ProjectOrchestrator:
             "error_message": error_message,
         }
         if self._last_collection_result:
-            exec_metrics["source_collection"] = {
-                "target_commit_sha": self._last_collection_result.target_commit_sha,
-                "is_complete": self._last_collection_result.snapshot.is_complete,
-                "records": [r.model_dump() for r in getattr(self._last_collection_result, "records", [])],
-            }
+            source_collection_summary, _ = _serialize_source_collection_summary(self._last_collection_result)
+            exec_metrics["source_collection"] = source_collection_summary
             if getattr(self._last_collection_result, "evidence", None):
                 self.sqlite.save_evidence(run.run_id, self._last_collection_result.evidence)
 

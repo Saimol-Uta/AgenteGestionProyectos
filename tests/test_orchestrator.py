@@ -19,6 +19,12 @@ from agente_gestion.domain.report import HumanDecisionState
 from agente_gestion.domain.llm import GenerationResult, GenerationStatus
 from agente_gestion.adapters.llm.fake import FakeProvider
 from agente_gestion.adapters.sources.fixtures import FixtureSourcesAdapter
+from agente_gestion.ports.source_collection import (
+    SourceCollectionResult,
+    SourceExecutionRecord,
+    SourceExecutionStatus,
+)
+from agente_gestion.ports.source_errors import SourceProvider
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
 from agente_gestion.application.orchestrator import ProjectOrchestrator, OrchestratorConfig
@@ -101,6 +107,74 @@ class OrchestratorTestCase(unittest.TestCase):
             ci_runs=[],
             policies=[],
             is_complete=True,
+        )
+
+    def test_singleton_source_summary_keeps_legacy_shape_when_diagnostics_are_absent(self):
+        snapshot = WeeklySnapshot(
+            id="singleton-source",
+            project_id="source-legacy",
+            cutoff_datetime=self.now,
+            captured_at=self.now,
+            tasks=[],
+            code_diffs=[],
+            ci_runs=[],
+            policies=[],
+            is_complete=True,
+        )
+        result = SourceCollectionResult(
+            snapshot=snapshot,
+            target_commit_sha=None,
+            records=[SourceExecutionRecord(
+                provider=SourceProvider.local_policy,
+                status=SourceExecutionStatus.success,
+                duration_seconds=0.25,
+            )],
+        )
+
+        class FixedSource:
+            def collect_snapshot(self, project_id, cutoff_datetime, commit_sha=None):
+                return result
+
+        orchestrator = ProjectOrchestrator(
+            sqlite_storage=self.sqlite,
+            artifact_storage=self.artifacts,
+            elaborador_provider=self.fake_provider,
+            revisor_provider=self.fake_provider,
+            verificador_provider=self.fake_provider,
+            aprobador_provider=self.fake_provider,
+            source_adapter=FixedSource(),
+            config=OrchestratorConfig(project_id="source-legacy", allow_remote_ai=False),
+        )
+        run = orchestrator.execute()
+        stage = self.sqlite.get_stage_results(run.run_id)["source_collection"]
+        summary = json.loads(stage.output_summary)
+        metrics_path = os.path.join(self.runs_dir, run.run_id, "execution_metrics.json")
+        with open(metrics_path, encoding="utf-8") as artifact_file:
+            execution_metrics = json.load(artifact_file)
+
+        # Differential compatibility with the singleton serializer at baseline 8e7d970f.
+        baseline_summary = json.loads(json.dumps({
+            "target_commit_sha": result.target_commit_sha,
+            "is_complete": result.snapshot.is_complete,
+            "records": [record.model_dump() for record in result.records],
+        }))
+        self.assertEqual(summary, baseline_summary)
+        from agente_gestion.domain.run import compute_sha256
+        self.assertEqual(
+            stage.data_hash, compute_sha256([record.model_dump() for record in result.records]),
+        )
+        self.assertEqual(set(summary), {"target_commit_sha", "is_complete", "records"})
+        self.assertEqual(execution_metrics["source_collection"], summary)
+
+        with open(metrics_path, "rb") as artifact_file:
+            historical_artifact = artifact_file.read()
+        repeated_run = orchestrator.execute()
+        with open(metrics_path, "rb") as artifact_file:
+            self.assertEqual(artifact_file.read(), historical_artifact)
+        self.assertEqual(repeated_run.run_id, run.run_id)
+        self.assertEqual(
+            self.sqlite.get_stage_results(run.run_id)["source_collection"].output_summary,
+            stage.output_summary,
         )
 
     def test_orchestrator_happy_path_positive_flow(self):

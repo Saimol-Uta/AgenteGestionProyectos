@@ -1,15 +1,20 @@
 """Public orchestration contracts for repository-isolated quality analysis."""
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from agente_gestion.adapters.llm.fake import FakeProvider
+from agente_gestion.adapters.sources.http_transport import HttpResponse
+from agente_gestion.adapters.sources.multirepo import MultiRepoSourcesAdapter
 from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+from agente_gestion.application.config import Settings
 from agente_gestion.application.orchestrator import OrchestratorConfig, ProjectOrchestrator
 from agente_gestion.application.reporting import generate_report_markdown
 from agente_gestion.domain.ci_metrics import CiArtifactOutcome, CiWorkflowStatus
@@ -25,12 +30,13 @@ from agente_gestion.domain.repositories import (
     RepositoryAccessStatus,
     RepositoryAnalysisState,
     RepositoryAvailabilityStatus,
+    RepositoryConfiguration,
     RepositoryIdentity,
     RepositoryProvenance,
 )
 from agente_gestion.domain.snapshot import RepositorySnapshotResult, WeeklySnapshot
 from agente_gestion.domain.tasks import TaskCard, TaskState
-from agente_gestion.domain.run import StageStatus
+from agente_gestion.domain.run import RunStatus, StageStatus, compute_sha256
 from agente_gestion.domain.llm import GenerationResult, GenerationStatus
 
 
@@ -247,6 +253,137 @@ class MultiRepoOrchestrationTests(unittest.TestCase):
                 db_path=str(Path(self._temp.name) / "analysis.sqlite"),
             ),
         )
+
+    def _partial_source_adapter(self):
+        sha = "d" * 40
+        marker = "safe-partial-source-marker"
+
+        class Transport:
+            def __init__(inner_self):
+                inner_self.calls = []
+
+            def get(inner_self, url, params=None, headers=None, timeout_seconds=None):
+                path = urlsplit(url).path
+                inner_self.calls.append({"path": path, "params": params})
+                if f"/commits/{sha}" in path:
+                    return HttpResponse(status_code=200, body={
+                        "sha": sha,
+                        "files": [
+                            {"filename": "styles/site.css", "status": "modified", "patch": None,
+                             "sha": "e" * 40},
+                            {"filename": "src/backend.py", "status": "modified",
+                             "patch": "@@ -0,0 +1,1 @@\n+" + marker + "\n", "sha": "f" * 40},
+                        ],
+                    }, bytes_received=128)
+                if "/contents/" in path:
+                    return HttpResponse(status_code=404, body={}, bytes_received=8)
+                if path.endswith("/actions/runs"):
+                    return HttpResponse(status_code=200, body={"total_count": 0, "workflow_runs": []},
+                                         bytes_received=32)
+                raise AssertionError(f"Unexpected fake transport request: {path}")
+
+        class EmptyTasks:
+            def get_tasks(self, project_id):
+                return []
+
+            def get_evidence(self, project_id):
+                return []
+
+        class EmptyPolicies:
+            def get_policies(self, project_id):
+                return []
+
+        repository = RepositoryConfiguration(
+            id="backend", owner="example-org", repo="backend", branch="develop", commit_sha=sha,
+            quality_workflow_path=".github/workflows/quality.yml",
+        )
+        settings = Settings(
+            project_id="Hormigestion", source_mode="real", github_repositories=(repository,),
+            http_max_response_bytes=4096,
+        )
+        transport = Transport()
+        source = MultiRepoSourcesAdapter(
+            settings,
+            transport=transport,
+            task_source_factory=lambda _transport: EmptyTasks(),
+            policy_source_factory=EmptyPolicies,
+        )
+        return source, transport, marker, sha
+
+    def _collection_orchestrator(self, source_adapter, provider=None):
+        selected = provider or self.provider
+        return ProjectOrchestrator(
+            sqlite_storage=self.store,
+            artifact_storage=self.artifacts,
+            elaborador_provider=selected,
+            revisor_provider=selected,
+            verificador_provider=selected,
+            aprobador_provider=selected,
+            source_adapter=source_adapter,
+            config=OrchestratorConfig(
+                project_id="Hormigestion",
+                allow_remote_ai=True,
+                max_llm_calls_per_run=8,
+                runs_dir=str(Path(self._temp.name) / "runs"),
+                db_path=str(Path(self._temp.name) / "analysis.sqlite"),
+            ),
+        )
+
+    def test_orchestrator_persists_partial_source_receipts_records_and_provenance(self):
+        source, transport, marker, sha = self._partial_source_adapter()
+        run = self._collection_orchestrator(source).execute()
+        source_stage = run.stages["source_collection"]
+        persisted_stage = self.store.get_stage_results(run.run_id)["source_collection"]
+        source_summary = json.loads(source_stage.output_summary)
+        persisted_summary = json.loads(persisted_stage.output_summary)
+        metrics_path = Path(self._temp.name) / "runs" / run.run_id / "execution_metrics.json"
+        execution_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        metrics_summary = execution_metrics["source_collection"]
+
+        self.assertEqual(persisted_summary, source_summary)
+        self.assertEqual(metrics_summary, source_summary)
+        self.assertIsNone(source_summary["target_commit_sha"])
+        self.assertFalse(source_summary["is_complete"])
+        self.assertGreater(source_summary["budget_receipt"]["http_calls"], 0)
+        self.assertIn("files", source_summary["budget_receipt"])
+        self.assertEqual(len(source_summary["repository_results"]), 1)
+        repository = source_summary["repository_results"][0]
+        self.assertEqual(repository["repository_identity"], {
+            "id": "backend", "owner": "example-org", "repo": "backend",
+        })
+        self.assertEqual(repository["target_commit_sha"], sha)
+        self.assertFalse(repository["is_complete"])
+        self.assertIn("styles/site.css", repository["incomplete_reason"])
+        self.assertEqual(repository["budget_receipt"]["files"], 2)
+        self.assertTrue(any(record["provider"] == "github" for record in repository["records"]))
+        self.assertTrue(any(record["provider"] == "github_actions" for record in repository["records"]))
+        self.assertNotIn(marker, source_stage.output_summary)
+        self.assertNotIn("code_diffs", repository)
+        self.assertNotIn("evidence", repository)
+        record_duration = sum(record["duration_seconds"] for record in source_summary["records"])
+        record_duration += sum(record["duration_seconds"] for record in repository["records"])
+        self.assertAlmostEqual(source_stage.duration_seconds, record_duration)
+        self.assertEqual(source_stage.data_hash, compute_sha256(source_stage.output_summary))
+        self.assertTrue(any(call["path"].endswith("/actions/runs") for call in transport.calls))
+
+    def test_failure_artifacts_keep_repository_source_diagnostics(self):
+        class FailingProvider(CapturingFakeProvider):
+            def generate(self, request):
+                raise RuntimeError("controlled synthetic provider failure")
+
+        source, _transport, marker, _sha = self._partial_source_adapter()
+        run = self._collection_orchestrator(source, FailingProvider()).execute()
+        source_stage = self.store.get_stage_results(run.run_id)["source_collection"]
+        source_summary = json.loads(source_stage.output_summary)
+        metrics_path = Path(self._temp.name) / "runs" / run.run_id / "execution_metrics.json"
+        execution_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(run.status, RunStatus.failed)
+        self.assertEqual(execution_metrics["source_collection"], source_summary)
+        self.assertFalse(source_summary["is_complete"])
+        self.assertEqual(source_summary["repository_results"][0]["budget_receipt"]["files"], 2)
+        self.assertNotIn(marker, source_stage.output_summary)
+        self.assertFalse((metrics_path.parent / "report.json").exists())
 
     def test_empty_repository_results_keep_legacy_report_shape_and_human_decision(self):
         run = self._orchestrator().execute(snapshot=self._snapshot([]))

@@ -67,6 +67,8 @@ All permitted HTTP GET requests, including shared project sources, count against
 
 The file count is the number of changed paths observed in code-diff evidence. Token units use the existing serialized-context estimator (approximately three characters per token); they are **estimates**, not model token usage. Receipts expose HTTP calls, changed files, response bytes, elapsed seconds, estimated token units, and exhaustion state. If a cap stops further retrieval, available partial results stay in the result and the source records show the failure.
 
+Internal orchestrator stage summaries and `execution_metrics.json` retain project and per-repository receipts, repository identity and target SHA, source records, and completeness/reason when available. They omit source-code and evidence payloads rather than duplicating them; token estimates remain in receipts. Singleton summaries without optional receipt/repository details keep their legacy shape, and existing historical artifacts are not rewritten.
+
 ## Access gate and evidence limits
 
 `source_mode: fixtures` keeps the fixture-only path. In the analysis factory, remote sources still require `allow_remote_ai` and non-fake mode; MultiRepo remote collection also requires the existing GitHub token gate. When that gate is closed, fixture results remain unscoped and are not relabeled as evidence from configured private repositories. Operational defaults remain unchanged, including `external_writes_enabled: true` in project configuration and the API default `True`. Run tests and task analyses with `EXTERNAL_WRITES_ENABLED=false`; collection adapters expose GET only. Existing human approval, authorization, idempotency, and audit controls remain in place.
