@@ -134,6 +134,81 @@ Suite backend completa: `Ran 1105 tests ... FAILED (errors=1, skipped=1)` — 0 
 
 Frontend: `npm run typecheck` sin errores, `npm run build` correcto.
 
+## Validación controlada sobre datos reales de HORMIGESTION
+
+El E2E sintético (`g1-web-proposal-rules.spec.ts`) cubre el circuito hasta que la propuesta aparece. Para exercising decisión, sandbox, recibo y auditoría sobre **datos reales del proyecto**, existe una demostración controlada adicional.
+
+### Qué hace y qué no hace
+
+- **No** activa ninguna regla permanente: `config/hormigestion.yaml` queda intacto y el archivo de reglas vive solo en un directorio temporal.
+- **No** modifica la base del proyecto: `.runtime/agente.db` se abre con `file:...?mode=ro` (SQLite rechaza cualquier escritura en ese manejador) y la demostración comprueba además que su SHA-256 no cambia entre el inicio y el final.
+- **No** toca Trello: la ejecución usa `SandboxTaskActions`, un doble en memoria, y `EXTERNAL_WRITES_ENABLED=false` fuerza el modo `sandbox`.
+- **No** usa LLM real: el proveedor simulado determinista sustituye al modelo solo dentro del entorno de prueba.
+- **No** afirma que la prórroga sea una corrección operativa validada. El archivo de reglas lleva un marcador explícito (`DEMOSTRACION G1 - CASO DE PRUEBA, NO ES UNA CORRECCION OPERATIVA`) en el `rule_id`, la `rationale` y el `expected_impact`.
+
+### Archivos
+
+| Archivo | Papel |
+| --- | --- |
+| `tests/g1_hormigestion_demo_server.py` | Sirve la aplicación real sobre una base temporal, copiando la última captura y la evidencia de tareas reales de HORMIGESTION |
+| `frontend/e2e-backend/g1-hormigestion-demo.spec.ts` | Recorrido completo desde React |
+| `frontend/e2e-backend/playwright.g1demo.config.ts` | Configuración aislada del recorrido |
+
+### Recorrido verificado
+
+1. `/analysis` → *Preparar análisis* → el diagnóstico dice **"Reglas de propuestas cargadas"** → *Confirmar análisis* → el trabajo llega a `completed`.
+2. `/proposals` → **1 propuesta** de campo "Fecha de vencimiento".
+3. Detalle: revisión técnica **lista**, "Valor actual" y "Cambio recomendado", el enlace *Abrir tarea* apunta al identificador exacto `6a9582c16a2c16f6106609e2`, y bajo demanda la evidencia `trello-task-6a9582c16a2c16f6106609e2` con `category=task`.
+4. Antes de decidir, la API confirma `review_status=pending`, `authorization_status=not_authorized`, `execution_status=not_executed` y `execution_authorized=false`.
+5. Decisión con motivo → diálogo de confirmación → la interfaz muestra **"Resultado sandbox registrado · no acredita cambios live"**.
+6. Recibo: `execution_mode=sandbox`, `status=SIMULATED`, `result_status=EXECUTED`, `verification_status=verified`, `live_state_changed=false`, con `value_before=2026-10-19T17:00:00-05:00` y `value_observed_after=2026-10-20T17:00:00-05:00` **en el doble en memoria**.
+7. Historial: `decision_history[0].decision=approve_and_execute` con actor `gestora-g1-demo` y el motivo escrito; `latest_receipt.status=EXECUTED`. El recibo y el historial sobreviven a una recarga.
+8. Auditoría: evento `proposal_execution` con resultado `EXECUTED` y evento `security` con resultado `granted`, actor verificado y permiso `web:proposal_execute`.
+9. El SHA-256 de `.runtime/agente.db` es idéntico al inicial y el guardia de red del navegador no registra ninguna petición fuera de `127.0.0.1:4173`.
+
+Resultado observado: `1 passed (3.9s)`.
+
+## Qué falta para conectar riesgos, tareas y propuestas
+
+Diagnóstico de la fase siguiente, con la evidencia que lo sostiene.
+
+### G2 — el texto de riesgo no está atado a su tarea
+
+Hoy conviven dos cosas distintas llamadas "riesgo":
+
+- **Las deterministas**: `build_task_plan_summary` (`application/tasks_query.py:160-176`) arma cadenas de conteo ("2 tarea(s) próxima(s) a vencer…"). No llevan identificador de tarea, así que el Dashboard las muestra como una lista plana y el gestor no puede saltar a la tarea.
+- **Las narrativas del LLM**: `MonitoringDraft.risks` y `suggested_actions` (`domain/report.py:92-93`) son texto libre. El agente solo garantiza que mencione tareas en `referenced_task_ids`, pero el vínculo es paralelo, no estructural: una lista de riesgos y otra de tareas, sin correspondencia.
+
+La única estructura atada que existe hoy es `risk_task_ids` del informe (`api/control_plane.py:240-243`), y se deriva de los **cajones deterministas**, no de la narración. Por eso "riesgos de Monitoring" y "riesgos del informe" son conjuntos distintos.
+
+Falta, en concreto:
+
+1. Una entidad de riesgo tipada (`risk_id`, `kind`, `task_ids`, `severity`, `origen` determinista o narrativo) en lugar de cadenas sueltas. Ya existe el precedente que seguir: `MonitoringDraft.task_state_claims` ata un `task_id` a un estado y se valida.
+2. Que la interfaz renderice cada riesgo con sus tareas enlazadas, en lugar de una lista de frases.
+3. Una decisión explícita: si el riesgo narrativo del LLM se tipa, pasa a validarse; si no, la estructura se construye solo sobre los riesgos deterministas y la narración queda como prosa.
+
+### G3 — el riesgo y su propuesta correctiva no se reconocen entre sí
+
+`ActionProposal` (`domain/action_proposal.py:45-62`) transporta `task_id`, `field`, valores, `evidence_ids`, `rationale` y `expected_impact`, pero **ninguna referencia al riesgo** que la motivó. Su `rationale` y su `expected_impact` se copian literalmente de la regla del propietario, no del riesgo detectado. Y `suggested_actions` (texto libre) y las propuestas tipadas viven en lugares sin conexión: el Dashboard muestra unas, Propuestas muestra las otras.
+
+Falta, en concreto:
+
+1. Un identificador de riesgo que ambos extremos puedan llevar.
+2. `DomainProposalRule` con una referencia opcional al riesgo que atiende, de modo que la regla se declare "contra un riesgo" y no solo "contra una tarea".
+3. Que `monitoring_choices` pueda calcular candidatos por riesgo, no solo por tarea y campo.
+4. En la interfaz, la cadena riesgo → tarea → propuesta → decisión, con la propuesta mostrando qué riesgo responde.
+
+### Hallazgo transversal: el motivo del silencio no se muestra
+
+Cuando una regla no produce ninguna propuesta, la causa **se calcula y se persiste** en el resumen de la etapa `proposals` (por ejemplo `{"selected": 0, "saved": 0, "limitations": ["unknown_task"]}`), pero **no llega a ninguna superficie de la API**:
+
+- `api/repository.py:935` define `_RUN_STAGES = ("source_collection", "monitoring", "quality", "verifier", "report")`: la etapa `proposals` no está en la lista, así que ni siquiera aparece en `GET /runs/{run_id}/stages`.
+- Y aunque estuviera, `api/repository.py:1124-1125` descarta cualquier resumen que empiece por `{` o `[`, que es exactamente el caso del resumen JSON de esa etapa.
+
+Verificado en la demostración: con una regla que nombra una tarea no visible, la base de datos guarda `limitations: ["unknown_task"]` y el gestor ve una bandeja vacía sin ninguna explicación. Es la misma clase de vacío que G1 vino a resolver, pero del lado de la configuración de reglas: sin reglas el diagnóstico ya dice "Reglas de propuestas no configuradas"; con reglas que no encajan, el sistema calla.
+
+Este punto debería resolverse junto con G2/G3, porque es la pieza que permite entender por qué una cadena de riesgo, tarea y propuesta no se cierra.
+
 ## Qué sigue pendiente para validar el flujo desde el navegador
 
 1. **Autorizar el archivo de reglas** para `HORMIGESTION` (sin autorización no hay nada que activar).
