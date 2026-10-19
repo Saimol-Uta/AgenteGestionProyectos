@@ -50,6 +50,8 @@ from agente_gestion.api.schemas import (
     FindingDetail,
     FindingSummary,
     ProjectView,
+    ProposalsContext,
+    RiskView,
     ConfiguredRepositoryView,
     PoliciesSummary,
     RepositoryArtifactValidationView,
@@ -817,10 +819,51 @@ class SQLiteQueryRepository:
         )
         return TaskDetailResponse(
             **sanitized.model_dump(mode="python"),
+            capture_id=capture.capture_id,
             evidence=self.task_evidence(project_id, capture.snapshot.id, view.id),
             history=self.task_history(project_id, capture, view.id),
-            risks=[risk for risk in plan.risks if view.id in risk.task_ids],
+            risks=[
+                RiskView(**risk.model_dump())
+                for risk in plan.risks if view.id in risk.task_ids
+            ],
         )
+
+    def _capture_for_snapshot(self, project_id: str, snapshot_id: str | None) -> str | None:
+        if snapshot_id is None:
+            return None
+        try:
+            captures = self.captures(project_id)
+        except (LookupError, ValueError, DataIntegrityError):
+            return None
+        for capture in captures:
+            if capture.snapshot.id == snapshot_id:
+                return capture.capture_id
+        return None
+
+    def proposals_context(self, project_id: str) -> ProposalsContext | None:
+        """Persisted diagnostic of the latest proposals stage recorded for the project."""
+        try:
+            rows = self._run_rows(project_id)
+        except (LookupError, ValueError, DataIntegrityError):
+            return None
+        for row in rows:
+            run_id = safe_identifier(row.get("run_id"))
+            if run_id is None:
+                continue
+            stage = self._stage_records(run_id).get("proposals")
+            if not stage:
+                continue
+            diagnostic = proposal_stage_diagnostic(stage.get("output_summary"))
+            if diagnostic is None:
+                continue
+            return ProposalsContext(
+                run_id=run_id,
+                capture_id=self._capture_for_snapshot(
+                    project_id, safe_identifier(row.get("snapshot_id")),
+                ),
+                diagnostic=diagnostic,
+            )
+        return None
 
     def task_evidence(self, project_id: str, snapshot_id: str, task_id: str) -> list[EvidenceView]:
         run_ids: list[str] = []

@@ -37,6 +37,15 @@ class ProposalTechnicalReviewView(ApiModel):
     recorded_at: datetime
 
 
+class ProposalRiskRefView(ApiModel):
+    """The deterministic risk a proposal answers, and whether it still resolves."""
+    risk_id: str
+    kind: Literal["blocked", "overdue", "due_soon", "contradictory_state", "unknown_state"]
+    task_id: str
+    capture_id: str
+    resolved: bool
+
+
 class ProposalSummary(ApiModel):
     proposal_id: str
     project_id: str
@@ -61,6 +70,7 @@ class ProposalSummary(ApiModel):
     execution_status: Literal[
         "not_executed", "EXECUTED", "ALREADY_APPLIED", "DENIED", "CONFLICT", "FAILED", "unknown",
     ]
+    risk_refs: list[ProposalRiskRefView] = Field(default_factory=list)
 
 
 class ProposalDecisionHistoryEntry(ApiModel):

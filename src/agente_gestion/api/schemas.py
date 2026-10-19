@@ -218,10 +218,30 @@ class TaskHistoryEntry(TaskChange):
     current_capture_id: str | None = None
 
 
+class RiskProposalLink(ApiModel):
+    """One proposal that really answers a deterministic risk."""
+    risk_id: str
+    proposal_id: str
+    task_id: str
+    capture_id: str
+    field: str
+    review_status: str
+    authorization_status: str
+    execution_status: str
+    freshness: str
+    technical_status: str | None = None
+
+
+class RiskView(TaskRisk):
+    """A deterministic risk together with the proposals bound to it."""
+    proposals: list[RiskProposalLink] = Field(default_factory=list)
+
+
 class TaskDetailResponse(TaskDetailView):
+    capture_id: str
     evidence: list[EvidenceView] = Field(default_factory=list)
     history: list[TaskHistoryEntry] = Field(default_factory=list)
-    risks: list[TaskRisk] = Field(default_factory=list)
+    risks: list[RiskView] = Field(default_factory=list)
 
 
 class AuthSessionView(ApiModel):
@@ -306,6 +326,19 @@ class StageView(ApiModel):
 class RunStages(ApiModel):
     run_id: str
     items: list[StageView]
+
+
+class ProposalsContext(ApiModel):
+    """The persisted diagnostic of the latest proposals stage of a project."""
+    run_id: str
+    capture_id: str | None = None
+    diagnostic: ProposalStageDiagnostic
+
+
+class ProjectSummaryView(TaskPlanSummary):
+    """Project summary with the risks and the proposals bound to them."""
+    risks: list[RiskView] = Field(default_factory=list)
+    proposals_context: ProposalsContext | None = None
 
 
 class FindingSummary(ApiModel):

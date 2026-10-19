@@ -33,6 +33,7 @@ from agente_gestion.api.control_schemas import (
     ProposalDetail,
     ProposalEvidence,
     ProposalExecutionReceiptView,
+    ProposalRiskRefView,
     ProposalSummary,
     ProposalTechnicalReviewView,
     ProposalTechnicalDryRun,
@@ -49,6 +50,7 @@ from agente_gestion.api.control_schemas import (
     WeeklyWindowView,
 )
 from agente_gestion.api.errors import ApiProblem
+from agente_gestion.api.schemas import RiskProposalLink
 from agente_gestion.api.repository import DataIntegrityError, SQLiteQueryRepository
 from agente_gestion.api.security import (
     safe_commit_sha,
@@ -59,6 +61,7 @@ from agente_gestion.api.security import (
 from agente_gestion.api.settings import ApiSettings
 from agente_gestion.domain.action_proposal import ActionProposal
 from agente_gestion.domain.proposal_review import assess_proposal
+from agente_gestion.domain.risks import TaskRisk, build_task_risks
 from agente_gestion.domain.notification_outbox import OutboxMessage, OutboxReceipt
 from agente_gestion.domain.report import FinalReport, HumanDecisionState
 from agente_gestion.domain.run import ExecutionRun, RunStatus
@@ -460,6 +463,68 @@ class ControlPlaneRepository:
             safe.append(code if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,79}", code) else "unknown")
         return list(dict.fromkeys(safe))
 
+    def _capture_risks(self, capture) -> list[TaskRisk]:
+        """Deterministic risks of one capture, computed with the served configuration."""
+        if capture is None:
+            return []
+        return build_task_risks(
+            capture.snapshot, capture.capture_id,
+            due_soon_days=self.settings.due_soon_days,
+            timezone_name=self.settings.timezone,
+        )
+
+    def _risk_ref_views(self, proposal: ActionProposal, capture) -> list[ProposalRiskRefView]:
+        """Resolve the stored risk references against the capture they belong to."""
+        if not proposal.risk_refs:
+            return []
+        index = {(risk.kind, risk.risk_id): risk for risk in self._capture_risks(capture)}
+        views: list[ProposalRiskRefView] = []
+        for ref in proposal.risk_refs:
+            risk = index.get((ref.kind, ref.risk_id))
+            views.append(ProposalRiskRefView(
+                risk_id=ref.risk_id,
+                kind=ref.kind.value,
+                task_id=ref.task_id,
+                capture_id=ref.capture_id,
+                resolved=risk is not None and ref.task_id in risk.task_ids,
+            ))
+        return views
+
+    def risk_proposal_links(self, project_id: str, capture_id: str) -> list[RiskProposalLink]:
+        """Proposals of one project that really answer a risk of that capture."""
+        storage = self._read_storage()
+        if storage is None:
+            return []
+        try:
+            proposals = storage.list_action_proposals(project_id)
+        except (sqlite3.Error, ValueError, DataIntegrityError):
+            return []
+        links: list[RiskProposalLink] = []
+        for proposal, evidence in proposals:
+            if proposal.observed_capture_id != capture_id or not proposal.risk_refs:
+                continue
+            try:
+                summary = self._proposal_data(project_id, proposal, evidence, storage)["summary"]
+            except (ValueError, DataIntegrityError, LookupError):
+                summary = None
+            for ref in proposal.risk_refs:
+                links.append(RiskProposalLink(
+                    risk_id=ref.risk_id,
+                    proposal_id=proposal.proposal_id,
+                    task_id=ref.task_id,
+                    capture_id=ref.capture_id,
+                    field=proposal.field,
+                    review_status=summary.review_status if summary else "unknown",
+                    authorization_status=summary.authorization_status if summary else "unknown",
+                    execution_status=summary.execution_status if summary else "unknown",
+                    freshness=summary.freshness if summary else "unknown",
+                    technical_status=(
+                        summary.technical_review.technical_status
+                        if summary is not None and summary.technical_review else None
+                    ),
+                ))
+        return links
+
     def _proposal_data(self, project_id: str, proposal: ActionProposal, evidence_items, storage):
         with self._connect() as connection:
             tables = self._tables(connection)
@@ -545,6 +610,7 @@ class ControlPlaneRepository:
                 review_status=review_status,
                 authorization_status=authorization_status,
                 execution_status=execution_status,
+                risk_refs=self._risk_ref_views(proposal, capture),
             ),
             "projection": projection,
             "digest": digest,

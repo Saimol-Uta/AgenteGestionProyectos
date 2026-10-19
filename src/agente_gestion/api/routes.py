@@ -46,8 +46,10 @@ from agente_gestion.api.schemas import (
     PrepareAnalysisRequest,
     ProjectBoundConfirmAnalysisRequest,
     ProjectBoundPrepareAnalysisRequest,
+    ProjectSummaryView,
     ProjectView,
     QualitySummary,
+    RiskView,
     RunDetail,
     RunStages,
     RunSummary,
@@ -292,16 +294,39 @@ def get_project(
         _raise_lookup(exc)
 
 
-@router.get("/projects/{project_id}/summary", response_model=TaskPlanSummary, tags=["Proyectos"])
+def _risk_views(risks, links) -> list[RiskView]:
+    """Attach to every risk the proposals of this project that really answer it."""
+    views: list[RiskView] = []
+    for risk in risks:
+        payload = risk.model_dump()
+        payload.pop("proposals", None)
+        views.append(RiskView(
+            **payload,
+            proposals=[link for link in links if link.risk_id == risk.risk_id],
+        ))
+    return views
+
+
+@router.get("/projects/{project_id}/summary", response_model=ProjectSummaryView, tags=["Proyectos"])
 def project_summary(
     request: Request,
     project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
     capture_id: Annotated[str | None, Query(pattern=_ID, max_length=128)] = None,
-) -> TaskPlanSummary:
+) -> ProjectSummaryView:
     repository = _repository(request)
     try:
         capture = repository.selected_capture(project_id, capture_id)
-        return repository.summary(capture)
+        summary = repository.summary(capture)
+        links = request.app.state.control_plane.risk_proposal_links(
+            project_id, capture.capture_id,
+        )
+        payload = summary.model_dump()
+        payload.pop("risks", None)
+        return ProjectSummaryView(
+            **payload,
+            risks=_risk_views(summary.risks, links),
+            proposals_context=repository.proposals_context(project_id),
+        )
     except LookupError as exc:
         _raise_lookup(exc)
 
@@ -356,7 +381,11 @@ def get_task(
     capture_id: Annotated[str | None, Query(pattern=_ID, max_length=128)] = None,
 ) -> TaskDetailResponse:
     try:
-        return _repository(request).task_detail(project_id, task_id, capture_id)
+        detail = _repository(request).task_detail(project_id, task_id, capture_id)
+        links = request.app.state.control_plane.risk_proposal_links(
+            project_id, detail.capture_id,
+        )
+        return detail.model_copy(update={"risks": _risk_views(detail.risks, links)})
     except LookupError as exc:
         _raise_lookup(exc)
 
