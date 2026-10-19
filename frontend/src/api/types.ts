@@ -113,6 +113,8 @@ export interface TaskDetailView {
   list_id?: string | null;
   list_name?: string | null;
   assignee_ids: string[];
+  /** Visible name of each responsible member, keyed by the member identifier. */
+  assignee_names?: Record<string, string>;
   start_date?: string | null;
   due_date?: string | null;
   due_complete?: boolean | null;

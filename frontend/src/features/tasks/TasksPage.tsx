@@ -20,7 +20,6 @@ import type {
   TaskDetailView, TaskQuery, TaskRisk,
 } from "../../api/types";
 import { useWorkspace } from "../../app/WorkspaceContext";
-import { RiskProposalLinks } from "../../components/RiskProposalLinks";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 
 const pageSize = 25;
@@ -75,6 +74,12 @@ function TaskSignalPills({ task, compact }: { task: TaskDetailView; compact?: bo
       ))}
     </>
   );
+}
+
+/** Whether the origin resolved the visible name of at least one responsible member. */
+function hasResolvedAssigneeName(task: TaskDetailView) {
+  const names = task.assignee_names ?? {};
+  return (task.assignee_ids ?? []).some((id) => Boolean(names[id]));
 }
 
 /** Responsible person of a task, never inventing a name the origin does not report. */
@@ -203,7 +208,7 @@ function TaskDetailDialog({
                   <div><dt>Prioridad</dt><dd>{priorityDisplay(task)}</dd></div>
                   <div><dt>Incluida en el avance</dt><dd>{task.is_included ? "Sí" : "No"}</dd></div>
                 </dl>
-                {hasAssignees(task) && (
+                {hasAssignees(task) && !hasResolvedAssigneeName(task) && (
                   <p className="field-help">
                     El origen solo informa identificadores de miembro; los nombres de los responsables no están disponibles en esta fuente.
                   </p>
@@ -214,7 +219,7 @@ function TaskDetailDialog({
                 {task.detail && <p className="task-description">{task.detail}</p>}
               </section>
 
-              <RiskSection task={task} diagnostic={diagnostic} onSelectTask={onSelectTask} />
+              <RiskSection task={task} onSelectTask={onSelectTask} />
               <CorrectiveActionsSection task={task} diagnostic={diagnostic} />
               <DependencySection task={task} />
               <EvidenceSection task={task} captureCount={captures.length} />
@@ -310,15 +315,12 @@ function AffectedTasks({
 /** Alerts of one task, explained in plain language with the observed condition and its date. */
 function RiskSection({
   task,
-  diagnostic,
   onSelectTask,
 }: {
   task: TaskDetailResponse;
-  diagnostic?: ProposalStageDiagnostic | null;
   onSelectTask: (taskId: string) => void;
 }) {
   const risks = task.risks ?? [];
-  const captureId = task.capture_id ?? null;
   return (
     <section className="detail-section">
       <div className="detail-section-heading">
@@ -348,7 +350,6 @@ function RiskSection({
               </dl>
               <p className="field-help">Trazabilidad: captura {risk.capture_id} · identificación {risk.risk_id}</p>
               <AffectedTasks risk={risk} currentTaskId={task.id} onSelectTask={onSelectTask} />
-              <RiskProposalLinks risk={risk} captureId={captureId} diagnostic={diagnostic} />
             </li>
           ))}
         </ul>
@@ -374,6 +375,7 @@ function CorrectiveActionsSection({
   diagnostic?: ProposalStageDiagnostic | null;
 }) {
   const risks = task.risks ?? [];
+  const captureId = task.capture_id ?? null;
   const entries = risks.flatMap((risk) =>
     (risk.proposals ?? []).map((proposal) => ({ risk, proposal })));
   const unknown = risks.filter((risk) => risk.proposals === undefined);
@@ -398,21 +400,28 @@ function CorrectiveActionsSection({
         </div>
       ) : (
         <ul className="risk-proposal-links">
-          {entries.map(({ risk, proposal }) => (
-            <li key={proposal.proposal_id} className="risk-proposal-link">
-              <Link to={`/proposals?proposal_id=${encodeURIComponent(proposal.proposal_id)}`}>
-                {proposal.proposal_id}
-              </Link>
-              <span className="risk-proposal-field">{fieldLabel(proposal.field)}</span>
-              <Pill tone={riskKindTone(risk.kind)}>{riskKindLabel(risk.kind)}</Pill>
-              <Pill tone={proposalStatusTone(proposal.review_status)}>{proposalReviewStatusLabel(proposal.review_status)}</Pill>
-              <Pill tone={proposalStatusTone(proposal.execution_status)}>{proposalExecutionStatusLabel(proposal.execution_status)}</Pill>
-              <Pill tone={proposalStatusTone(proposal.technical_status)}>{proposalTechnicalStatusLabel(proposal.technical_status)}</Pill>
-              <span className="risk-proposal-meta">
-                Vigencia {proposalFreshnessLabel(proposal.freshness).toLocaleLowerCase("es-EC")} · {proposalAuthorizationStatusLabel(proposal.authorization_status)}
-              </span>
-            </li>
-          ))}
+          {entries.map(({ risk, proposal }) => {
+            const historical = Boolean(
+              captureId && proposal.capture_id && proposal.capture_id !== captureId,
+            );
+            return (
+              <li key={proposal.proposal_id} className="risk-proposal-link">
+                <Link to={`/proposals?proposal_id=${encodeURIComponent(proposal.proposal_id)}`}>
+                  {proposal.proposal_id}
+                </Link>
+                <span className="risk-proposal-field">{fieldLabel(proposal.field)}</span>
+                <Pill tone={riskKindTone(risk.kind)}>{riskKindLabel(risk.kind)}</Pill>
+                <span className="risk-proposal-meta">Responde a: {risk.basis}</span>
+                <Pill tone={proposalStatusTone(proposal.review_status)}>{proposalReviewStatusLabel(proposal.review_status)}</Pill>
+                <Pill tone={proposalStatusTone(proposal.execution_status)}>{proposalExecutionStatusLabel(proposal.execution_status)}</Pill>
+                <Pill tone={proposalStatusTone(proposal.technical_status)}>{proposalTechnicalStatusLabel(proposal.technical_status)}</Pill>
+                <span className="risk-proposal-meta">
+                  Vigencia {proposalFreshnessLabel(proposal.freshness).toLocaleLowerCase("es-EC")} · {proposalAuthorizationStatusLabel(proposal.authorization_status)}
+                </span>
+                {historical && <Pill tone="unknown">Histórica</Pill>}
+              </li>
+            );
+          })}
         </ul>
       )}
       {unknown.length > 0 && (

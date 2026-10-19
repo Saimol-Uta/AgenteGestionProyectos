@@ -195,6 +195,7 @@ export function fieldLabel(field: string | null | undefined): string {
 /** Shape of the task fields the manager-facing helpers read. */
 export interface ObservableTask {
   assignee_ids?: string[] | null;
+  assignee_names?: Record<string, string> | null;
   priority?: string | null;
   observed_fields?: string[] | null;
 }
@@ -211,8 +212,12 @@ export function wasObserved(task: ObservableTask, field: string): boolean {
  */
 export function assigneeDisplay(task: ObservableTask): string {
   const assignees = task.assignee_ids ?? [];
-  if (assignees.length > 0) return "Nombre no disponible";
-  return wasObserved(task, "assignee_ids") ? "Sin asignar" : "No observado";
+  if (assignees.length === 0) {
+    return wasObserved(task, "assignee_ids") ? "Sin asignar" : "No observado";
+  }
+  const names = task.assignee_names ?? {};
+  const labels = assignees.map((id) => names[id] ?? "Nombre no disponible");
+  return [...new Set(labels)].join(", ");
 }
 
 /** Whether the task has at least one responsible person reported by the source. */
