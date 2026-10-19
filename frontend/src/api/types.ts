@@ -550,6 +550,7 @@ export interface AnalysisPreparation {
     source_mode: string;
     configuration_status: "ready" | "incomplete" | "unknown";
     checks: PreflightCheck[];
+    proposal_rules_status?: "configured" | "not_configured" | "invalid";
   };
   remote: {
     required: boolean;

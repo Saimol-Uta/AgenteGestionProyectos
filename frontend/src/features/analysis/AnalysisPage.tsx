@@ -61,6 +61,22 @@ function preflightCheckLabel(code: string) {
   return labels[code] ?? "Verificación adicional";
 }
 
+function proposalRulesLabel(status: string | undefined) {
+  if (status === "configured") return "Reglas de propuestas cargadas";
+  if (status === "invalid") return "Reglas de propuestas no válidas";
+  return "Reglas de propuestas no configuradas";
+}
+
+function proposalRulesHint(status: string | undefined) {
+  if (status === "configured") {
+    return "El análisis puede publicar propuestas correctivas a partir de las reglas del propietario.";
+  }
+  if (status === "invalid") {
+    return "El archivo de reglas no se pudo validar; el análisis continúa sin publicar propuestas.";
+  }
+  return "Sin reglas no se publicarán propuestas; el análisis continúa normalmente.";
+}
+
 function transportLabel(transport: string) {
   if (transport === "remote") return "Servicios en la nube";
   if (transport === "local") return "Procesamiento local";
@@ -261,6 +277,7 @@ export function AnalysisPage() {
               <div><dt>Proyecto</dt><dd>{preparation.project_id}</dd></div>
               <div><dt>Fuentes del proyecto</dt><dd>{providerNameLabel(preparation.preflight.source_mode)}</dd></div>
               <div><dt>Revisión de configuración</dt><dd>{preflightStatusLabel(preparation.preflight.configuration_status)}</dd></div>
+              <div><dt>{proposalRulesLabel(preparation.preflight.proposal_rules_status)}</dt><dd>{proposalRulesHint(preparation.preflight.proposal_rules_status)}</dd></div>
               <div><dt>Preparación válida hasta</dt><dd>{formatDate(preparation.expires_at, true)}</dd></div>
             </dl>
             {preparation.execution_mode && <p className="section-subtitle" role="status">Modo de ejecución: {analysisExecutionModeLabel(preparation.execution_mode)}</p>}
