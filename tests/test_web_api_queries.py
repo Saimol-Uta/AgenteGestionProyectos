@@ -186,6 +186,9 @@ class WebApiQueryTests(unittest.TestCase):
         policies = self.client.get(f"/api/v1/projects/{PROJECT_ID}/policies").json()
         self.assertEqual([item["rule_id"] for item in policies["items"]], ["Q1", "Q2", "Q3"])
         self.assertEqual({item["status"] for item in policies["items"]}, {"pass", "fail", "unknown"})
+        policies_by_run = self.client.get(f"/api/v1/projects/{PROJECT_ID}/policies?run_id={RUN_ID}").json()
+        self.assertEqual(policies_by_run["run_id"], RUN_ID)
+        self.assertEqual(len(policies_by_run["items"]), 3)
 
         executive = self.client.get(
             f"/api/v1/projects/{PROJECT_ID}/executive-summary",

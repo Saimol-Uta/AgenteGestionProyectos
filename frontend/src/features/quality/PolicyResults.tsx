@@ -18,15 +18,27 @@ export function PolicyResults({ availability, items }: { availability: "availabl
 
   return (
     <ul className="policy-result-chart" aria-label="Resultados de políticas evaluadas">
-      {items.map((policy) => (
-        <li key={policy.rule_id} className={`policy-result policy-result-${policy.status}`}>
-          <span className="policy-result-rule"><strong>{policy.rule_id}</strong><span>{policy.description}</span></span>
-          <span className="policy-result-status"><Pill tone={policyTone(policy.status)}>{policyStatusLabel(policy.status)}</Pill><code>{policy.status}</code></span>
-          <span className="policy-result-value">Observado: {policy.observed_value === null ? "Sin dato" : typeof policy.observed_value === "boolean" ? policy.observed_value ? "Sí" : "No" : String(policy.observed_value)}</span>
-          <span className="policy-result-mandatory">{policy.mandatory ? "Obligatoria" : "Opcional"}</span>
-          {policy.reason && <p>{policy.reason}</p>}
-        </li>
-      ))}
+      {items.map((policy) => {
+        const itemKey = `${policy.repository_id ?? "global"}:${policy.rule_id}`;
+        return (
+          <li key={itemKey} className={`policy-result policy-result-${policy.status}`}>
+            <span className="policy-result-rule">
+              <strong>{policy.rule_id}</strong>
+              {policy.repository_id && <Pill tone="neutral">Repo: {policy.repository_id}</Pill>}
+              <span>{policy.description}</span>
+            </span>
+            <span className="policy-result-status">
+              <Pill tone={policyTone(policy.status)}>{policyStatusLabel(policy.status)}</Pill>
+              <code>{policy.status}</code>
+            </span>
+            <span className="policy-result-value">
+              Observado: {policy.observed_value === null ? "Sin dato" : typeof policy.observed_value === "boolean" ? (policy.observed_value ? "Sí" : "No") : String(policy.observed_value)}
+            </span>
+            <span className="policy-result-mandatory">{policy.mandatory ? "Obligatoria" : "Opcional"}</span>
+            {policy.reason && <p>{policy.reason}</p>}
+          </li>
+        );
+      })}
     </ul>
   );
 }

@@ -2045,7 +2045,7 @@ class SQLiteQueryRepository:
             redacted=cleaned != original,
         )
 
-    def _report_for_project(self, project_id: str) -> tuple[FinalReport, str, str | None] | None:
+    def _report_for_project(self, project_id: str, run_id: str | None = None) -> tuple[FinalReport, str, str | None] | None:
         with self._connect() as connection:
             if connection is None or "reports" not in self._tables(connection):
                 return None
@@ -2053,11 +2053,18 @@ class SQLiteQueryRepository:
             required = {"data_json", "report_id", "run_id", "created_at", "project_id"}
             if not required.issubset(columns):
                 return None
-            row = connection.execute(
-                "SELECT data_json, report_id, run_id FROM reports WHERE project_id = ? "
-                "ORDER BY created_at DESC, report_id DESC LIMIT 1",
-                (project_id,),
-            ).fetchone()
+            if run_id:
+                row = connection.execute(
+                    "SELECT data_json, report_id, run_id FROM reports WHERE project_id = ? AND run_id = ? "
+                    "ORDER BY created_at DESC, report_id DESC LIMIT 1",
+                    (project_id, run_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT data_json, report_id, run_id FROM reports WHERE project_id = ? "
+                    "ORDER BY created_at DESC, report_id DESC LIMIT 1",
+                    (project_id,),
+                ).fetchone()
         if row is None:
             return None
         try:
@@ -2066,19 +2073,19 @@ class SQLiteQueryRepository:
             raise DataIntegrityError("Stored report data is invalid") from None
         report_id = safe_identifier(row["report_id"])
         raw_run_id = row["run_id"]
-        run_id = safe_identifier(raw_run_id) if raw_run_id else None
+        safe_run_id = safe_identifier(raw_run_id) if raw_run_id else None
         if (report_id is None or report.project_id != project_id
-                or (raw_run_id is not None and run_id is None)
-                or (report.run_id and report.run_id != run_id)):
+                or (raw_run_id is not None and safe_run_id is None)
+                or (report.run_id and report.run_id != safe_run_id)):
             raise DataIntegrityError("Stored report association is inconsistent")
-        return report, report_id, run_id
+        return report, report_id, safe_run_id
 
-    def policies_summary(self, project_id: str) -> PoliciesSummary:
+    def policies_summary(self, project_id: str, run_id: str | None = None) -> PoliciesSummary:
         self._ensure_project(project_id)
-        stored = self._report_for_project(project_id)
+        stored = self._report_for_project(project_id, run_id=run_id)
         if stored is None:
-            return PoliciesSummary(project_id=project_id, run_id=None, availability="unknown", items=[])
-        report, _report_id, run_id = stored
+            return PoliciesSummary(project_id=project_id, run_id=run_id, availability="unknown", items=[])
+        report, _report_id, matched_run_id = stored
         items: list[PolicyResult] = []
         for evaluation in report.policy_evaluations.evaluations:
             rule_id = safe_identifier(evaluation.rule_id)
@@ -2101,10 +2108,42 @@ class SQLiteQueryRepository:
                 reason=sanitize_text(evaluation.reason,
                                      secrets_to_redact=self._configured_secrets(), limit=1000)
                 if evaluation.reason is not None else None,
+                repository_id=None,
             ))
+        if report.repository_results:
+            for repo_res in report.repository_results:
+                repo_id = (
+                    repo_res.repository_state.identity.id
+                    if repo_res.repository_state and repo_res.repository_state.identity
+                    else None
+                )
+                if repo_res.policy_evaluations and repo_res.policy_evaluations.evaluations:
+                    for pe in repo_res.policy_evaluations.evaluations:
+                        rid = safe_identifier(pe.rule_id)
+                        if rid is None:
+                            continue
+                        st_val = pe.status.value if hasattr(pe.status, "value") else str(pe.status)
+                        st = st_val if st_val in {m.value for m in RuleEvaluationStatus} else "unknown"
+                        obs = pe.observed_value
+                        if not isinstance(obs, (str, int, float, bool, type(None))):
+                            obs = None
+                        if isinstance(obs, str):
+                            obs = sanitize_text(obs, secrets_to_redact=self._configured_secrets(), limit=500)
+                        items.append(PolicyResult(
+                            rule_id=rid,
+                            description=sanitize_text(pe.description,
+                                                      secrets_to_redact=self._configured_secrets(), limit=500) or "",
+                            status=st,
+                            mandatory=bool(pe.mandatory),
+                            observed_value=obs,
+                            reason=sanitize_text(pe.reason,
+                                                 secrets_to_redact=self._configured_secrets(), limit=1000)
+                            if pe.reason is not None else None,
+                            repository_id=repo_id,
+                        ))
         return PoliciesSummary(
             project_id=project_id,
-            run_id=run_id,
+            run_id=matched_run_id,
             availability="available" if items else "unknown",
             items=items,
         )

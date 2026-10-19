@@ -11,13 +11,14 @@ from agente_gestion.api.repository import DataIntegrityError, SQLiteQueryReposit
 from agente_gestion.api.routes import _require_project_capability, _require_session
 from agente_gestion.api.schemas import FindingDecisionRequest, FindingDecisionResponse
 from agente_gestion.application.finding_decisions import FindingDecisionError, FindingDecisionService
+from agente_gestion.api.security import FINDING_IDENTIFIER_PATTERN
 from agente_gestion.api.settings import IDENTIFIER_PATTERN
 from agente_gestion.domain.code_action import FindingActionOrigin
 
 
 router = APIRouter(prefix="/api/v1")
 _ID = IDENTIFIER_PATTERN.pattern
-_FINDING_ID = r"^[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+_FINDING_ID = FINDING_IDENTIFIER_PATTERN.pattern
 
 
 def _same_repository_name(left: str | None, right: str | None) -> bool:

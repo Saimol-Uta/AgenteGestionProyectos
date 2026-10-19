@@ -290,7 +290,7 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             self.addCleanup(client.close)
             public_client = TestClient(client.app, raise_server_exceptions=False)
             self.addCleanup(public_client.close)
-            malformed_id = "frontend::f-fake-1"
+            malformed_id = "frontend:::f-fake-1"
             before_database = (root / "actions.sqlite").read_bytes()
             before_findings = storage.get_findings(RUN_ID)
             before_audit = storage.list_security_audit_events(PROJECT_ID)

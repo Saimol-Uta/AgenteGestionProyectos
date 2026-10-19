@@ -137,10 +137,10 @@ export function useQuality(projectId: string | null) {
   });
 }
 
-export function usePolicies(projectId: string | null) {
+export function usePolicies(projectId: string | null, runId?: string | null) {
   return useQuery({
-    queryKey: queryKeys.policies(projectId ?? ""),
-    queryFn: () => api.getPolicies(projectId!),
+    queryKey: runId ? [...queryKeys.policies(projectId ?? ""), runId] : queryKeys.policies(projectId ?? ""),
+    queryFn: () => api.getPolicies(projectId!, runId),
     enabled: Boolean(projectId),
     staleTime: 30_000,
   });

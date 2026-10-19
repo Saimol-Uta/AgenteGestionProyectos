@@ -216,8 +216,8 @@ export const api = {
     request<ExecutiveSummary>(`/projects/${encodeURIComponent(projectId)}/executive-summary`),
   getQuality: (projectId: string) =>
     request<QualitySummary>(`/projects/${encodeURIComponent(projectId)}/quality`),
-  getPolicies: (projectId: string) =>
-    request<PoliciesSummary>(`/projects/${encodeURIComponent(projectId)}/policies`),
+  getPolicies: (projectId: string, runId?: string | null) =>
+    request<PoliciesSummary>(`/projects/${encodeURIComponent(projectId)}/policies${query({ run_id: runId ?? undefined })}`),
   getRuns: (projectId: string, page = 1, pageSize = 25) =>
     request<Paginated<RunSummary>>(`/runs${query({ project_id: projectId, page, page_size: pageSize })}`),
   getRun: (runId: string) => request<RunDetail>(`/runs/${encodeURIComponent(runId)}`),

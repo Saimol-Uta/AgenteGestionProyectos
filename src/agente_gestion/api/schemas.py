@@ -433,6 +433,7 @@ class PolicyResult(ApiModel):
     mandatory: bool
     observed_value: str | float | int | bool | None = None
     reason: str | None = None
+    repository_id: str | None = None
 
 
 class PoliciesSummary(ApiModel):

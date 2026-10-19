@@ -460,9 +460,10 @@ def project_quality(
 def project_policies(
     request: Request,
     project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
+    run_id: Annotated[str | None, Query(pattern=_ID, max_length=128)] = None,
 ) -> PoliciesSummary:
     try:
-        return _repository(request).policies_summary(project_id)
+        return _repository(request).policies_summary(project_id, run_id=run_id)
     except LookupError as exc:
         _raise_lookup(exc)
 

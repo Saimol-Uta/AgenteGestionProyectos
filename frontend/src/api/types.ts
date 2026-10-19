@@ -469,6 +469,7 @@ export interface PolicyResult {
   mandatory: boolean;
   observed_value: string | number | boolean | null;
   reason: string | null;
+  repository_id?: string | null;
 }
 
 export interface PoliciesSummary {

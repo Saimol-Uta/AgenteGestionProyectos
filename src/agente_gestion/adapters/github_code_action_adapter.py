@@ -370,7 +370,7 @@ class GitHubCodeActionAdapter(CodeActionPort):
             raise CodeActionError("rama_destino_invalida", "La rama destino debe ser distinta de la rama base.", 422)
         file_path = self._validate_file_path(file_path)
         if (not isinstance(finding_id, str) or len(finding_id) > 128
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)*", finding_id)):
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?::{1,2}[A-Za-z0-9][A-Za-z0-9._-]*)*", finding_id)):
             raise CodeActionError("hallazgo_invalido", "El identificador del hallazgo no es válido.", 422)
         if not isinstance(actor, str) or not actor.strip() or _CONTROL.search(actor):
             raise CodeActionError("actor_invalido", "El actor de la decisión no es válido.", 422)

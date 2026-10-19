@@ -333,7 +333,7 @@ export function QualityPage() {
   const canReadRepositoryHistory = Boolean(session?.authenticated && session.capabilities.includes("audit:read"));
   const repositoryResultsQuery = useRepositoryResults(project?.id ?? null, {}, 1, 100, runId ?? undefined, canReadRepositoryHistory);
   const qualityQuery = useQuality(project?.id ?? null);
-  const policiesQuery = usePolicies(project?.id ?? null);
+  const policiesQuery = usePolicies(project?.id ?? null, runId);
   const knownRepositoryOptions = useMemo(() => {
     const options = new Map<string, string>();
     for (const repository of repositoryResultsQuery.data?.repositories ?? []) {
