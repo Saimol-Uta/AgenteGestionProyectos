@@ -122,6 +122,9 @@ export function ProposalDecisionTrail({
                   {(event.execution_mode || event.execution_status || event.verification_status) && (
                     <p>Resultado: {event.execution_status ? executionStatusLabel(event.execution_status) : "Estado desconocido"} · {modeLabel(event.execution_mode)} · {verificationLabel(event.verification_status)}</p>
                   )}
+                  {event.audit_event_id && (
+                    <p><Link to={`/audit?event_id=${encodeURIComponent(event.audit_event_id)}`}>Ver evento en Auditoría</Link></p>
+                  )}
                   <details className="proposal-raw-audit-details">
                     <summary>Identificadores y referencias técnicas</summary>
                     <dl><div><dt>Evento</dt><dd><code>{event.event_id}</code></dd></div><div><dt>Propuesta</dt><dd><code>{event.proposal_id}</code></dd></div>

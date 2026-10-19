@@ -191,28 +191,75 @@ class Phase2DemoSeedTests(unittest.TestCase):
                 "Idempotency-Key": "fixture-seed-approve-001",
             }
             approval_path = f"/api/v1/runs/{current_run_id}/findings/{finding_id}/decision"
-            approved = client.post(approval_path, headers=headers, json=payload)
-            self.assertEqual(approved.status_code, 200, approved.text)
-            result = approved.json()
-            self.assertEqual(result["decision_status"], "approved")
-            self.assertEqual(result["execution_mode"], "sandbox")
-            self.assertEqual(result["branch_name"], branch)
-            self.assertEqual(len(result["commit_sha_applied"]), 64)
-            self.assertTrue(result["branch_url"].startswith("sandbox://branches/"))
+            finding_path = f"/api/v1/runs/{current_run_id}/findings/{finding_id}"
+            report_path = f"/api/v1/projects/{PROJECT_ID}/reports/{REPORT_ID}"
+            audit_path = f"/api/v1/projects/{PROJECT_ID}/audit"
+            finding_before = client.get(finding_path).json()
+            report_before = client.get(report_path).json()
+            audit_before_response = client.get(audit_path, params={"page_size": 100})
+            self.assertEqual(audit_before_response.status_code, 200, audit_before_response.text)
+            audit_before = audit_before_response.json()
+            self.assertEqual(finding_before["decision_status"], "pending")
+
+            class RecordingActionPort:
+                def __init__(self):
+                    self.calls = []
+
+                def create_verification_branch(self, **kwargs):
+                    self.calls.append(kwargs)
+                    raise AssertionError("Blocked approval must not call the GitHub action port.")
+
+            action_port = RecordingActionPort()
+            client.app.state.code_action_port = action_port
+            denied = client.post(approval_path, headers=headers, json=payload)
+            self.assertEqual(denied.status_code, 409, denied.text)
+            self.assertEqual(
+                denied.json()["error"]["code"],
+                "revision_independiente_requerida",
+            )
+
+            finding_after = client.get(finding_path).json()
+            report_after = client.get(report_path).json()
+            self.assertEqual(finding_after, finding_before)
+            self.assertEqual(finding_after["decision_status"], "pending")
+            self.assertIsNone(finding_after["branch_name"])
+            self.assertIsNone(finding_after["branch_url"])
+            audit_after_denial = client.get(audit_path, params={"page_size": 100})
+            self.assertEqual(audit_after_denial.status_code, 200, audit_after_denial.text)
+            self.assertEqual(audit_after_denial.json(), audit_before)
+            self.assertEqual(report_after, report_before)
+            self.assertEqual(action_port.calls, [])
+
+            rejected = client.post(
+                approval_path,
+                headers=headers,
+                json={"decision": "reject", "reason": "No aprobar sin revisión independiente."},
+            )
+            self.assertEqual(rejected.status_code, 200, rejected.text)
+            result = rejected.json()
+            self.assertEqual(result["decision_status"], "rejected")
+            self.assertIsNone(result["branch_name"])
+            self.assertIsNone(result["branch_url"])
+
+            finding_after_rejection = client.get(finding_path).json()
+            report_after_rejection = client.get(report_path).json()
+            self.assertEqual(finding_after_rejection["decision_status"], "rejected")
+            self.assertIsNone(finding_after_rejection["branch_name"])
+            self.assertIsNone(finding_after_rejection["branch_url"])
+            self.assertEqual(report_after_rejection, report_before)
+            self.assertEqual(action_port.calls, [])
 
             artifact = (
                 branches_dir / "quality" / "fixture-seed-approval" / "src" / "metrics.py"
             )
-            self.assertTrue(artifact.is_file())
-            patched_source = artifact.read_text(encoding="utf-8")
-            self.assertEqual(patched_source.count("return 1 / total"), 0)
-            self.assertEqual(patched_source.count("return 0 if total == 0 else 1 / total"), 1)
-
-            replay = client.post(approval_path, headers=headers, json=payload)
-            self.assertEqual(replay.status_code, 200, replay.text)
-            self.assertTrue(replay.json()["reused"])
-            self.assertEqual(replay.json()["audit_event_id"], result["audit_event_id"])
-            self.assertEqual(artifact.read_text(encoding="utf-8"), patched_source)
+            self.assertFalse(branches_dir.exists())
+            self.assertFalse(artifact.exists())
+            audit_after_rejection = client.get(audit_path, params={"page_size": 100})
+            self.assertEqual(audit_after_rejection.status_code, 200, audit_after_rejection.text)
+            self.assertIn(
+                result["audit_event_id"],
+                {item["event_id"] for item in audit_after_rejection.json()["items"]},
+            )
 
 
 if __name__ == "__main__":
