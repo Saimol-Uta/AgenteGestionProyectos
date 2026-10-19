@@ -42,7 +42,7 @@ import type {
   SystemHealth,
   TaskDetailResponse,
   TaskDetailView,
-  TaskPlanSummary,
+  ProjectSummaryView,
   TaskQuery,
   TaskSnapshotComparison,
   WeeklyCycleConfirmResponse,
@@ -184,7 +184,7 @@ export const api = {
       })}`,
     ),
   getSummary: (projectId: string, captureId?: string) =>
-    request<TaskPlanSummary>(
+    request<ProjectSummaryView>(
       `/projects/${encodeURIComponent(projectId)}/summary${query({ capture_id: captureId })}`,
     ),
   getTasks: (projectId: string, filters: TaskQuery) =>

@@ -42,6 +42,10 @@ export interface TaskRisk {
   basis: string;
   source: "deterministic";
   proposals?: RiskProposalLink[];
+  /** Readable title of each affected task, resolved against the same capture. */
+  task_titles?: Record<string, string>;
+  /** Reference date of the capture the risk was computed against. */
+  cutoff_datetime?: string | null;
 }
 
 /** Reference to the deterministic risk that motivated a proposal. */
@@ -76,13 +80,12 @@ export interface TaskPlanSummary {
   contradictory_task_ids: string[];
   identified_risks: string[];
   risks?: TaskRisk[];
-  proposals_context?: ProposalsContext | null;
 }
 
 /** Context of the proposals stage that produced the proposals linked to the risks of a capture. */
 export interface ProposalsContext {
   run_id: string;
-  capture_id: string;
+  capture_id: string | null;
   diagnostic: ProposalStageDiagnostic;
 }
 

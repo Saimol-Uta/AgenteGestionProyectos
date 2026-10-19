@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { formatDate } from "../api/formatters";
+import { formatDate, proposalExecutionStatusLabel } from "../api/formatters";
 import type { ProposalDetail, ProposalExecutionReceipt } from "../api/types";
 import { Pill } from "./States";
 
@@ -15,19 +15,6 @@ function decisionLabel(decision: string) {
     unknown: "Decisión desconocida",
   };
   return labels[decision] ?? "Decisión desconocida";
-}
-
-function executionStatusLabel(status: string) {
-  const labels: Record<string, string> = {
-    not_executed: "Sin ejecución registrada",
-    EXECUTED: "Ejecución registrada",
-    ALREADY_APPLIED: "El backend informa que ya estaba aplicado",
-    DENIED: "Denegada por el backend",
-    CONFLICT: "Conflicto informado por el backend",
-    FAILED: "Fallida según el backend",
-    unknown: "Estado de ejecución desconocido",
-  };
-  return labels[status] ?? "Estado de ejecución desconocido";
 }
 
 function modeLabel(mode: ProposalExecutionReceipt["execution_mode"]) {
@@ -82,7 +69,7 @@ export function ProposalDecisionTrail({
       </div>
       {!receiptKnown && (
         <div className="proposal-receipt-state unknown-note" role="status">
-          <strong>{executionStatusLabel(proposal.execution_status)}</strong>
+          <strong>{proposalExecutionStatusLabel(proposal.execution_status)}</strong>
           <p>El recibo no está disponible o su historial es desconocido. No se infiere una ejecución exitosa ni su modo.</p>
         </div>
       )}
@@ -96,7 +83,7 @@ export function ProposalDecisionTrail({
         <div className="proposal-receipt-state">
           <div className="proposal-receipt-title">
             <Pill tone={receipt.status === "FAILED" || receipt.status === "DENIED" || receipt.status === "CONFLICT" ? "danger" : !["EXECUTED", "ALREADY_APPLIED"].includes(receipt.status) || (receipt.execution_mode !== "live" && receipt.execution_mode !== "sandbox") || receipt.verification_status !== "verified" ? "unknown" : "neutral"}>
-              {executionStatusLabel(receipt.status)}
+              {proposalExecutionStatusLabel(receipt.status)}
             </Pill>
             <span>{modeLabel(receipt.execution_mode)}</span>
           </div>
@@ -120,7 +107,7 @@ export function ProposalDecisionTrail({
                   <p>{event.reason ?? "No hay motivo disponible."}</p>
                   <p>Actor: {event.actor_id ?? "Desconocido"} · {event.actor_verification === "verified_local_session" ? "sesión verificada" : event.actor_verification === "asserted_offline" ? "registro offline" : "verificación desconocida"}</p>
                   {(event.execution_mode || event.execution_status || event.verification_status) && (
-                    <p>Resultado: {event.execution_status ? executionStatusLabel(event.execution_status) : "Estado desconocido"} · {modeLabel(event.execution_mode)} · {verificationLabel(event.verification_status)}</p>
+                    <p>Resultado: {event.execution_status ? proposalExecutionStatusLabel(event.execution_status) : "Estado desconocido"} · {modeLabel(event.execution_mode)} · {verificationLabel(event.verification_status)}</p>
                   )}
                   {event.audit_event_id && (
                     <p><Link to={`/audit?event_id=${encodeURIComponent(event.audit_event_id)}`}>Ver evento en Auditoría</Link></p>

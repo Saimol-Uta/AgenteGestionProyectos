@@ -5,16 +5,15 @@ import {
   AlertTriangle, ArrowDown, ArrowUp, CalendarClock, ChevronLeft, ChevronRight,
   CircleHelp, Clock3, ExternalLink, Filter, ListFilter, Search, ShieldAlert, X,
 } from "lucide-react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { queryKeys, useCaptureHistory, useProject, useProjects } from "../../api/queries";
 import {
-  comparisonValue, fieldLabel, formatDate, proposalAuthorizationStatusLabel, proposalExecutionStatusLabel,
-  proposalFreshnessLabel, proposalReviewStatusLabel, proposalStatusTone, proposalTechnicalStatusLabel,
-  riskKindLabel, riskKindTone, taskStateLabel, taskStateTone,
+  comparisonValue, fieldLabel, formatDate, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone,
 } from "../../api/formatters";
-import type { DomainTaskState, TaskChange, TaskDetailResponse, TaskQuery, TaskRisk } from "../../api/types";
+import type { DomainTaskState, TaskChange, TaskDetailResponse, TaskQuery } from "../../api/types";
 import { useWorkspace } from "../../app/WorkspaceContext";
+import { RiskProposalLinks } from "../../components/RiskProposalLinks";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 
 const pageSize = 25;
@@ -216,53 +215,6 @@ function TaskDetailDialog({
   );
 }
 
-/**
- * Proposals that a deterministic risk actually motivated. A linked proposal is never presented
- * as proof that the risk disappeared: the risk stays vigente until a later capture proves otherwise.
- */
-function RiskProposalLinks({ risk, captureId }: { risk: TaskRisk; captureId: string | null }) {
-  const proposals = risk.proposals;
-
-  if (proposals === undefined) {
-    return (
-      <div className="risk-proposals">
-        <p className="risk-proposals-unknown">La respuesta del backend no informa si este riesgo tiene propuestas vinculadas.</p>
-      </div>
-    );
-  }
-
-  if (proposals.length === 0) {
-    return (
-      <div className="risk-proposals">
-        <p className="risk-proposals-empty">No hay una propuesta vinculada a este riesgo</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="risk-proposals">
-      <p className="risk-item-tasks">Propuestas vinculadas ({proposals.length}):</p>
-      <ul className="risk-proposal-links">
-        {proposals.map((proposal) => {
-          const historical = Boolean(captureId && proposal.capture_id && proposal.capture_id !== captureId);
-          return (
-            <li key={proposal.proposal_id} className="risk-proposal-link">
-              <Link to={`/proposals?proposal_id=${encodeURIComponent(proposal.proposal_id)}`}>{proposal.proposal_id}</Link>
-              <span className="risk-proposal-field">{fieldLabel(proposal.field)}</span>
-              <Pill tone={proposalStatusTone(proposal.review_status)}>{proposalReviewStatusLabel(proposal.review_status)}</Pill>
-              <Pill tone={proposalStatusTone(proposal.execution_status)}>{proposalExecutionStatusLabel(proposal.execution_status)}</Pill>
-              <Pill tone={proposalStatusTone(proposal.technical_status)}>{proposalTechnicalStatusLabel(proposal.technical_status)}</Pill>
-              <span className="risk-proposal-meta">
-                Vigencia {proposalFreshnessLabel(proposal.freshness).toLocaleLowerCase("es-EC")} · {proposalAuthorizationStatusLabel(proposal.authorization_status)}
-              </span>
-              {historical && <Pill tone="unknown">Histórica</Pill>}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
 
 function RiskSection({ task, onSelectTask }: { task: TaskDetailResponse; onSelectTask: (taskId: string) => void }) {
   const risks = task.risks ?? [];

@@ -12,14 +12,12 @@ import {
 import { api } from "../../api/client";
 import { queryKeys, useCaptureHistory, useProject, useProjectSummary, useProjects } from "../../api/queries";
 import {
-  fieldLabel, formatDate, formatPercentage, proposalAuthorizationStatusLabel, proposalExecutionStatusLabel,
-  proposalFreshnessLabel, proposalOutcomeExplanation, proposalOutcomeLabel, proposalOutcomeTone,
-  proposalReviewStatusLabel, proposalStatusTone, proposalTechnicalStatusLabel, riskKindLabel, riskKindTone,
-  taskStateLabel, taskStateTone,
+  formatDate, formatPercentage, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone,
 } from "../../api/formatters";
 import { useWorkspace } from "../../app/WorkspaceContext";
+import { RiskProposalLinks } from "../../components/RiskProposalLinks";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
-import type { DomainTaskState, ProposalStageDiagnostic, TaskDetailView, TaskPlanSummary, TaskQuery, TaskRisk } from "../../api/types";
+import type { DomainTaskState, TaskDetailView, TaskPlanSummary, TaskQuery } from "../../api/types";
 import { DecisionCenter } from "../manager/DecisionCenter";
 import { ExecutiveInsights } from "./ExecutiveInsights";
 
@@ -238,67 +236,6 @@ function shortCaptureDate(value: string) {
   }).format(date);
 }
 
-/**
- * Proposals that a deterministic risk actually motivated. A linked proposal is never presented
- * as proof that the risk disappeared: the risk stays vigente until a later capture proves otherwise.
- */
-function RiskProposalLinks({
-  risk,
-  captureId,
-  diagnostic,
-}: {
-  risk: TaskRisk;
-  captureId: string | null;
-  diagnostic?: ProposalStageDiagnostic | null;
-}) {
-  const proposals = risk.proposals;
-
-  if (proposals === undefined) {
-    return (
-      <div className="risk-proposals">
-        <p className="risk-proposals-unknown">La respuesta del backend no informa si este riesgo tiene propuestas vinculadas.</p>
-      </div>
-    );
-  }
-
-  if (proposals.length === 0) {
-    return (
-      <div className="risk-proposals">
-        <p className="risk-proposals-empty">No hay una propuesta vinculada a este riesgo</p>
-        {diagnostic && (
-          <div className="risk-proposals-diagnostic">
-            <Pill tone={proposalOutcomeTone(diagnostic.outcome)}>{proposalOutcomeLabel(diagnostic.outcome)}</Pill>
-            <p>{proposalOutcomeExplanation(diagnostic)}</p>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="risk-proposals">
-      <p className="risk-item-tasks">Propuestas vinculadas ({proposals.length}):</p>
-      <ul className="risk-proposal-links">
-        {proposals.map((proposal) => {
-          const historical = Boolean(captureId && proposal.capture_id && proposal.capture_id !== captureId);
-          return (
-            <li key={proposal.proposal_id} className="risk-proposal-link">
-              <Link to={`/proposals?proposal_id=${encodeURIComponent(proposal.proposal_id)}`}>{proposal.proposal_id}</Link>
-              <span className="risk-proposal-field">{fieldLabel(proposal.field)}</span>
-              <Pill tone={proposalStatusTone(proposal.review_status)}>{proposalReviewStatusLabel(proposal.review_status)}</Pill>
-              <Pill tone={proposalStatusTone(proposal.execution_status)}>{proposalExecutionStatusLabel(proposal.execution_status)}</Pill>
-              <Pill tone={proposalStatusTone(proposal.technical_status)}>{proposalTechnicalStatusLabel(proposal.technical_status)}</Pill>
-              <span className="risk-proposal-meta">
-                Vigencia {proposalFreshnessLabel(proposal.freshness).toLocaleLowerCase("es-EC")} · {proposalAuthorizationStatusLabel(proposal.authorization_status)}
-              </span>
-              {historical && <Pill tone="unknown">Histórica</Pill>}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
 
 function CaptureCharts({ captures }: { captures: Array<{ captured_at: string; summary: TaskPlanSummary }> }) {
   if (captures.length === 0) {
