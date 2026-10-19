@@ -419,6 +419,26 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .proposal-list-risk-state { color: var(--text-muted); font-size: .75rem; }
 .proposal-list-risk-extra { color: var(--text-muted); font-size: .75rem; }
 
+.alert-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 16px; margin: 4px 0 0; }
+.alert-facts > div:last-child { grid-column: 1 / -1; }
+.alert-facts dt { color: var(--text-muted); font-size: 9px; }
+.alert-facts dd { margin: 3px 0 0; color: var(--text-secondary); font-size: 10px; font-weight: 550; overflow-wrap: anywhere; }
+.affected-tasks { display: flex; flex-direction: column; gap: 4px; }
+.affected-tasks .risk-task-links button { font-size: 9px; }
+.evidence-groups { display: flex; flex-direction: column; gap: 9px; margin: 12px 0 0; padding: 0; list-style: none; }
+.evidence-group { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.evidence-group-head { display: flex; flex-direction: column; gap: 4px; }
+.evidence-group-head strong { color: var(--text-secondary); font-size: 10px; font-weight: 600; }
+.evidence-group-head > span:not(.evidence-source) { color: var(--text-muted); font-size: 9px; }
+.evidence-verified { display: flex; flex-direction: column; gap: 6px; }
+.evidence-verified-title { margin: 0; color: var(--text-muted); font-size: 9px; }
+.evidence-history > summary { color: var(--accent); font-size: 9px; cursor: pointer; }
+.evidence-timeline { display: flex; flex-direction: column; gap: 6px; margin: 7px 0 0; padding-left: 16px; }
+.evidence-timeline li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; color: var(--text-muted); font-size: 9px; }
+.evidence-timeline code { color: var(--text-faint); font-size: 8px; }
+.technical-section > summary { color: var(--text-secondary); font-size: 10px; font-weight: 600; cursor: pointer; }
+.task-planned-dates { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; color: var(--text-muted); font-size: 9px; }
+.task-due-date { display: block; }
 .task-link-button { padding: 0; color: var(--accent); border: 0; background: transparent; font-size: 9px; text-decoration: underline; cursor: pointer; }
 .proposal-empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 
@@ -574,8 +594,8 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .detail-grid dt { color: var(--text-muted); font-size: 9px; }
 .detail-grid dd { margin: 3px 0 0; color: var(--text-secondary); font-size: 10px; font-weight: 550; overflow-wrap: anywhere; }
 .task-description { margin: 14px 0 0; padding: 11px; color: var(--text-secondary); border-radius: 8px; background: var(--surface-soft); font-size: 10px; white-space: pre-wrap; }
-.observed-fields, .unknown-note { display: flex; align-items: flex-start; gap: 7px; margin: 13px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.6; }
-.observed-fields svg, .unknown-note svg { flex: 0 0 auto; color: var(--warning); }
+.unknown-note { display: flex; align-items: flex-start; gap: 7px; margin: 13px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.6; }
+.unknown-note svg { flex: 0 0 auto; color: var(--warning); }
 .evidence-list, .change-list, .visual-diff-list, .dependency-list, .dependency-impact-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .dependency-list { margin-top: 10px; }
 .dependency-list li { padding: 7px 9px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); font-size: 9px; }
@@ -689,6 +709,8 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
   .dashboard-page, .tasks-page, .content-section { gap: 14px; }
   .metric-grid { gap: 8px; }
   .executive-summary-grid { grid-template-columns: 1fr; }
+  .alert-facts { grid-template-columns: 1fr; }
+  .alert-facts > div:last-child { grid-column: auto; }
   .latest-analysis-card { grid-template-columns: minmax(0, 1fr) auto; }
   .latest-analysis-card .text-link { grid-column: 1 / -1; }
   .metric-card { min-height: 72px; padding: 8px 10px; }

@@ -184,8 +184,56 @@ export function fieldLabel(field: string | null | undefined): string {
     labels: "Etiquetas",
     is_included: "Incluida en el avance",
     has_contradiction: "Señales contradictorias",
+    detail: "Descripción de la tarjeta",
+    is_archived: "Tarjeta archivada",
+    last_activity_at: "Última actividad en Trello",
+    id: "Identificador de la tarea",
   };
   return labels[field] ?? field;
+}
+
+/** Shape of the task fields the manager-facing helpers read. */
+export interface ObservableTask {
+  assignee_ids?: string[] | null;
+  priority?: string | null;
+  observed_fields?: string[] | null;
+}
+
+/** Whether the source reported the given field for this task. */
+export function wasObserved(task: ObservableTask, field: string): boolean {
+  return task.observed_fields?.includes(field) ?? false;
+}
+
+/**
+ * Responsible person of a task. The origin only exposes member identifiers, never member
+ * names, so the three honest states are kept apart: unassigned, not observed, and
+ * assigned-but-name-unavailable. No name is ever invented.
+ */
+export function assigneeDisplay(task: ObservableTask): string {
+  const assignees = task.assignee_ids ?? [];
+  if (assignees.length > 0) return "Nombre no disponible";
+  return wasObserved(task, "assignee_ids") ? "Sin asignar" : "No observado";
+}
+
+/** Whether the task has at least one responsible person reported by the source. */
+export function hasAssignees(task: ObservableTask): boolean {
+  return (task.assignee_ids ?? []).length > 0;
+}
+
+/**
+ * Priority of a task. Trello only reports a priority when the card carries one or when a
+ * priority label map is configured, so an absent priority is declared instead of guessed.
+ */
+export function priorityDisplay(task: ObservableTask): string {
+  if (task.priority) return task.priority;
+  return wasObserved(task, "priority") ? "Sin prioridad especificada" : "No disponible en la fuente";
+}
+
+/** Explanation that accompanies an absent priority, so the manager knows why it is absent. */
+export function priorityUnavailableReason(task: ObservableTask): string | null {
+  if (task.priority) return null;
+  if (wasObserved(task, "priority")) return null;
+  return "La fuente no informa prioridad para esta tarea y el tablero no tiene un mapa de etiquetas de prioridad configurado.";
 }
 
 export function comparisonValue(value: unknown, field?: string | null): string {

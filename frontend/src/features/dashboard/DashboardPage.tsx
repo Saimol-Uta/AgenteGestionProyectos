@@ -12,7 +12,7 @@ import {
 import { api } from "../../api/client";
 import { queryKeys, useCaptureHistory, useProject, useProjectSummary, useProjects } from "../../api/queries";
 import {
-  formatDate, formatPercentage, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone,
+  assigneeDisplay, formatDate, formatPercentage, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone,
 } from "../../api/formatters";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { RiskProposalLinks } from "../../components/RiskProposalLinks";
@@ -73,7 +73,7 @@ function metricsFor(summary: TaskPlanSummary, criticalCount: number | null, crit
     { label: "Vencidas", value: reportedCount(summary.overdue_count), caption: "Al corte de esta captura", icon: CalendarClock, href: "/tasks?overdue_only=true", tone: "red" },
     { label: "Próximas a vencer", value: reportedCount(summary.due_soon_count), caption: "Ventana definida por el backend", icon: AlertCircle, href: "/tasks?due_soon_only=true", tone: "amber" },
     { label: "Bloqueadas", value: reportedCount(summary.blocked_count), caption: "Estado reportado por el backend", icon: ShieldAlert, href: "/tasks?state=bloqueada", tone: "amber" },
-    { label: "Actividades críticas", value: criticalCount, caption: criticalFailed ? "No disponible; consulta el detalle para reintentar" : "Total filtrado por la API; puede coincidir con otras alertas", icon: ShieldAlert, href: "/tasks?critical_only=true", tone: "red", loading: criticalLoading },
+    { label: "Requieren atención", value: criticalCount, caption: criticalFailed ? "No disponible; consulta el detalle para reintentar" : "Con al menos una señal: vencida, próxima a vencer, bloqueada o contradictoria", icon: ShieldAlert, href: "/tasks?critical_only=true", tone: "red", loading: criticalLoading },
     { label: "Estado desconocido", value: reportedCount(summary.unknown_count), caption: "Sin mapeo o evidencia suficiente", icon: CircleHelp, href: "/tasks?state=desconocido", tone: "slate" },
   ];
 }
@@ -139,12 +139,13 @@ function StateDistributionChart({ summary }: { summary: TaskPlanSummary }) {
   );
 }
 
-function CriticalSignalsChart({ summary, criticalCount }: { summary: TaskPlanSummary; criticalCount: number | null }) {
+function CriticalSignalsChart({ summary }: { summary: TaskPlanSummary }) {
   const reportedSignals = [
     { key: "overdue", label: "Vencidas", value: summary.overdue_count, color: "var(--danger)" },
-    { key: "due-soon", label: "Próximas", value: summary.due_soon_count, color: "var(--warning)" },
+    { key: "due-soon", label: "Próximas a vencer", value: summary.due_soon_count, color: "var(--warning)" },
     { key: "blocked", label: "Bloqueadas", value: summary.blocked_count, color: "var(--chart-secondary)" },
-    ...(criticalCount === null ? [] : [{ key: "critical", label: "Críticas", value: criticalCount, color: "var(--chart-primary)" }]),
+    { key: "contradictory", label: "Contradictorias", value: summary.contradictory_count, color: "var(--chart-primary)" },
+    { key: "unknown", label: "Estado desconocido", value: summary.unknown_count, color: "var(--text-muted)" },
   ];
   const data = reportedSignals.flatMap((signal) => {
     const value = reportedCount(signal.value);
@@ -152,12 +153,12 @@ function CriticalSignalsChart({ summary, criticalCount }: { summary: TaskPlanSum
   });
 
   if (data.length === 0) {
-    return <EmptyState title="Señales críticas no disponibles" message="El resumen y el filtro de tareas no proporcionaron conteos utilizables." />;
+    return <EmptyState title="Señales de alerta no disponibles" message="El resumen no proporcionó conteos utilizables por tipo de señal." />;
   }
 
   return (
     <>
-      <div className="chart-frame" role="img" aria-label="Señales de actividad crítica por categoría">
+      <div className="chart-frame" role="img" aria-label="Señales de alerta por tipo">
         <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={170} initialDimension={{ width: 600, height: 185 }}>
           <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -14 }}>
             <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 5" vertical={false} />
@@ -174,7 +175,7 @@ function CriticalSignalsChart({ summary, criticalCount }: { summary: TaskPlanSum
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <ul className="chart-data-list" aria-label="Conteos de señales críticas reportados por la API">
+      <ul className="chart-data-list" aria-label="Conteos de señales de alerta reportados por la API">
         {data.map((signal) => (
           <li key={signal.key}>
             <span><i className="chart-data-marker" style={{ backgroundColor: signal.color }} />{signal.label}</span>
@@ -201,10 +202,10 @@ function CriticalTaskList({
   errorMessage?: string;
   onRetry: () => void;
 }) {
-  if (loading) return <LoadingState label="Consultando tareas críticas en la API…" />;
-  if (failed) return <ErrorState title="No se pudieron cargar las tareas críticas" message={errorMessage ?? "La API no entregó esta consulta."} onRetry={onRetry} />;
-  if (total === 0) return <EmptyState title="Sin tareas críticas reportadas" message="El filtro de criticidad de la API no devolvió registros en esta captura." />;
-  if (total === null) return <EmptyState title="Tareas críticas no disponibles" message="No se interpreta una respuesta ausente como cero." />;
+  if (loading) return <LoadingState label="Consultando las tareas que requieren atención…" />;
+  if (failed) return <ErrorState title="No se pudieron cargar las tareas que requieren atención" message={errorMessage ?? "La API no entregó esta consulta."} onRetry={onRetry} />;
+  if (total === 0) return <EmptyState title="Sin tareas que requieran atención" message="El filtro de señales de la API no devolvió registros en esta captura." />;
+  if (total === null) return <EmptyState title="Tareas que requieren atención no disponibles" message="No se interpreta una respuesta ausente como cero." />;
 
   return (
     <ul className="critical-task-list">
@@ -215,12 +216,13 @@ function CriticalTaskList({
             <span className="critical-task-meta">
               <Pill tone={taskStateTone(task.state)}>{taskStateLabel(task.state)}</Pill>
               <span>{task.due_date ? `Vence ${formatDate(task.due_date)}` : "Fecha límite sin dato"}</span>
+              <span>{assigneeDisplay(task)}</span>
             </span>
           </Link>
         </li>
       ))}
       <li className="critical-task-footer">
-        <Link to="/tasks?critical_only=true">Ver las {numberFormatter.format(total)} tareas críticas reportadas <ArrowRight aria-hidden="true" size={14} /></Link>
+        <Link to="/tasks?critical_only=true">Ver las {numberFormatter.format(total)} tareas que requieren atención <ArrowRight aria-hidden="true" size={14} /></Link>
       </li>
     </ul>
   );
@@ -396,7 +398,7 @@ export function DashboardPage() {
             <div className="section-heading">
               <div>
                 <p className="eyebrow">ESTADOS Y ALERTAS</p>
-                <h2 id="signals-heading">Distribución y señales críticas</h2>
+                <h2 id="signals-heading">Distribución y señales de alerta</h2>
                 <p className="section-subtitle">Conteos leídos de la captura y filtros del backend; no se recalculan en el navegador.</p>
               </div>
             </div>
@@ -410,19 +412,16 @@ export function DashboardPage() {
               </article>
               <article className="chart-card">
                 <div className="chart-heading">
-                  <div><h3>Actividad crítica</h3><p>Conteos de vencimiento, plazo, bloqueo y criticidad.</p></div>
+                  <div><h3>Señales de alerta</h3><p>Conteos por tipo de señal. Una tarea puede tener más de una.</p></div>
                   <Pill tone="warning">Categorías solapadas</Pill>
                 </div>
-                <CriticalSignalsChart
-                  summary={summaryQuery.data}
-                  criticalCount={criticalTasksQuery.isError ? null : reportedCount(criticalTasksQuery.data?.total)}
-                />
+                <CriticalSignalsChart summary={summaryQuery.data} />
                 <p className="signal-overlap-note">Las categorías de alerta se solapan; no deben sumarse como un total.</p>
               </article>
             </div>
             <div className="critical-activity-list">
               <div className="chart-heading">
-                <div><h3>Tareas críticas reportadas</h3><p>Registros devueltos por el filtro de criticidad de la API.</p></div>
+                <div><h3>Tareas que requieren atención</h3><p>Registros devueltos por el filtro de señales de la API.</p></div>
                 <Link className="text-link" to="/tasks?critical_only=true">Abrir filtro <ArrowRight aria-hidden="true" size={14} /></Link>
               </div>
               <CriticalTaskList
@@ -447,7 +446,7 @@ export function DashboardPage() {
             <div className="shortcut-list">
               <Link to="/tasks?overdue_only=true" className="shortcut-link"><CalendarClock aria-hidden="true" size={16} /> Tareas vencidas <ArrowRight aria-hidden="true" size={14} /></Link>
               <Link to="/tasks?due_soon_only=true" className="shortcut-link"><AlertCircle aria-hidden="true" size={16} /> Próximas a vencer <ArrowRight aria-hidden="true" size={14} /></Link>
-              <Link to="/tasks?critical_only=true" className="shortcut-link"><ShieldAlert aria-hidden="true" size={16} /> Tareas críticas <ArrowRight aria-hidden="true" size={14} /></Link>
+              <Link to="/tasks?critical_only=true" className="shortcut-link"><ShieldAlert aria-hidden="true" size={16} /> Tareas con alertas <ArrowRight aria-hidden="true" size={14} /></Link>
               <Link to="/tasks?state=desconocido" className="shortcut-link"><CircleSlash2 aria-hidden="true" size={16} /> Estado desconocido <ArrowRight aria-hidden="true" size={14} /></Link>
             </div>
           </section>
@@ -486,24 +485,29 @@ export function DashboardPage() {
           {captureRisks.length > 0 && (
             <section className="panel risks-panel" aria-labelledby="risks-heading">
               <div className="section-heading compact-heading">
-                <div><p className="eyebrow">RESUMEN DE PLANIFICACIÓN</p><h2 id="risks-heading">Riesgos de la captura</h2></div>
+                <div><p className="eyebrow">RESUMEN DE PLANIFICACIÓN</p><h2 id="risks-heading">Alertas de la captura</h2></div>
                 <Pill tone="warning">{captureRisks.length} informados</Pill>
               </div>
               <p className="section-subtitle">
-                Clasificación determinista calculada sobre la captura. Las observaciones narrativas del análisis no se presentan como riesgos confirmados.
+                Alertas de la tarea calculadas sobre la captura actual. Las observaciones narrativas del análisis no se presentan como alertas confirmadas.
               </p>
               <ul className="risk-list">
                 {captureRisks.map((risk) => (
                   <li key={risk.risk_id} className="risk-item">
                     <div className="risk-item-head">
                       <Pill tone={riskKindTone(risk.kind)}>{riskKindLabel(risk.kind)}</Pill>
-                      <span className="risk-item-basis">{risk.basis}</span>
+                      <span className="risk-item-basis">{risk.summary}</span>
                     </div>
+                    <p className="risk-item-basis">
+                      Fecha de referencia: {risk.cutoff_datetime ? formatDate(risk.cutoff_datetime, true) : "No disponible"} · {risk.basis}
+                    </p>
                     <p className="risk-item-tasks">Tareas afectadas ({risk.task_count}):</p>
                     <ul className="risk-task-links">
                       {risk.task_ids.map((taskId) => (
                         <li key={taskId}>
-                          <Link to={`/tasks?task=${encodeURIComponent(taskId)}`}>{taskId}</Link>
+                          <Link to={`/tasks?task=${encodeURIComponent(taskId)}`}>
+                            {risk.task_titles?.[taskId] || taskId}
+                          </Link>
                         </li>
                       ))}
                     </ul>

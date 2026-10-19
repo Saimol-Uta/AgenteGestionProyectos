@@ -3,15 +3,22 @@ import { useQuery } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertTriangle, ArrowDown, ArrowUp, CalendarClock, ChevronLeft, ChevronRight,
-  CircleHelp, Clock3, ExternalLink, Filter, ListFilter, Search, ShieldAlert, X,
+  CircleHelp, Clock3, ExternalLink, Filter, ListFilter, Search, ShieldAlert, Wrench, X,
 } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
-import { queryKeys, useCaptureHistory, useProject, useProjects } from "../../api/queries";
+import { queryKeys, useCaptureHistory, useProject, useProjectSummary, useProjects } from "../../api/queries";
 import {
-  comparisonValue, fieldLabel, formatDate, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone,
+  assigneeDisplay, comparisonValue, fieldLabel, formatDate, hasAssignees, priorityDisplay,
+  priorityUnavailableReason, proposalAuthorizationStatusLabel, proposalExecutionStatusLabel,
+  proposalFreshnessLabel, proposalOutcomeExplanation, proposalOutcomeLabel, proposalOutcomeTone,
+  proposalReviewStatusLabel, proposalStatusTone, proposalTechnicalStatusLabel, riskKindLabel,
+  riskKindTone, taskStateLabel, taskStateTone, wasObserved,
 } from "../../api/formatters";
-import type { DomainTaskState, TaskChange, TaskDetailResponse, TaskQuery } from "../../api/types";
+import type {
+  DomainTaskState, EvidenceItem, ProposalStageDiagnostic, TaskChange, TaskDetailResponse,
+  TaskDetailView, TaskQuery, TaskRisk,
+} from "../../api/types";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { RiskProposalLinks } from "../../components/RiskProposalLinks";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
@@ -19,23 +26,73 @@ import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/Sta
 const pageSize = 25;
 const domainStates: DomainTaskState[] = ["pending", "en_curso", "completada", "bloqueada", "desconocido"];
 
-function wasObserved(task: TaskDetailResponse, field: string) {
-  return task.observed_fields?.includes(field) ?? false;
-}
-
 function observedDate(task: TaskDetailResponse, field: string, value: string | null | undefined) {
   if (value) return formatDate(value, true);
   return wasObserved(task, field) ? "Sin fecha registrada" : "No observada";
 }
 
-function observedAssignees(task: TaskDetailResponse) {
-  if (task.assignee_ids.length) return task.assignee_ids.join(", ");
-  return wasObserved(task, "assignee_ids") ? "Sin asignación registrada" : "No observado";
+/**
+ * Signals the manager can act on. Every one of them is backed by an observed fact of the
+ * capture, so a task that is merely due soon never carries an extra severity of its own.
+ */
+function taskSignals(task: TaskDetailView) {
+  const signals: Array<{
+    key: string;
+    label: string;
+    short: string;
+    tone: "danger" | "warning" | "unknown";
+    icon: typeof CalendarClock;
+  }> = [];
+  if (task.is_overdue) {
+    signals.push({ key: "overdue", label: "Vencida", short: "Vencida", tone: "danger", icon: CalendarClock });
+  }
+  if (task.is_due_soon) {
+    signals.push({ key: "due-soon", label: "Próxima a vencer", short: "Próxima", tone: "warning", icon: Clock3 });
+  }
+  if (task.state === "bloqueada") {
+    signals.push({ key: "blocked", label: "Bloqueada", short: "Bloqueada", tone: "danger", icon: ShieldAlert });
+  }
+  if (task.has_contradiction) {
+    signals.push({ key: "contradiction", label: "Señales contradictorias", short: "Contradicción", tone: "warning", icon: AlertTriangle });
+  }
+  if (task.state === "desconocido") {
+    signals.push({ key: "unknown", label: "Estado desconocido", short: "Desconocido", tone: "unknown", icon: CircleHelp });
+  }
+  return signals;
 }
 
-function observedPriority(task: TaskDetailResponse) {
-  if (task.priority !== null && task.priority !== undefined) return task.priority;
-  return wasObserved(task, "priority") ? "Sin prioridad especificada" : "Prioridad desconocida";
+function TaskSignalPills({ task, compact }: { task: TaskDetailView; compact?: boolean }) {
+  const signals = taskSignals(task);
+  if (signals.length === 0) {
+    return <span className="text-muted">Sin alertas informadas</span>;
+  }
+  return (
+    <>
+      {signals.map((signal) => (
+        <Pill key={signal.key} tone={signal.tone}>
+          <signal.icon aria-hidden="true" size={compact ? 12 : 13} /> {compact ? signal.short : signal.label}
+        </Pill>
+      ))}
+    </>
+  );
+}
+
+/** Responsible person of a task, never inventing a name the origin does not report. */
+function responsibleDisplay(task: TaskDetailView) {
+  const label = assigneeDisplay(task);
+  return label === "Sin asignar" ? label : <span className="text-muted">{label}</span>;
+}
+
+/** Planned dates of a pending task, shown as dates and never as remaining effort. */
+function plannedDates(task: TaskDetailView) {
+  if (task.state !== "pending" || (!task.start_date && !task.due_date)) return null;
+  return (
+    <span className="task-planned-dates">
+      {task.start_date && <span>Inicio {formatDate(task.start_date)}</span>}
+      {task.start_date && task.due_date && <span aria-hidden="true">·</span>}
+      {task.due_date && <span>Vence {formatDate(task.due_date)}</span>}
+    </span>
+  );
 }
 
 function queryState(value: string | null): DomainTaskState | undefined {
@@ -66,12 +123,14 @@ function TaskDetailDialog({
   projectId,
   taskId,
   captureId,
+  diagnostic,
   onSelectTask,
   onClose,
 }: {
   projectId: string;
   taskId: string | null;
   captureId?: string;
+  diagnostic?: ProposalStageDiagnostic | null;
   onSelectTask: (taskId: string) => void;
   onClose: () => void;
 }) {
@@ -87,7 +146,7 @@ function TaskDetailDialog({
   const captures = useMemo(() => [...(historyQuery.data?.items ?? [])].sort((left, right) => {
     return new Date(left.captured_at).getTime() - new Date(right.captured_at).getTime();
   }), [historyQuery.data?.items]);
-  const previousDefault = captures[0]?.capture_id ?? "";
+  const previousDefault = captures.at(-2)?.capture_id ?? captures[0]?.capture_id ?? "";
   const currentDefault = captures.at(-1)?.capture_id ?? "";
   const before = beforeId || previousDefault;
   const after = afterId || currentDefault;
@@ -131,50 +190,46 @@ function TaskDetailDialog({
             <div className="drawer-content-scroll">
               <div className="task-status-row">
                 <Pill tone={taskStateTone(task.state)}>{taskStateLabel(task.state)}</Pill>
-                {task.is_critical && <Pill tone="warning"><ShieldAlert aria-hidden="true" size={13} /> Crítica según el backend</Pill>}
-                {task.is_overdue && <Pill tone="danger"><CalendarClock aria-hidden="true" size={13} /> Vencida</Pill>}
-                {task.is_due_soon && <Pill tone="warning"><Clock3 aria-hidden="true" size={13} /> Próxima a vencer</Pill>}
-                {task.has_contradiction && <Pill tone="warning"><AlertTriangle aria-hidden="true" size={13} /> Señales contradictorias</Pill>}
+                <TaskSignalPills task={task} />
               </div>
 
               <section className="detail-section">
                 <h3>Datos observados</h3>
                 <dl className="detail-grid">
                   <div><dt>Fase o lista</dt><dd>{task.list_name ?? (wasObserved(task, "list_name") ? "Sin fase registrada" : "No observada")}</dd></div>
-                  <div><dt>Responsables (ID)</dt><dd>{observedAssignees(task)}</dd></div>
-                  <div><dt>Inicio</dt><dd>{observedDate(task, "start_date", task.start_date)}</dd></div>
-                  <div><dt>Vencimiento</dt><dd>{observedDate(task, "due_date", task.due_date)}</dd></div>
-                  <div><dt>Prioridad explícita</dt><dd>{observedPriority(task)}</dd></div>
+                  <div><dt>Responsable</dt><dd>{assigneeDisplay(task)}</dd></div>
+                  <div><dt>Inicio planificado</dt><dd>{observedDate(task, "start_date", task.start_date)}</dd></div>
+                  <div><dt>Vencimiento planificado</dt><dd>{observedDate(task, "due_date", task.due_date)}</dd></div>
+                  <div><dt>Prioridad</dt><dd>{priorityDisplay(task)}</dd></div>
                   <div><dt>Incluida en el avance</dt><dd>{task.is_included ? "Sí" : "No"}</dd></div>
                 </dl>
+                {hasAssignees(task) && (
+                  <p className="field-help">
+                    El origen solo informa identificadores de miembro; los nombres de los responsables no están disponibles en esta fuente.
+                  </p>
+                )}
+                {priorityUnavailableReason(task) && (
+                  <p className="field-help">{priorityUnavailableReason(task)}</p>
+                )}
                 {task.detail && <p className="task-description">{task.detail}</p>}
-                <div className="observed-fields">
-                  <CircleHelp aria-hidden="true" size={15} />
-                  <span>
-                    {task.observed_fields === null || task.observed_fields === undefined
-                      ? "El registro no especifica qué campos fueron observados."
-                      : task.observed_fields.length
-                        ? `Campos informados: ${task.observed_fields.map(fieldLabel).join(", ")}.`
-                        : "No se informaron campos observados."}
-                  </span>
-                </div>
               </section>
 
-              <RiskSection task={task} onSelectTask={onSelectTask} />
+              <RiskSection task={task} diagnostic={diagnostic} onSelectTask={onSelectTask} />
+              <CorrectiveActionsSection task={task} diagnostic={diagnostic} />
               <DependencySection task={task} />
-              <EvidenceSection task={task} />
+              <EvidenceSection task={task} captureCount={captures.length} />
               <TaskHistorySection history={taskChanges} />
 
               <section className="detail-section comparison-section">
                 <div className="detail-section-heading">
-                  <div><h3>Comparación de capturas</h3><p>Visualiza cambios respaldados por dos capturas históricas.</p></div>
+                  <div><h3>Cambios desde la última observación</h3><p>Compara la última captura con la anterior y muestra solo diferencias verificadas.</p></div>
                   <button
                     className="button button-ghost button-small"
                     type="button"
                     onClick={() => setShowComparison((current) => !current)}
                     aria-expanded={showComparison}
                   >
-                    {showComparison ? "Ocultar" : "Comparar capturas"}
+                    {showComparison ? "Ocultar" : "Ver cambios"}
                   </button>
                 </div>
                 {showComparison && (
@@ -207,6 +262,8 @@ function TaskDetailDialog({
                   </div>
                 )}
               </section>
+
+              <TechnicalInformationSection task={task} />
             </div>
           )}
         </Dialog.Content>
@@ -216,42 +273,82 @@ function TaskDetailDialog({
 }
 
 
-function RiskSection({ task, onSelectTask }: { task: TaskDetailResponse; onSelectTask: (taskId: string) => void }) {
+/**
+ * Other tasks that share the same alert. The manager reads a name and opens the task,
+ * never a bare identifier, and the alert of this task stays separated from the group.
+ */
+function AffectedTasks({
+  risk,
+  currentTaskId,
+  onSelectTask,
+}: {
+  risk: TaskRisk;
+  currentTaskId: string;
+  onSelectTask: (taskId: string) => void;
+}) {
+  const titles = risk.task_titles ?? {};
+  const others = risk.task_ids.filter((taskId) => taskId !== currentTaskId);
+  if (others.length === 0) {
+    return <p className="field-help">Esta es la única tarea con esta alerta en la captura.</p>;
+  }
+  return (
+    <div className="affected-tasks">
+      <p className="field-help">Otras {others.length} tarea(s) con la misma alerta:</p>
+      <ul className="risk-task-links">
+        {others.map((taskId) => (
+          <li key={taskId}>
+            <button type="button" className="task-link-button" onClick={() => onSelectTask(taskId)}>
+              {titles[taskId] || taskId}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Alerts of one task, explained in plain language with the observed condition and its date. */
+function RiskSection({
+  task,
+  diagnostic,
+  onSelectTask,
+}: {
+  task: TaskDetailResponse;
+  diagnostic?: ProposalStageDiagnostic | null;
+  onSelectTask: (taskId: string) => void;
+}) {
   const risks = task.risks ?? [];
   const captureId = task.capture_id ?? null;
   return (
     <section className="detail-section">
       <div className="detail-section-heading">
         <div>
-          <h3>Clasificación de riesgo</h3>
-          <p>Clasificación determinista de la captura. La tarjeta de Trello es la fuente de la observación, no un diagnóstico repetido.</p>
+          <h3>¿Por qué requiere atención?</h3>
+          <p>Alertas de la tarea calculadas sobre la captura actual. Cada una indica la condición observada y la fecha de referencia.</p>
         </div>
         <ShieldAlert aria-hidden="true" size={16} />
       </div>
       {risks.length === 0 ? (
-        <p className="field-help">El backend no clasificó esta tarea con riesgo determinista en la captura consultada.</p>
+        <p className="field-help">Esta tarea no tiene alertas en la captura consultada.</p>
       ) : (
         <ul className="risk-detail-list">
           {risks.map((risk) => (
             <li key={risk.risk_id}>
               <div className="risk-detail-head">
                 <Pill tone={riskKindTone(risk.kind)}>{riskKindLabel(risk.kind)}</Pill>
-                <span className="risk-detail-summary">{risk.summary}</span>
+                <span className="risk-detail-summary">Afecta a {risk.task_count} tarea(s) de la captura</span>
               </div>
-              <p className="risk-detail-basis">{risk.basis}</p>
+              <dl className="alert-facts">
+                <div><dt>Condición observada</dt><dd>{risk.summary}</dd></div>
+                <div>
+                  <dt>Fecha de referencia</dt>
+                  <dd>{risk.cutoff_datetime ? formatDate(risk.cutoff_datetime, true) : "No disponible"}</dd>
+                </div>
+                <div><dt>Motivo</dt><dd>{risk.basis}</dd></div>
+              </dl>
               <p className="field-help">Trazabilidad: captura {risk.capture_id} · identificación {risk.risk_id}</p>
-              {risk.task_ids.length > 1 && (
-                <p className="field-help">
-                  Afecta a {risk.task_count} tareas:{" "}
-                  {risk.task_ids.map((taskId, index) => (
-                    <span key={taskId}>
-                      {index > 0 ? ", " : ""}
-                      <button type="button" className="task-link-button" onClick={() => onSelectTask(taskId)}>{taskId}</button>
-                    </span>
-                  ))}
-                </p>
-              )}
-              <RiskProposalLinks risk={risk} captureId={captureId} />
+              <AffectedTasks risk={risk} currentTaskId={task.id} onSelectTask={onSelectTask} />
+              <RiskProposalLinks risk={risk} captureId={captureId} diagnostic={diagnostic} />
             </li>
           ))}
         </ul>
@@ -262,6 +359,101 @@ function RiskSection({ task, onSelectTask }: { task: TaskDetailResponse; onSelec
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Corrective actions of the task: the proposals that answer one of its alerts. When there is
+ * none, the absence is declared and the persisted diagnostic explains the cause when it can.
+ */
+function CorrectiveActionsSection({
+  task,
+  diagnostic,
+}: {
+  task: TaskDetailResponse;
+  diagnostic?: ProposalStageDiagnostic | null;
+}) {
+  const risks = task.risks ?? [];
+  const entries = risks.flatMap((risk) =>
+    (risk.proposals ?? []).map((proposal) => ({ risk, proposal })));
+  const unknown = risks.filter((risk) => risk.proposals === undefined);
+
+  return (
+    <section className="detail-section">
+      <div className="detail-section-heading">
+        <div><h3>Acciones correctivas</h3><p>Propuestas vinculadas a las alertas de esta tarea.</p></div>
+        <Wrench aria-hidden="true" size={16} />
+      </div>
+      {risks.length === 0 ? (
+        <p className="field-help">Esta tarea no tiene alertas, así que no hay acciones correctivas vinculadas.</p>
+      ) : entries.length === 0 ? (
+        <div className="risk-proposals">
+          <p className="risk-proposals-empty">No hay una propuesta vinculada a esta tarea</p>
+          {diagnostic && (
+            <div className="risk-proposals-diagnostic">
+              <Pill tone={proposalOutcomeTone(diagnostic.outcome)}>{proposalOutcomeLabel(diagnostic.outcome)}</Pill>
+              <p>{proposalOutcomeExplanation(diagnostic)}</p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <ul className="risk-proposal-links">
+          {entries.map(({ risk, proposal }) => (
+            <li key={proposal.proposal_id} className="risk-proposal-link">
+              <Link to={`/proposals?proposal_id=${encodeURIComponent(proposal.proposal_id)}`}>
+                {proposal.proposal_id}
+              </Link>
+              <span className="risk-proposal-field">{fieldLabel(proposal.field)}</span>
+              <Pill tone={riskKindTone(risk.kind)}>{riskKindLabel(risk.kind)}</Pill>
+              <Pill tone={proposalStatusTone(proposal.review_status)}>{proposalReviewStatusLabel(proposal.review_status)}</Pill>
+              <Pill tone={proposalStatusTone(proposal.execution_status)}>{proposalExecutionStatusLabel(proposal.execution_status)}</Pill>
+              <Pill tone={proposalStatusTone(proposal.technical_status)}>{proposalTechnicalStatusLabel(proposal.technical_status)}</Pill>
+              <span className="risk-proposal-meta">
+                Vigencia {proposalFreshnessLabel(proposal.freshness).toLocaleLowerCase("es-EC")} · {proposalAuthorizationStatusLabel(proposal.authorization_status)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {unknown.length > 0 && (
+        <p className="field-help">
+          {unknown.length} alerta(s) no informan si tienen propuestas vinculadas.
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Technical information kept out of the main detail and available for diagnosis and audit:
+ * the internal identifiers and the list of fields the source reported.
+ */
+function TechnicalInformationSection({ task }: { task: TaskDetailResponse }) {
+  return (
+    <details className="detail-section technical-section">
+      <summary>Información técnica de la tarea</summary>
+      <dl className="detail-grid">
+        <div><dt>Identificador de la tarea</dt><dd><code>{task.id}</code></dd></div>
+        <div><dt>Identificador de fase</dt><dd><code>{task.list_id ?? "No observado"}</code></dd></div>
+        <div>
+          <dt>Identificadores de responsable</dt>
+          <dd>{task.assignee_ids.length ? task.assignee_ids.join(", ") : "Sin responsables registrados"}</dd>
+        </div>
+        <div>
+          <dt>Tarjeta archivada</dt>
+          <dd>{task.is_archived === null || task.is_archived === undefined ? "No observado" : task.is_archived ? "Sí" : "No"}</dd>
+        </div>
+        <div><dt>Última actividad en Trello</dt><dd>{observedDate(task, "last_activity_at", task.last_activity_at)}</dd></div>
+        <div><dt>Etiquetas</dt><dd>{task.labels.length ? task.labels.join(", ") : "Sin etiquetas"}</dd></div>
+      </dl>
+      <p className="field-help">
+        {task.observed_fields === null || task.observed_fields === undefined
+          ? "El registro no especifica qué campos fueron observados."
+          : task.observed_fields.length
+            ? `Campos observados: ${task.observed_fields.map(fieldLabel).join(", ")}.`
+            : "No se informaron campos observados."}
+      </p>
+    </details>
   );
 }
 
@@ -287,44 +479,153 @@ function DependencySection({ task }: { task: TaskDetailResponse }) {
   );
 }
 
-function EvidenceSection({ task }: { task: TaskDetailResponse }) {
+/** Observations of the same origin card, ordered from the oldest to the most recent. */
+interface EvidenceGroup {
+  key: string;
+  source: string;
+  items: EvidenceItem[];
+}
+
+function groupEvidence(items: EvidenceItem[]): EvidenceGroup[] {
+  const groups = new Map<string, EvidenceGroup>();
+  for (const item of items) {
+    const cardId = item.provenance.external_id ?? null;
+    const key = `${item.provenance.source}:${cardId ?? item.provenance.id}`;
+    const group = groups.get(key);
+    if (group) {
+      group.items.push(item);
+      continue;
+    }
+    groups.set(key, { key, source: item.provenance.source, items: [item] });
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    items: [...group.items].sort(
+      (left, right) => new Date(left.provenance.timestamp).getTime() - new Date(right.provenance.timestamp).getTime(),
+    ),
+  }));
+}
+
+/** Changes the backend verified between captures, indexed by the evidence that supports them. */
+function verifiedChangesByEvidence(history: TaskChange[] | undefined) {
+  const index = new Map<string, TaskChange[]>();
+  for (const change of history ?? []) {
+    for (const evidenceId of [...change.previous_evidence_ids, ...change.current_evidence_ids]) {
+      const entries = index.get(evidenceId) ?? [];
+      entries.push(change);
+      index.set(evidenceId, entries);
+    }
+  }
+  return index;
+}
+
+function verifiedChangesOf(group: EvidenceGroup, index: Map<string, TaskChange[]>) {
+  const seen = new Set<string>();
+  const changes: TaskChange[] = [];
+  for (const item of group.items) {
+    for (const change of index.get(item.provenance.id) ?? []) {
+      if (seen.has(change.id)) continue;
+      seen.add(change.id);
+      changes.push(change);
+    }
+  }
+  return changes;
+}
+
+/**
+ * Evidence of one task. Every historical record is kept, but the observations of the same
+ * card are grouped and ordered, and only the differences the backend verified are presented
+ * as changes: a new observation of unchanged data is never shown as a change.
+ */
+function EvidenceSection({ task, captureCount }: { task: TaskDetailResponse; captureCount: number }) {
+  const groups = task.evidence === undefined ? [] : groupEvidence(task.evidence);
+  const changesIndex = verifiedChangesByEvidence(task.history);
+  const comparable = captureCount >= 2;
+
   return (
     <section className="detail-section">
       <div className="detail-section-heading">
-        <div><h3>Evidencia disponible</h3><p>Registros y procedencia entregados por el backend.</p></div>
+        <div><h3>Evidencias de Trello</h3><p>Una entrada por tarjeta de origen, con el historial de observaciones.</p></div>
         <ExternalLink aria-hidden="true" size={16} />
       </div>
       {task.evidence === undefined ? (
         <p className="unknown-note"><CircleHelp aria-hidden="true" size={16} /> La respuesta no incluye información de evidencia para esta tarea.</p>
-      ) : task.evidence.length === 0 ? (
+      ) : groups.length === 0 ? (
         <p className="field-help">No hay elementos de evidencia asociados en esta respuesta.</p>
       ) : (
-        <ul className="evidence-list">
-          {task.evidence.map((item) => (
-            <li key={item.provenance.id}>
-              <span className="evidence-source">{item.provenance.source}</span>
-              <strong>{item.summary}</strong>
-              <span>{item.category} · {formatDate(item.provenance.timestamp, true)}</span>
-              <code>Ref. {item.provenance.id}</code>
-            </li>
-          ))}
+        <ul className="evidence-groups">
+          {groups.map((group) => {
+            const latest = group.items[group.items.length - 1];
+            const verified = verifiedChangesOf(group, changesIndex);
+            return (
+              <li key={group.key} className="evidence-group">
+                <div className="evidence-group-head">
+                  <span className="evidence-source">{group.source}</span>
+                  <strong>{latest.summary}</strong>
+                  <span>Observación más reciente: {formatDate(latest.provenance.timestamp, true)}</span>
+                </div>
+                {verified.length > 0 ? (
+                  <div className="evidence-verified">
+                    <p className="evidence-verified-title">Cambios comprobados ({verified.length}):</p>
+                    <ul className="change-list">
+                      {verified.map((change) => (
+                        <li key={change.id}>
+                          <span className="change-marker" aria-hidden="true" />
+                          <div>
+                            <strong>{fieldLabel(change.field)}</strong>
+                            <p>
+                              {comparisonValue(change.before, change.field)} <span aria-hidden="true">→</span> {comparisonValue(change.after, change.field)}
+                            </p>
+                            {change.observed_at && <small>Comprobado el {formatDate(change.observed_at, true)}</small>}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : group.items.length > 1 ? (
+                  <p className="field-help">
+                    {comparable
+                      ? `Se registraron ${group.items.length} observaciones y ninguna diferencia comprobada entre capturas: los datos observados no cambiaron.`
+                      : `Se registraron ${group.items.length} observaciones de la misma captura; hace falta otra captura para comprobar cambios.`}
+                  </p>
+                ) : (
+                  <p className="field-help">Una sola observación; no hay cambios comprobados.</p>
+                )}
+                {group.items.length > 1 && (
+                  <details className="evidence-history">
+                    <summary>Historial de observaciones ({group.items.length})</summary>
+                    <ol className="evidence-timeline">
+                      {group.items.map((item) => (
+                        <li key={item.provenance.id}>
+                          <span>{formatDate(item.provenance.timestamp, true)}</span>
+                          <span>{item.summary}</span>
+                          <code>Ref. {item.provenance.id}</code>
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
   );
 }
 
+
 function TaskHistorySection({ history }: { history?: TaskChange[] }) {
   return (
     <section className="detail-section">
       <div className="detail-section-heading">
-        <div><h3>Historial observado</h3><p>Los cambios no se atribuyen a una persona sin identidad verificada.</p></div>
+        <div><h3>Historial de cambios</h3><p>Diferencias verificadas entre capturas consecutivas. Los cambios no se atribuyen a una persona sin identidad verificada.</p></div>
         <Clock3 aria-hidden="true" size={16} />
       </div>
       {history === undefined ? (
-        <p className="unknown-note"><CircleHelp aria-hidden="true" size={16} /> El historial observado no está disponible en esta respuesta.</p>
+        <p className="unknown-note"><CircleHelp aria-hidden="true" size={16} /> El historial de cambios no está disponible en esta respuesta.</p>
       ) : history.length === 0 ? (
-        <p className="field-help">No se informaron cambios observados para esta tarea.</p>
+        <p className="field-help">No se verificaron cambios entre las capturas disponibles.</p>
       ) : (
         <ul className="change-list">
           {history.map((change) => (
@@ -364,7 +665,7 @@ function ComparisonDiff({ changes, warnings }: {
         </div>
       )}
       {changes.length === 0 ? (
-        <p className="unknown-note"><CircleHelp aria-hidden="true" size={16} /> No hay cambios de esta tarea en la comparación devuelta. Revisa las advertencias de alcance antes de concluir que no hubo cambios.</p>
+        <p className="unknown-note"><CircleHelp aria-hidden="true" size={16} /> No se verificaron diferencias de esta tarea entre las dos capturas.</p>
       ) : (
         <ul className="visual-diff-list">
           {changes.map((change) => (
@@ -428,6 +729,8 @@ export function TasksPage() {
     enabled: Boolean(project),
     placeholderData: (previous) => previous,
   });
+  const summaryQuery = useProjectSummary(project?.id ?? null);
+  const diagnostic = summaryQuery.data?.proposals_context?.diagnostic ?? null;
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const deepLinkedTaskId = searchParams.get("task") ?? "";
   const deepLinkedCaptureId = searchParams.get("capture_id") ?? "";
@@ -513,11 +816,11 @@ export function TasksPage() {
               <option value="desconocido">Desconocido</option>
             </select>
           </label>
-          <label><span>Responsable (ID)</span><input aria-label="Responsable (ID)" type="search" value={assignee} placeholder="ID observado" onChange={(event) => updateFilters({ assignee_id: event.target.value })} /></label>
+          <label><span>ID de responsable</span><input aria-label="ID de responsable" type="search" value={assignee} placeholder="Identificador observado" onChange={(event) => updateFilters({ assignee_id: event.target.value })} /></label>
           <label><span>Fase o lista</span><input aria-label="Fase o lista" type="search" value={phase} placeholder="Nombre de la lista" onChange={(event) => updateFilters({ list_name: event.target.value })} /></label>
         </div>
         <div className="filter-toggles">
-          <label className="check-filter"><input aria-label="Solo críticas" type="checkbox" checked={criticalOnly} onChange={(event) => toggleBooleanFilter("critical_only", event.target.checked)} /><span>Solo críticas</span></label>
+          <label className="check-filter"><input aria-label="Solo con alertas" type="checkbox" checked={criticalOnly} onChange={(event) => toggleBooleanFilter("critical_only", event.target.checked)} /><span>Solo con alertas</span></label>
           <label className="check-filter"><input aria-label="Solo vencidas" type="checkbox" checked={overdueOnly} onChange={(event) => toggleBooleanFilter("overdue_only", event.target.checked)} /><span>Solo vencidas</span></label>
           <label className="check-filter"><input aria-label="Próximas a vencer" type="checkbox" checked={dueSoonOnly} onChange={(event) => toggleBooleanFilter("due_soon_only", event.target.checked)} /><span>Próximas a vencer</span></label>
         </div>
@@ -536,7 +839,7 @@ export function TasksPage() {
                 <th scope="col">Estado</th>
                 <SortHeader label="Tarea" sortKey="title" activeSort={sort} direction={direction} onSort={changeSort} />
                 <th scope="col">Fase / lista</th>
-                <th scope="col">Responsable (ID)</th>
+                <th scope="col">Responsable</th>
                 <SortHeader label="Vencimiento" sortKey="due_date" activeSort={sort} direction={direction} onSort={changeSort} />
                 <th scope="col">Señales</th>
               </tr></thead>
@@ -550,15 +853,12 @@ export function TasksPage() {
                       </button>
                     </td>
                     <td>{task.list_name ?? "No observada"}</td>
-                    <td>{task.assignee_ids.length ? task.assignee_ids.join(", ") : <span className="text-muted">{task.observed_fields?.includes("assignee_ids") ? "Sin asignación" : "No observada"}</span>}</td>
-                    <td>{formatDate(task.due_date)}</td>
-                    <td><div className="task-signals">
-                      {task.is_critical && <Pill tone="warning"><ShieldAlert aria-hidden="true" size={12} /> Crítica</Pill>}
-                      {task.is_overdue && <Pill tone="danger"><CalendarClock aria-hidden="true" size={12} /> Vencida</Pill>}
-                      {task.is_due_soon && <Pill tone="warning"><Clock3 aria-hidden="true" size={12} /> Próxima</Pill>}
-                      {task.has_contradiction && <Pill tone="warning"><AlertTriangle aria-hidden="true" size={12} /> Contradicción</Pill>}
-                      {!task.is_critical && !task.is_overdue && !task.is_due_soon && !task.has_contradiction && <span className="text-muted">Sin alertas informadas</span>}
-                    </div></td>
+                    <td>{responsibleDisplay(task)}</td>
+                    <td>
+                      <span className="task-due-date">{formatDate(task.due_date)}</span>
+                      {plannedDates(task)}
+                    </td>
+                    <td><div className="task-signals"><TaskSignalPills task={task} compact /></div></td>
                   </tr>
                 ))}
               </tbody>
@@ -578,6 +878,7 @@ export function TasksPage() {
         projectId={project.id}
         taskId={openTaskId}
         captureId={deepLinkedCaptureId || project.summary?.capture_id}
+        diagnostic={diagnostic}
         onSelectTask={setSelectedTaskId}
         onClose={() => {
           setSelectedTaskId(null);
