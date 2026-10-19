@@ -42,10 +42,11 @@ test("el detalle de tarea acepta el deep link con captura y muestra la propuesta
   expect(observer.taskDetailReads.some((read) => read.includes("capture_id=capture-current"))).toBe(true);
 
   const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
-  await expect(riskSection.getByText("Propuestas vinculadas (1):")).toBeVisible();
-  await expect(riskSection.getByRole("link", { name: "proposal-date-001" })).toHaveAttribute("href", "/proposals?proposal_id=proposal-date-001");
-  await expect(riskSection.getByText("Decisión pendiente", { exact: true })).toBeVisible();
-  await expect(riskSection.getByText("Una propuesta aprobada o ejecutada no demuestra que el riesgo haya desaparecido")).toBeVisible();
+  await expect(riskSection.getByRole("heading", { name: "¿Por qué requiere atención?" })).toBeVisible();
+  const actionsSection = dialog.locator("section").filter({ hasText: "Acciones correctivas" }).first();
+  await expect(actionsSection.getByRole("link", { name: "proposal-date-001" })).toHaveAttribute("href", "/proposals?proposal_id=proposal-date-001");
+  await expect(actionsSection.getByText("Decisión pendiente", { exact: true })).toBeVisible();
+  await expect(actionsSection.getByText("Responde a: Tareas no completadas cuyo vencimiento es anterior al corte de la captura.")).toBeVisible();
 
   await page.getByRole("button", { name: "Cerrar detalle de tarea" }).click();
   await expect(page).not.toHaveURL(/task=task-1/);
@@ -60,8 +61,8 @@ test("el detalle de tarea de otra captura presenta la propuesta vinculada como h
   await expect(dialog).toBeVisible();
   expect(observer.taskDetailReads.some((read) => read.includes("capture_id=capture-previous"))).toBe(true);
 
-  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
-  await expect(riskSection.getByText("Histórica", { exact: true })).toBeVisible();
+  const actionsSection = dialog.locator("section").filter({ hasText: "Acciones correctivas" }).first();
+  await expect(actionsSection.getByText("Histórica", { exact: true })).toBeVisible();
 });
 
 test("el detalle de tarea declara la ausencia de propuesta vinculada al riesgo", async ({ page }) => {
@@ -70,8 +71,8 @@ test("el detalle de tarea declara la ausencia de propuesta vinculada al riesgo",
 
   const dialog = page.getByRole("dialog", { name: "Validar sincronización 1" });
   await expect(dialog).toBeVisible();
-  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
-  await expect(riskSection.getByText("No hay una propuesta vinculada a este riesgo")).toBeVisible();
+  const actionsSection = dialog.locator("section").filter({ hasText: "Acciones correctivas" }).first();
+  await expect(actionsSection.getByText("No hay una propuesta vinculada a esta tarea")).toBeVisible();
 });
 
 test("el detalle de la propuesta declara el riesgo que la motivó y enlaza su tarea y su evidencia", async ({ page }) => {
@@ -126,8 +127,8 @@ test("la navegación recorre riesgo, tarea y propuesta sin perder el origen", as
   await expect(page).toHaveURL(/task=task-1/);
 
   const dialog = page.getByRole("dialog", { name: "Implementar API de pagos" });
-  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
-  await riskSection.getByRole("link", { name: "proposal-date-001" }).click();
+  const actionsSection = dialog.locator("section").filter({ hasText: "Acciones correctivas" }).first();
+  await actionsSection.getByRole("link", { name: "proposal-date-001" }).click();
   await expect(page).toHaveURL(/proposal_id=proposal-date-001/);
   await expect(page.getByRole("heading", { name: "Riesgo que motivó la acción" })).toBeVisible();
   await expect(page.getByText("risk-fixture-overdue", { exact: true })).toBeVisible();

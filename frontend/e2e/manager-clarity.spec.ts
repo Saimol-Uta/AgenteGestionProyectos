@@ -12,6 +12,7 @@ const clarityTasks = {
     {
       ...tasks[0],
       assignee_ids: ["operator-1"],
+      assignee_names: {},
       observed_fields: ["title", "state", "assignee_ids", "due_date"],
     },
     {
@@ -76,17 +77,68 @@ test("el responsable distingue sin asignar, no observado y nombre no disponible"
 });
 
 test("el identificador técnico del responsable queda solo en la información avanzada", async ({ page }) => {
-  await installApi(page, { tasksPayload: clarityTasks });
+  await installApi(page, { tasksPayload: clarityTasks, taskDetailPayload: {
+    ...tasks[0],
+    assignee_ids: ["operator-1"],
+    assignee_names: {},
+    observed_fields: ["title", "state", "assignee_ids", "due_date"],
+    capture_id: "capture-current",
+    evidence: [],
+    history: [],
+    risks: [],
+  } });
   await page.goto("/tasks?task=task-1");
 
   const dialog = page.getByRole("dialog", { name: "Implementar API de pagos" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("Nombre no disponible")).toBeVisible();
   await expect(dialog.getByText("Campos informados")).toHaveCount(0);
+  // The identifier stays hidden until the advanced section is opened.
+  await expect(dialog.getByText("operator-1")).not.toBeVisible();
 
   await dialog.getByText("Información técnica de la tarea").click();
   await expect(dialog.getByText("operator-1")).toBeVisible();
   await expect(dialog.getByText("Campos observados:")).toBeVisible();
+});
+
+test("el responsable se muestra con su nombre cuando el origen lo resolvió", async ({ page }) => {
+  await installApi(page);
+  await page.goto("/tasks");
+
+  const row = page.locator(".task-table tbody tr").filter({
+    has: page.getByRole("button", { name: "Ver detalle de Implementar API de pagos", exact: true }),
+  });
+  await expect(row.getByText("Ada Lovelace")).toBeVisible();
+  await expect(row).not.toContainText("operator-1");
+
+  await row.getByRole("button", { name: "Ver detalle de Implementar API de pagos", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Implementar API de pagos" });
+  await expect(dialog.getByText("Ada Lovelace")).toBeVisible();
+  await expect(dialog.getByText("Nombre no disponible")).toHaveCount(0);
+
+  await dialog.getByText("Información técnica de la tarea").click();
+  await expect(dialog.getByText("operator-1")).toBeVisible();
+});
+
+test("un responsable sin nombre resuelto convive con el que sí lo tiene", async ({ page }) => {
+  await installApi(page, {
+    tasksPayload: {
+      items: [
+        {
+          ...tasks[0],
+          id: "task-mixed-names",
+          title: "Tarea con dos responsables",
+          assignee_ids: ["operator-1", "operator-2"],
+          assignee_names: { "operator-1": "Ada Lovelace" },
+        },
+      ],
+      total: 1, page: 1, page_size: 25,
+    },
+  });
+  await page.goto("/tasks");
+
+  const row = page.locator(".task-table tbody tr").first();
+  await expect(row.getByText("Ada Lovelace, Nombre no disponible")).toBeVisible();
 });
 
 test("la prioridad ausente se comunica sin inventar un valor", async ({ page }) => {

@@ -137,6 +137,7 @@ export const tasks = [
     list_id: "list-build",
     list_name: "Construcción",
     assignee_ids: ["operator-1"],
+    assignee_names: { "operator-1": "Ada Lovelace" },
     start_date: null,
     due_date: "2026-01-10T12:00:00-05:00",
     due_complete: false,
