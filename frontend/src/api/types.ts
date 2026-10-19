@@ -701,6 +701,7 @@ export interface ProposalDetail extends ProposalSummary {
 
 export interface ProposalCollection extends Paginated<ProposalSummary> {
   availability: "available" | "unknown";
+  pending_actionable_count?: number | null;
 }
 
 export type ProposalExecutionDecision = "approve_and_execute" | "modify_and_execute" | "reject";

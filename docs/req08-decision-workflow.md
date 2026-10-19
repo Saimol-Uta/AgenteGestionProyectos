@@ -39,6 +39,10 @@ La prueba de sandbox comprueba además que la ruta de propuestas no crea el adap
 
 `status` es el resultado tipado de la ejecución y siempre se interpreta junto con `execution_mode`: `EXECUTED` en modo `sandbox` no acredita una escritura live. `reasons` contiene códigos estables allowlisted, no texto de excepción ni payload del proveedor. Datos legacy o no verificables permanecen `null`/`unknown`; el API solo proyecta ledgers existentes con conexiones de solo lectura y no añade migraciones ni decisiones persistidas.
 
+## T5: conteo del Dashboard
+
+El Dashboard y la insignia de Propuestas muestran `pending_actionable_count`, el agregado de todo el proyecto que informa el API; no usan `total` ni cuentan los elementos de la página consultada. Un cero conocido se muestra como `0`. Si el agregado es nulo, falta o la colección no está disponible, la interfaz muestra `—` y explica que no pudo confirmar cuántas propuestas esperan la decisión del gestor.
+
 Ejemplo resumido de detalle autorizado:
 
 ```json

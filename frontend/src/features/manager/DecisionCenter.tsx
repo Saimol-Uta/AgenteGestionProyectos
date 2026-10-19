@@ -19,7 +19,11 @@ export function DecisionCenter({ projectId }: { projectId: string }) {
           <span className="decision-symbol"><ListChecks size={20} aria-hidden="true" /></span>
           <h3>Acciones Correctivas en Trello</h3>
           <strong className="decision-count">{counts.proposals ?? "—"}</strong>
-          <p>{counts.proposals === null ? "Disponibilidad no confirmada." : "Propuestas informadas por el backend. Revisa la validación técnica automática antes de decidir."}</p>
+          <p>{counts.proposals === null
+            ? "No se pudo confirmar cuántas propuestas esperan tu decisión."
+            : counts.proposals === 0
+              ? "No hay propuestas pendientes que requieran tu decisión."
+              : `${counts.proposals} propuestas están pendientes de tu decisión. Revisa la validación técnica automática antes de decidir.`}</p>
           <Link className="button button-secondary" to="/proposals">Revisar propuestas <ArrowRight size={15} aria-hidden="true" /></Link>
         </article>
         <article className="manager-decision-card decision-quality">
