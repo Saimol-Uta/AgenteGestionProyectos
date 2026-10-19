@@ -9,8 +9,11 @@ Adheres strictly to domain models and acceptance criteria:
 """
 
 from datetime import datetime
+from enum import Enum
+import hashlib
+import json
 import re
-from typing import Optional
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
@@ -60,6 +63,38 @@ class TaskDetailView(BaseModel):
     dependency_impacts: list[str] = Field(default_factory=list)
 
 
+class RiskKind(str, Enum):
+    """Deterministic risk families derived from task metrics only."""
+    blocked = "blocked"
+    overdue = "overdue"
+    due_soon = "due_soon"
+    contradictory_state = "contradictory_state"
+    unknown_state = "unknown_state"
+
+
+class TaskRisk(BaseModel):
+    """One deterministic risk bound to a capture and its affected tasks."""
+    risk_id: str
+    project_id: str
+    capture_id: str
+    kind: RiskKind
+    task_ids: list[str] = Field(default_factory=list)
+    task_count: int = 0
+    summary: str
+    basis: str
+    source: Literal["deterministic"] = "deterministic"
+
+
+def _risk_id(project_id: str, capture_id: str, kind: RiskKind, task_ids: list[str]) -> str:
+    """Stable identifier for the same capture, kind and affected task set."""
+    canonical = json.dumps(
+        [project_id, capture_id, kind.value, sorted(task_ids)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return "risk-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
 class TaskPlanSummary(BaseModel):
     """Aggregated project planning summary computed deterministically from snapshot."""
     project_id: str
@@ -82,6 +117,7 @@ class TaskPlanSummary(BaseModel):
     unknown_task_ids: list[str] = Field(default_factory=list)
     contradictory_task_ids: list[str] = Field(default_factory=list)
     identified_risks: list[str] = Field(default_factory=list)
+    risks: list[TaskRisk] = Field(default_factory=list)
 
 
 # Pattern matching explicit dependency declarations in card detail or labels
@@ -157,23 +193,51 @@ def build_task_plan_summary(
     for card in snapshot.tasks:
         state_counts[card.state.value] = state_counts.get(card.state.value, 0) + 1
 
-    risks: list[str] = []
+    risk_specs: list[tuple[RiskKind, list[str], str, str]] = []
     if metrics.blocked_card_ids:
-        risks.append(f"{len(metrics.blocked_card_ids)} tarea(s) bloqueada(s) activa(s).")
+        risk_specs.append((
+            RiskKind.blocked, metrics.blocked_card_ids,
+            f"{len(metrics.blocked_card_ids)} tarea(s) bloqueada(s) activa(s).",
+            "Tareas en estado bloqueado observado en la captura.",
+        ))
     if metrics.overdue_card_ids:
-        risks.append(f"{len(metrics.overdue_card_ids)} tarea(s) vencida(s) no completada(s).")
+        risk_specs.append((
+            RiskKind.overdue, metrics.overdue_card_ids,
+            f"{len(metrics.overdue_card_ids)} tarea(s) vencida(s) no completada(s).",
+            "Tareas no completadas cuyo vencimiento es anterior al corte de la captura.",
+        ))
     if metrics.due_soon_card_ids:
-        risks.append(
-            f"{len(metrics.due_soon_card_ids)} tarea(s) próxima(s) a vencer en la ventana de {due_soon_days} días."
-        )
+        risk_specs.append((
+            RiskKind.due_soon, metrics.due_soon_card_ids,
+            f"{len(metrics.due_soon_card_ids)} tarea(s) próxima(s) a vencer en la ventana de {due_soon_days} días.",
+            f"Tareas no completadas cuyo vencimiento cae dentro de los {due_soon_days} días posteriores al corte.",
+        ))
     if metrics.contradictory_card_ids:
-        risks.append(
-            f"{len(metrics.contradictory_card_ids)} tarea(s) con señales contradictorias de estado."
-        )
+        risk_specs.append((
+            RiskKind.contradictory_state, metrics.contradictory_card_ids,
+            f"{len(metrics.contradictory_card_ids)} tarea(s) con señales contradictorias de estado.",
+            "Tareas con señales contradictorias de estado en la captura.",
+        ))
     if metrics.unknown_card_ids:
-        risks.append(
-            f"{len(metrics.unknown_card_ids)} tarea(s) con estado desconocido (falta mapeo o evidencia)."
+        risk_specs.append((
+            RiskKind.unknown_state, metrics.unknown_card_ids,
+            f"{len(metrics.unknown_card_ids)} tarea(s) con estado desconocido (falta mapeo o evidencia).",
+            "Tareas cuyo estado no pudo mapearse desde la fuente; no se infiere un estado.",
+        ))
+
+    risks = [
+        TaskRisk(
+            risk_id=_risk_id(snapshot.project_id, capture_id, kind, task_ids),
+            project_id=snapshot.project_id,
+            capture_id=capture_id,
+            kind=kind,
+            task_ids=list(task_ids),
+            task_count=len(task_ids),
+            summary=summary,
+            basis=basis,
         )
+        for kind, task_ids, summary, basis in risk_specs
+    ]
 
     return TaskPlanSummary(
         project_id=snapshot.project_id,
@@ -195,7 +259,8 @@ def build_task_plan_summary(
         blocked_task_ids=metrics.blocked_card_ids,
         unknown_task_ids=metrics.unknown_card_ids,
         contradictory_task_ids=metrics.contradictory_card_ids,
-        identified_risks=risks,
+        identified_risks=[summary for _, _, summary, _ in risk_specs],
+        risks=risks,
     )
 
 

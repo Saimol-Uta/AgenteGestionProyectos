@@ -6,7 +6,7 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 
-from agente_gestion.application.tasks_query import TaskDetailView, TaskPlanSummary
+from agente_gestion.application.tasks_query import TaskDetailView, TaskPlanSummary, TaskRisk
 from agente_gestion.domain.evidence import DiffSide, EvidenceSource
 from agente_gestion.domain.task_comparison import TaskChange, TaskSnapshotComparison
 
@@ -221,6 +221,7 @@ class TaskHistoryEntry(TaskChange):
 class TaskDetailResponse(TaskDetailView):
     evidence: list[EvidenceView] = Field(default_factory=list)
     history: list[TaskHistoryEntry] = Field(default_factory=list)
+    risks: list[TaskRisk] = Field(default_factory=list)
 
 
 class AuthSessionView(ApiModel):
@@ -274,6 +275,22 @@ class ProviderAttempt(ApiModel):
     repository_id: str | None = None
 
 
+class ProposalStageDiagnostic(ApiModel):
+    """Safe, structured projection of the persisted proposals stage summary."""
+    outcome: Literal[
+        "saved", "not_configured", "rules_invalid", "no_candidates",
+        "candidates_discarded", "not_selected", "unknown",
+    ]
+    offered: int | None = None
+    selected: int | None = None
+    saved: int | None = None
+    technical_ready: int | None = None
+    technical_blocked: int | None = None
+    limitation_codes: list[str] = Field(default_factory=list)
+    failure_codes: list[str] = Field(default_factory=list)
+    discarded: int = 0
+
+
 class StageView(ApiModel):
     stage_name: str
     status: StageStatusValue
@@ -283,6 +300,7 @@ class StageView(ApiModel):
     providers: list[ProviderAttempt] | None = None
     result_summary: str | None = None
     error_code: str | None = None
+    proposals: ProposalStageDiagnostic | None = None
 
 
 class RunStages(ApiModel):

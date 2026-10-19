@@ -15,7 +15,13 @@ from pydantic import ValidationError
 from zoneinfo import ZoneInfo
 
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
-from agente_gestion.application.tasks_query import TaskDetailView, TaskFilter, TaskPlanSummary, query_tasks_view
+from agente_gestion.application.tasks_query import (
+    TaskDetailView,
+    TaskFilter,
+    TaskPlanSummary,
+    build_task_plan_summary,
+    query_tasks_view,
+)
 from agente_gestion.domain.code import CodeDiffSnippet
 from agente_gestion.domain.code_action import CodeSourceSnapshot, FindingActionOrigin
 from agente_gestion.domain.evidence import EvidenceItem
@@ -28,6 +34,7 @@ from agente_gestion.domain.snapshot import SnapshotCapture, WeeklySnapshot
 from agente_gestion.domain.task_comparison import TaskChange, TaskSnapshotComparison, compare_task_snapshots
 from agente_gestion.domain.tasks import TaskState, normalize_datetime_to_tz
 
+from agente_gestion.api.proposal_diagnostics import proposal_stage_diagnostic
 from agente_gestion.api.schemas import (
     CIRunView,
     CaptureHistoryView,
@@ -802,10 +809,17 @@ class SQLiteQueryRepository:
         self, project_id: str, capture: SnapshotCapture, view: TaskDetailView,
     ) -> TaskDetailResponse:
         sanitized = self._sanitize_task_view(view)
+        plan = build_task_plan_summary(
+            capture.snapshot,
+            capture.capture_id,
+            due_soon_days=self.settings.due_soon_days,
+            timezone_name=self.settings.timezone,
+        )
         return TaskDetailResponse(
             **sanitized.model_dump(mode="python"),
             evidence=self.task_evidence(project_id, capture.snapshot.id, view.id),
             history=self.task_history(project_id, capture, view.id),
+            risks=[risk for risk in plan.risks if view.id in risk.task_ids],
         )
 
     def task_evidence(self, project_id: str, snapshot_id: str, task_id: str) -> list[EvidenceView]:
@@ -932,7 +946,7 @@ class SQLiteQueryRepository:
                 values.append(secret.get_secret_value())
         return tuple(values)
 
-    _RUN_STAGES = ("source_collection", "monitoring", "quality", "verifier", "report")
+    _RUN_STAGES = ("source_collection", "monitoring", "proposals", "quality", "verifier", "report")
     _RUN_STATUSES = {status.value for status in RunStatus}
     _STAGE_STATUSES = {status.value for status in StageStatus}
 
@@ -1136,6 +1150,7 @@ class SQLiteQueryRepository:
                 providers=provider_attempts.get(name),
                 result_summary=summary,
                 error_code="stage_failed" if raw_error else None,
+                proposals=proposal_stage_diagnostic(raw_summary) if name == "proposals" else None,
             ))
         return RunStages(run_id=run_id, items=items)
 

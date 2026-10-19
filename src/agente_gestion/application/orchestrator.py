@@ -1004,7 +1004,7 @@ class ProjectOrchestrator:
                     errors = ["catalogue_error"]
             if errors:
                 failures.append({"choice_index": index, "codes": errors})
-        summary = json.dumps({"selected": len(keys), "saved": saved,
+        summary = json.dumps({"offered": len(choices), "selected": len(keys), "saved": saved,
             "technical_ready": technical_ready, "technical_blocked": technical_blocked,
             "limitations": sorted(set(codes)), "failures": failures}, sort_keys=True)
         run.stages["proposals"] = StageExecutionRecord(stage_name="proposals",
