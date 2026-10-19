@@ -25,14 +25,14 @@ Restricciones vigentes (verbatim del pedido): no modificar el pipeline multiagen
 
 - T1 [S1,S2] Modelo `TaskRisk` + proyección en `build_task_plan_summary` y `query_tasks_view`; tests unitarios. Route: inline. Estado: hecho.
 - T2 [S3] Test de separación con el `FakeProvider` narrativo; sin derivación de texto libre. Route: inline. Estado: hecho.
-- T3 [S4] Panel de riesgos del Dashboard con enlaces a tareas. Route: inline. Estado: pendiente.
-- T4 [S5] Sección de riesgo en el detalle de tarea + deep link `?task=`. Route: inline. Estado: pendiente.
+- T3 [S4] Panel de riesgos del Dashboard con enlaces a tareas. Route: inline. Estado: hecho.
+- T4 [S5] Sección de riesgo en el detalle de tarea + deep link `?task=`. Route: inline. Estado: hecho.
 - T5 [S6,S7] `_RUN_STAGES`, `ProposalStageDiagnostic`, parser seguro y `offered` en el resumen persistido. Route: inline. Estado: hecho.
 - T6 [S8,S11] Clasificación conservadora de outcomes y allowlist de códigos; tests de cada caso. Route: inline. Estado: hecho.
-- T7 [S9] Diagnóstico en RunDetailPage y estados vacíos de propuestas en React. Route: inline. Estado: pendiente.
+- T7 [S9] Diagnóstico en RunDetailPage y estados vacíos de propuestas en React. Route: inline. Estado: hecho.
 - T8 [S10] Aislamiento de proyecto/run; tests HTTP. Route: inline. Estado: hecho.
-- T9 [S12] Fixtures y specs Playwright (dashboard, detalle, run, bandeja). Route: inline. Estado: pendiente.
-- T10 [S12] Suites enfocadas, typecheck y build. Route: inline. Estado: pendiente.
+- T9 [S12] Fixtures y specs Playwright (dashboard, detalle, run, bandeja). Route: inline. Estado: hecho.
+- T10 [S12] Suites enfocadas, typecheck y build. Route: inline. Estado: hecho.
 
 Commits: `feat(api)` contratos y diagnóstico (T1,T2,T5,T6,T8 con sus tests) y `feat(web)` presentación (T3,T4,T7,T9).
 
@@ -45,3 +45,7 @@ Commits: `feat(api)` contratos y diagnóstico (T1,T2,T5,T6,T8 con sus tests) y `
 - L5. Decisión: `TaskDetailResponse.risks` es aditivo y se calcula en el repositorio; la lista de tareas no carga riesgos para no inflar el payload.
 - L6. RED→GREEN backend: `tests/test_g2_risk_diagnosis.py` con 20 pruebas (modelo de riesgo, contrato HTTP, aislamiento y diagnóstico de la etapa). RED observado (27 errores + 1 fallo por contrato ausente) y luego 20/20 en verde. Suite completa: 1138 pruebas en verde, 1 omitida.
 - L7. Verificación: `identified_risks` conserva texto y orden; `risk_task_ids` del informe coincide con la unión de tareas de los riesgos deterministas; el texto narrativo del `FakeProvider` no aparece en ningún riesgo.
+- L8. Decisión: el Dashboard muestra tipo, fundamento y enlaces a las tareas afectadas, sin repetir los conteos que ya viven en la grilla de métricas. El detalle de tarea muestra tipo, resumen, fundamento y trazabilidad a la captura; la tarjeta de Trello queda como fuente en la sección de evidencia, no como diagnóstico repetido.
+- L9. Decisión: deep link `?task=<id>` en la página de tareas para que el enlace del Dashboard abra directamente el detalle; al cerrar se limpia el parámetro. La etapa `proposals` entra en el pipeline visual entre `monitoring` y `quality`.
+- L10. RED→GREEN frontend: `frontend/e2e/g2-risks-diagnostics.spec.ts` con 6 pruebas. Se comprobó la sensibilidad mutando el código (panel del dashboard y orden de etapas): fallaron exactamente las 2 pruebas afectadas; tras revertir, 6/6 en verde. Suite completa: 141 pruebas en verde; `tsc --noEmit` y `vite build` sin errores.
+- L11. Ajuste de pruebas existentes: `web-platform.spec.ts` fijaba el pipeline de 5 etapas; se actualizó a 6 manteniendo la misma fuerza de aserciones (cada etiqueta de estado se sigue comprobando en su tarjeta).

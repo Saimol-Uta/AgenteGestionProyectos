@@ -12,6 +12,20 @@ export interface Paginated<T> {
   page_size: number;
 }
 
+export type RiskKind = "blocked" | "overdue" | "due_soon" | "contradictory_state" | "unknown_state";
+
+export interface TaskRisk {
+  risk_id: string;
+  project_id: string;
+  capture_id: string;
+  kind: RiskKind;
+  task_ids: string[];
+  task_count: number;
+  summary: string;
+  basis: string;
+  source: "deterministic";
+}
+
 export interface TaskPlanSummary {
   project_id: string;
   capture_id: string;
@@ -33,6 +47,7 @@ export interface TaskPlanSummary {
   unknown_task_ids: string[];
   contradictory_task_ids: string[];
   identified_risks: string[];
+  risks?: TaskRisk[];
 }
 
 export interface Project {
@@ -117,6 +132,7 @@ export interface TaskChange {
 export interface TaskDetailResponse extends TaskDetailView {
   evidence?: EvidenceItem[];
   history?: TaskChange[];
+  risks?: TaskRisk[];
 }
 
 export interface CaptureSummary {
@@ -179,6 +195,27 @@ export interface ProviderAttempt {
 
 export type StageStatus = "pending" | "running" | "completed" | "skipped" | "failed" | "needs_attention" | "unknown";
 
+export type ProposalStageOutcome =
+  | "saved"
+  | "not_configured"
+  | "rules_invalid"
+  | "no_candidates"
+  | "candidates_discarded"
+  | "not_selected"
+  | "unknown";
+
+export interface ProposalStageDiagnostic {
+  outcome: ProposalStageOutcome;
+  offered: number | null;
+  selected: number | null;
+  saved: number | null;
+  technical_ready: number | null;
+  technical_blocked: number | null;
+  limitation_codes: string[];
+  failure_codes: string[];
+  discarded: number;
+}
+
 export interface StageView {
   stage_name: string;
   status: StageStatus;
@@ -188,6 +225,7 @@ export interface StageView {
   providers: ProviderAttempt[] | null;
   result_summary: string | null;
   error_code: string | null;
+  proposals?: ProposalStageDiagnostic | null;
 }
 
 export interface RunStages {

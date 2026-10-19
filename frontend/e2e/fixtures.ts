@@ -29,6 +29,30 @@ export const summary = {
   unknown_task_ids: Array.from({ length: 25 }, (_, index) => `task-${index + 2}`),
   contradictory_task_ids: [],
   identified_risks: [],
+  risks: [
+    {
+      risk_id: "risk-fixture-overdue",
+      project_id: "hormigestio",
+      capture_id: "capture-current",
+      kind: "overdue",
+      task_ids: ["task-1"],
+      task_count: 1,
+      summary: "1 tarea(s) vencida(s) no completada(s).",
+      basis: "Tareas no completadas cuyo vencimiento es anterior al corte de la captura.",
+      source: "deterministic",
+    },
+    {
+      risk_id: "risk-fixture-due-soon",
+      project_id: "hormigestio",
+      capture_id: "capture-current",
+      kind: "due_soon",
+      task_ids: ["task-3"],
+      task_count: 1,
+      summary: "1 tarea(s) próxima(s) a vencer en la ventana de 7 días.",
+      basis: "Tareas no completadas cuyo vencimiento cae dentro de los 7 días posteriores al corte.",
+      source: "deterministic",
+    },
+  ],
 };
 
 export const project = {
@@ -166,6 +190,27 @@ export const stageRecords = {
   items: [
     { stage_name: "source_collection", status: "completed", recorded: true, duration_seconds: 4, completed_at: "2026-01-12T10:05:04-05:00", providers: null, result_summary: "Fuentes almacenadas consultadas", error_code: null },
     { stage_name: "monitoring", status: "completed", recorded: true, duration_seconds: 30, completed_at: "2026-01-12T10:05:34-05:00", providers: [{ provider: "local", model: "fixture-monitor", status: "succeeded", attempt_count: 1, duration_seconds: 30 }], result_summary: "Monitoreo persistido", error_code: null },
+    {
+      stage_name: "proposals",
+      status: "skipped",
+      recorded: true,
+      duration_seconds: 0.4,
+      completed_at: "2026-01-12T10:05:35-05:00",
+      providers: null,
+      result_summary: null,
+      error_code: null,
+      proposals: {
+        outcome: "no_candidates",
+        offered: 0,
+        selected: 0,
+        saved: 0,
+        technical_ready: 0,
+        technical_blocked: 0,
+        limitation_codes: ["unknown_task"],
+        failure_codes: [],
+        discarded: 0,
+      },
+    },
     { stage_name: "quality", status: "completed", recorded: true, duration_seconds: 42, completed_at: "2026-01-12T10:06:16-05:00", providers: [{ provider: "local", model: "fixture-quality", status: "succeeded", attempt_count: 1, duration_seconds: 42 }], result_summary: "Dos hallazgos candidatos", error_code: null },
     { stage_name: "verifier", status: "unknown", recorded: false, duration_seconds: null, completed_at: null, providers: null, result_summary: null, error_code: null },
     { stage_name: "report", status: "skipped", recorded: true, duration_seconds: null, completed_at: null, providers: null, result_summary: null, error_code: null },
@@ -657,6 +702,8 @@ export async function installApi(page: Page, options: {
   cycleConfirmStatus?: number;
   weeklyCycleStatuses?: Array<"queued" | "running" | "completed" | "failed" | "interrupted">;
   proposalAvailability?: "available" | "unknown";
+  proposalPendingActionableCount?: number | null;
+  emptyProposals?: boolean;
   reportAvailability?: "available" | "unknown";
   outboxAvailability?: "available" | "unknown";
   scheduleAvailability?: "configured" | "unknown";
@@ -801,8 +848,9 @@ export async function installApi(page: Page, options: {
 
     if (path.endsWith("/projects/hormigestio/proposals") && request.method() === "GET") {
       const available = options.proposalAvailability ?? "available";
-      const items = [...proposalRecords.values()].map(proposalSummaryView);
-      await json(route, { availability: available, items: available === "available" ? items : [], total: available === "available" ? items.length : 0, page: 1, page_size: 25 });
+      const items = options.emptyProposals ? [] : [...proposalRecords.values()].map(proposalSummaryView);
+      const pending = options.proposalPendingActionableCount ?? (options.emptyProposals ? 0 : items.length);
+      await json(route, { availability: available, items: available === "available" ? items : [], total: available === "available" ? items.length : 0, page: 1, page_size: 25, pending_actionable_count: pending });
       return;
     }
 
@@ -1203,6 +1251,7 @@ export async function installApi(page: Page, options: {
     if (path.endsWith("/projects/hormigestio/tasks/task-1")) {
       await json(route, {
         ...tasks[0],
+        risks: [summary.risks[0]],
         evidence: [
           {
             provenance: { id: "evidence-1", source: "trello", project_id: "hormigestio", timestamp: summary.captured_at },

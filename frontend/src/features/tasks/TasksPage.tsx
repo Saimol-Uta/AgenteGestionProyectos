@@ -8,7 +8,7 @@ import {
 import { useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { queryKeys, useCaptureHistory, useProject, useProjects } from "../../api/queries";
-import { comparisonValue, fieldLabel, formatDate, taskStateLabel, taskStateTone } from "../../api/formatters";
+import { comparisonValue, fieldLabel, formatDate, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone } from "../../api/formatters";
 import type { DomainTaskState, TaskChange, TaskDetailResponse, TaskQuery } from "../../api/types";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
@@ -63,11 +63,13 @@ function TaskDetailDialog({
   projectId,
   taskId,
   captureId,
+  onSelectTask,
   onClose,
 }: {
   projectId: string;
   taskId: string | null;
   captureId?: string;
+  onSelectTask: (taskId: string) => void;
   onClose: () => void;
 }) {
   const [showComparison, setShowComparison] = useState(false);
@@ -155,6 +157,7 @@ function TaskDetailDialog({
                 </div>
               </section>
 
+              <RiskSection task={task} onSelectTask={onSelectTask} />
               <DependencySection task={task} />
               <EvidenceSection task={task} />
               <TaskHistorySection history={taskChanges} />
@@ -206,6 +209,48 @@ function TaskDetailDialog({
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+function RiskSection({ task, onSelectTask }: { task: TaskDetailResponse; onSelectTask: (taskId: string) => void }) {
+  const risks = task.risks ?? [];
+  return (
+    <section className="detail-section">
+      <div className="detail-section-heading">
+        <div>
+          <h3>Clasificación de riesgo</h3>
+          <p>Clasificación determinista de la captura. La tarjeta de Trello es la fuente de la observación, no un diagnóstico repetido.</p>
+        </div>
+        <ShieldAlert aria-hidden="true" size={16} />
+      </div>
+      {risks.length === 0 ? (
+        <p className="field-help">El backend no clasificó esta tarea con riesgo determinista en la captura consultada.</p>
+      ) : (
+        <ul className="risk-detail-list">
+          {risks.map((risk) => (
+            <li key={risk.risk_id}>
+              <div className="risk-detail-head">
+                <Pill tone={riskKindTone(risk.kind)}>{riskKindLabel(risk.kind)}</Pill>
+                <span className="risk-detail-summary">{risk.summary}</span>
+              </div>
+              <p className="risk-detail-basis">{risk.basis}</p>
+              <p className="field-help">Trazabilidad: captura {risk.capture_id} · identificación {risk.risk_id}</p>
+              {risk.task_ids.length > 1 && (
+                <p className="field-help">
+                  Afecta a {risk.task_count} tareas:{" "}
+                  {risk.task_ids.map((taskId, index) => (
+                    <span key={taskId}>
+                      {index > 0 ? ", " : ""}
+                      <button type="button" className="task-link-button" onClick={() => onSelectTask(taskId)}>{taskId}</button>
+                    </span>
+                  ))}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -373,6 +418,8 @@ export function TasksPage() {
     placeholderData: (previous) => previous,
   });
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const deepLinkedTaskId = searchParams.get("task") ?? "";
+  const openTaskId = selectedTaskId ?? (deepLinkedTaskId || null);
   const search = searchParams.get("q") ?? "";
   const state = queryState(searchParams.get("state")) ?? "";
   const assignee = searchParams.get("assignee_id") ?? "";
@@ -517,9 +564,13 @@ export function TasksPage() {
 
       <TaskDetailDialog
         projectId={project.id}
-        taskId={selectedTaskId}
+        taskId={openTaskId}
         captureId={project.summary?.capture_id}
-        onClose={() => setSelectedTaskId(null)}
+        onSelectTask={setSelectedTaskId}
+        onClose={() => {
+          setSelectedTaskId(null);
+          if (deepLinkedTaskId) updateFilters({ task: null }, false);
+        }}
       />
     </section>
   );

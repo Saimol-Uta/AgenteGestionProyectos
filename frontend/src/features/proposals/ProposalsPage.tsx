@@ -273,7 +273,24 @@ export function ProposalsPage() {
       {proposalsQuery.isPending && <LoadingState label="Consultando propuestas del backend…" />}
       {proposalsQuery.isError && <ErrorState title="No se pudieron cargar las propuestas" message={proposalsQuery.error.message} onRetry={() => void proposalsQuery.refetch()} />}
       {proposalsQuery.data?.availability === "unknown" && <EmptyState title="Disponibilidad de propuestas desconocida" message="La API no pudo confirmar la disponibilidad de propuestas; no se interpreta como una bandeja vacía." />}
-      {proposalsQuery.data?.availability === "available" && proposalsQuery.data.items.length === 0 && <EmptyState title="No hay propuestas disponibles" message="El backend confirmó la consulta y no devolvió propuestas." />}
+      {proposalsQuery.data?.availability === "available" && proposalsQuery.data.items.length === 0 && (
+        <div className="proposal-empty-state">
+          <EmptyState
+            title="No hay propuestas registradas"
+            message="El backend confirmó la consulta y no devolvió propuestas para este proyecto. El motivo está en el diagnóstico de la etapa de propuestas de la última ejecución."
+          />
+          {project?.latest_run_id && (
+            <Link className="button button-secondary button-small" to={`/analysis/${project.latest_run_id}`}>
+              Ver el diagnóstico de la última ejecución
+            </Link>
+          )}
+        </div>
+      )}
+      {proposalsQuery.data?.availability === "available" && proposalsQuery.data.items.length > 0 && proposalsQuery.data.pending_actionable_count === 0 && (
+        <p className="unknown-note" role="status">
+          No hay propuestas pendientes de decisión: las {proposalsQuery.data.total} propuestas registradas se encuentran en otros estados.
+        </p>
+      )}
 
       {proposalsQuery.data?.availability === "available" && proposalsQuery.data.items.length > 0 && (
         <div className="proposal-workspace">

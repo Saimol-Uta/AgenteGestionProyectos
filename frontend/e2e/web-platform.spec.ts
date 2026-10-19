@@ -118,8 +118,12 @@ test("una etapa desconocida no se presenta como omitida y una omisión requiere 
   await installApi(page);
   await page.goto("/analysis?run_id=run-current");
 
-  await expect(page.getByText("No registrado; estado desconocido", { exact: true })).toBeVisible();
-  await expect(page.getByText("Omitida explícitamente", { exact: true })).toBeVisible();
+  const pipeline = page.getByRole("region", { name: "Etapas del pipeline" });
+  const card = (name: string) => pipeline.getByRole("article").filter({
+    has: page.getByRole("heading", { name, exact: true }),
+  });
+  await expect(card("Verificación de hallazgos").getByText("No registrado; estado desconocido", { exact: true })).toBeVisible();
+  await expect(card("Elaboración del informe").getByText("Omitida explícitamente", { exact: true })).toBeVisible();
   await expect(page.getByText("Fuentes almacenadas consultadas", { exact: true })).toBeVisible();
   await expect(page.getByText("local · fixture-monitor", { exact: true })).toBeVisible();
 });
@@ -135,6 +139,7 @@ test("pipeline stage states follow recorded public records", async ({ page }) =>
         { ...stageRecords.items[2], status: "skipped", recorded: true },
         { ...stageRecords.items[3], status: "unknown", recorded: true },
         { ...stageRecords.items[4], status: "skipped", recorded: false },
+        { ...stageRecords.items[5], status: "completed", recorded: true },
       ],
     } });
   });
@@ -145,9 +150,10 @@ test("pipeline stage states follow recorded public records", async ({ page }) =>
   });
   await expect(card("Recopilación de fuentes").getByText("Completada", { exact: true })).toBeVisible();
   await expect(card("Seguimiento del proyecto").getByText("Fallida", { exact: true })).toBeVisible();
-  await expect(card("Revisión de calidad").getByText("Omitida explícitamente", { exact: true })).toBeVisible();
-  await expect(card("Verificación de hallazgos").getByText("Desconocida", { exact: true })).toBeVisible();
-  await expect(card("Elaboración del informe").getByText("No registrado; estado desconocido", { exact: true })).toBeVisible();
+  await expect(card("Propuestas generadas").getByText("Omitida explícitamente", { exact: true })).toBeVisible();
+  await expect(card("Revisión de calidad").getByText("Desconocida", { exact: true })).toBeVisible();
+  await expect(card("Verificación de hallazgos").getByText("No registrado; estado desconocido", { exact: true })).toBeVisible();
+  await expect(card("Elaboración del informe").getByText("Completada", { exact: true })).toBeVisible();
   await expect(card("Elaboración del informe").getByText("Omitida explícitamente", { exact: true })).toHaveCount(0);
 });
 

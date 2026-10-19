@@ -21,12 +21,14 @@ import { useWorkspace } from "../../app/WorkspaceContext";
 import { useSession } from "../auth/SessionProvider";
 import { RepositoryResultsPanel } from "../../components/RepositoryResultsPanel";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
+import { ProposalStageDiagnosticCard } from "./ProposalStageDiagnosticCard";
 import type { RunStatus, StageView } from "../../api/types";
 import "./run-detail.css";
 
 const PIPELINE_STAGE_ORDER = [
   "source_collection",
   "monitoring",
+  "proposals",
   "quality",
   "verifier",
   "report",
@@ -246,7 +248,7 @@ export function RunDetailPage() {
           </article>
           <article className="run-kpi-card">
             <span className="run-kpi-label">Etapas completadas</span>
-            <span className="run-kpi-value">{kpis.completedStages} / 5</span>
+            <span className="run-kpi-value">{kpis.completedStages} / {PIPELINE_STAGE_ORDER.length}</span>
           </article>
         </div>
       </section>
@@ -258,7 +260,7 @@ export function RunDetailPage() {
             <p className="eyebrow">SECUENCIA DEL FLUJO</p>
             <h2 id="pipeline-heading">Etapas del pipeline</h2>
           </div>
-          <span className="caption">Source Collection → Monitoring → Quality → Verification → Report</span>
+          <span className="caption">Source Collection → Monitoring → Proposals → Quality → Verification → Report</span>
         </div>
         {stagesQuery.isPending && <LoadingState label="Consultando registros de etapas…" />}
         {stagesQuery.isError && <ErrorState title="No se pudieron cargar las etapas" message={stagesQuery.error.message} onRetry={() => void stagesQuery.refetch()} />}
@@ -281,6 +283,9 @@ export function RunDetailPage() {
                     Duración: {formatDurationSeconds(stage?.duration_seconds ?? null)}
                   </span>
                   {stage?.result_summary && <p className="stage-card-summary">{stage.result_summary}</p>}
+                  {stageName === "proposals" && stage?.proposals && (
+                    <ProposalStageDiagnosticCard diagnostic={stage.proposals} />
+                  )}
                   {stage?.error_code && (
                     <p className="stage-error" style={{ margin: "4px 0 0", fontSize: "10px" }}>
                       Error reportado: <code>{stage.error_code}</code>

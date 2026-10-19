@@ -387,6 +387,19 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .capture-date { color: var(--text-secondary); }
 .risks-panel { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 .risk-list { list-style: disc; padding-left: 18px; color: var(--text-secondary); font-size: 11px; }
+.risk-list .risk-item { display: flex; flex-direction: column; gap: 5px; list-style: none; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.risk-item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.risk-item-basis { color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
+.risk-item-tasks { margin: 0; color: var(--text-muted); font-size: 9px; }
+.risk-task-links { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.risk-task-links a { color: var(--accent); font-size: 9px; }
+.risk-detail-list { display: flex; flex-direction: column; gap: 9px; margin: 12px 0 0; padding: 0; list-style: none; }
+.risk-detail-list > li { display: flex; flex-direction: column; gap: 5px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.risk-detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.risk-detail-summary { color: var(--text-secondary); font-size: 10px; }
+.risk-detail-basis { margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.task-link-button { padding: 0; color: var(--accent); border: 0; background: transparent; font-size: 9px; text-decoration: underline; cursor: pointer; }
+.proposal-empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 
 .pill { display: inline-flex; min-height: 22px; align-items: center; justify-content: center; gap: 4px; padding: 2px 7px; border: 1px solid transparent; border-radius: 99px; font-size: 9px; font-weight: 620; line-height: 1.15; white-space: nowrap; }
 .pill-neutral { color: var(--text-secondary); border-color: var(--border); background: var(--surface-hover); }

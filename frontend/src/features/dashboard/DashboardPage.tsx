@@ -11,7 +11,7 @@ import {
 } from "recharts";
 import { api } from "../../api/client";
 import { queryKeys, useCaptureHistory, useProject, useProjectSummary, useProjects } from "../../api/queries";
-import { formatDate, formatPercentage, taskStateLabel, taskStateTone } from "../../api/formatters";
+import { formatDate, formatPercentage, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone } from "../../api/formatters";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 import type { DomainTaskState, TaskDetailView, TaskPlanSummary, TaskQuery } from "../../api/types";
@@ -316,6 +316,7 @@ export function DashboardPage() {
   const project = listedProject ?? selectedProjectQuery.data ?? (!selectedProjectId ? projects[0] ?? null : null);
   const summaryQuery = useProjectSummary(project?.id ?? null);
   const historyQuery = useCaptureHistory(project?.id ?? null);
+  const captureRisks = summaryQuery.data?.risks ?? [];
   const criticalFilter = useMemo<TaskQuery>(() => ({
     capture_id: summaryQuery.data?.capture_id,
     critical_only: true,
@@ -478,14 +479,32 @@ export function DashboardPage() {
 
           <ExecutiveInsights projectId={project.id} />
 
-          {summaryQuery.data.identified_risks.length > 0 && (
+          {captureRisks.length > 0 && (
             <section className="panel risks-panel" aria-labelledby="risks-heading">
               <div className="section-heading compact-heading">
-                <div><p className="eyebrow">RESUMEN DE PLANIFICACIÓN</p><h2 id="risks-heading">Riesgos reportados</h2></div>
-                <Pill tone="warning">{summaryQuery.data.identified_risks.length} informados</Pill>
+                <div><p className="eyebrow">RESUMEN DE PLANIFICACIÓN</p><h2 id="risks-heading">Riesgos de la captura</h2></div>
+                <Pill tone="warning">{captureRisks.length} informados</Pill>
               </div>
+              <p className="section-subtitle">
+                Clasificación determinista calculada sobre la captura. Las observaciones narrativas del análisis no se presentan como riesgos confirmados.
+              </p>
               <ul className="risk-list">
-                {summaryQuery.data.identified_risks.map((risk, index) => <li key={`${index}-${risk}`}>{risk}</li>)}
+                {captureRisks.map((risk) => (
+                  <li key={risk.risk_id} className="risk-item">
+                    <div className="risk-item-head">
+                      <Pill tone={riskKindTone(risk.kind)}>{riskKindLabel(risk.kind)}</Pill>
+                      <span className="risk-item-basis">{risk.basis}</span>
+                    </div>
+                    <p className="risk-item-tasks">Tareas afectadas ({risk.task_count}):</p>
+                    <ul className="risk-task-links">
+                      {risk.task_ids.map((taskId) => (
+                        <li key={taskId}>
+                          <Link to={`/tasks?task=${encodeURIComponent(taskId)}`}>{taskId}</Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
               </ul>
             </section>
           )}

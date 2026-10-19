@@ -1,4 +1,11 @@
-import type { AnalysisExecutionMode, AnalysisPreparation, DomainTaskState } from "./types";
+import type {
+  AnalysisExecutionMode,
+  AnalysisPreparation,
+  DomainTaskState,
+  ProposalStageDiagnostic,
+  ProposalStageOutcome,
+  RiskKind,
+} from "./types";
 
 const sourceProviderLabels: Record<string, string> = {
   trello: "Trello",
@@ -118,6 +125,7 @@ export function stageNameLabel(stage: string): string {
   const labels: Record<string, string> = {
     source_collection: "Recopilación de fuentes",
     monitoring: "Seguimiento del proyecto",
+    proposals: "Propuestas generadas",
     quality: "Revisión de calidad",
     verifier: "Verificación de hallazgos",
     report: "Elaboración del informe",
@@ -183,4 +191,61 @@ export function comparisonValue(value: unknown, field?: string | null): string {
   if (typeof value === "string" && field?.endsWith("date")) return formatDate(value, true);
   if (typeof value === "string") return value;
   return JSON.stringify(value);
+}
+
+export function riskKindLabel(kind: RiskKind): string {
+  const labels: Record<RiskKind, string> = {
+    blocked: "Bloqueada",
+    overdue: "Vencida",
+    due_soon: "Próxima a vencer",
+    contradictory_state: "Señales contradictorias",
+    unknown_state: "Estado desconocido",
+  };
+  return labels[kind] ?? kind;
+}
+
+export function riskKindTone(kind: RiskKind): "neutral" | "positive" | "warning" | "danger" | "unknown" {
+  if (kind === "overdue") return "danger";
+  if (kind === "blocked" || kind === "contradictory_state") return "warning";
+  if (kind === "unknown_state") return "unknown";
+  return "neutral";
+}
+
+export function proposalOutcomeLabel(outcome: ProposalStageOutcome): string {
+  const labels: Record<ProposalStageOutcome, string> = {
+    saved: "Propuestas generadas",
+    not_configured: "Reglas de propuestas no configuradas",
+    rules_invalid: "Reglas de propuestas no válidas",
+    no_candidates: "No se encontraron candidatos válidos",
+    candidates_discarded: "Los candidatos fueron descartados",
+    not_selected: "El agente no seleccionó candidatos",
+    unknown: "Motivo no determinable",
+  };
+  return labels[outcome] ?? "Motivo no determinable";
+}
+
+export function proposalOutcomeTone(outcome: ProposalStageOutcome): "neutral" | "positive" | "warning" | "danger" | "unknown" {
+  if (outcome === "saved") return "positive";
+  if (outcome === "candidates_discarded" || outcome === "rules_invalid") return "warning";
+  if (outcome === "unknown") return "unknown";
+  return "neutral";
+}
+
+export function proposalOutcomeExplanation(diagnostic: ProposalStageDiagnostic): string {
+  switch (diagnostic.outcome) {
+    case "saved":
+      return `El backend guardó ${diagnostic.saved ?? 0} propuesta(s) de ${diagnostic.selected ?? 0} selección(es) sobre ${diagnostic.offered ?? 0} candidato(s) disponible(s).`;
+    case "not_configured":
+      return "El proyecto no tiene reglas de propuestas configuradas, por lo que el backend no pudo generar candidatos.";
+    case "rules_invalid":
+      return "El proyecto tiene reglas configuradas, pero el backend las rechazó al validarlas; no se generaron candidatos.";
+    case "no_candidates":
+      return "Las reglas se aplicaron a la captura y no produjeron ningún candidato válido.";
+    case "candidates_discarded":
+      return `El agente seleccionó ${diagnostic.selected ?? 0} candidato(s) y el backend descartó ${diagnostic.discarded} al validarlos.`;
+    case "not_selected":
+      return `El backend ofreció ${diagnostic.offered ?? 0} candidato(s) y el agente no seleccionó ninguno.`;
+    default:
+      return "El resumen persistido no alcanza para probar el motivo; no se atribuye una causa que los datos no sostienen.";
+  }
 }
