@@ -15,6 +15,13 @@ from agente_gestion.domain.security_rbac import SecurityAuditEntry, hash_token_f
 from agente_gestion.ports.code_action_port import CodeActionPort
 
 
+APPROVAL_REVIEW_REQUIRED_CODE = "revision_independiente_requerida"
+APPROVAL_REVIEW_REQUIRED_MESSAGE = (
+    "No se puede aprobar ni ejecutar esta corrección de GitHub: requiere una revisión "
+    "independiente vinculada al parche exacto y ese mecanismo aún no está disponible."
+)
+
+
 class FindingDecisionError(RuntimeError):
     """Stable HTTP-safe error returned by the finding decision use case."""
 
@@ -471,6 +478,11 @@ class FindingDecisionService:
             raise FindingDecisionError(404, "hallazgo_no_encontrado", "No se encontró el hallazgo solicitado.")
         if decision not in {"approve", "reject", "request_changes"}:
             raise FindingDecisionError(422, "decision_invalida", "La decisión enviada no es válida.")
+        if decision == "approve":
+            # Defect confirmation and source/syntax checks do not review the corrective patch.
+            raise FindingDecisionError(
+                409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
+            )
         if suggested_code_override is not None and not suggested_code_override.strip():
             raise FindingDecisionError(422, "codigo_sugerido_invalido", "El código alternativo no puede estar vacío.")
         self._validate_origin(

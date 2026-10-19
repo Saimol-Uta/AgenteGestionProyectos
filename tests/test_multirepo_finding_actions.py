@@ -2,8 +2,10 @@
 
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,13 +62,14 @@ class _FakeGitHubHttp:
 
 
 class _RecordingCodeActionPort:
-    def __init__(self):
+    def __init__(self, execution_mode="sandbox"):
+        self.execution_mode = execution_mode
         self.calls = []
 
     def create_verification_branch(self, **kwargs):
         self.calls.append(kwargs)
         return BranchExecutionResult(
-            execution_mode="sandbox",
+            execution_mode=self.execution_mode,
             branch_name=kwargs["target_branch"],
             branch_url=f"sandbox://branches/{kwargs['target_branch']}",
             commit_sha_applied="d" * 64,
@@ -316,85 +319,48 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             self.assertEqual((root / "actions.sqlite").read_bytes(), before_database)
             self.assertEqual(port.calls, [])
 
-    def test_scoped_approval_uses_its_persisted_repository_and_ref(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            client, port, _storage, findings = self._client(Path(tmp))
-            self.addCleanup(client.close)
-            finding = findings[0]
-            login = client.post(
-                "/api/v1/auth/login", json={"token": OPERATOR_TOKEN},
-                headers={"Origin": "http://testserver"},
-            )
-            self.assertEqual(login.status_code, 200, login.text)
-            headers = {
-                "Origin": "http://testserver",
-                "X-CSRF-Token": login.json()["csrf_token"],
-                "Idempotency-Key": "multirepo-frontend-0001",
-            }
-            path = f"/api/v1/runs/{RUN_ID}/findings/{finding.id}/decision"
-            body = {"decision": "approve", "reason": "Human-approved frontend change."}
+    def test_approval_gate_blocks_sandbox_and_live_without_calling_the_port(self):
+        for execution_mode, source_mode, external_writes in (
+            ("sandbox", "fixtures", False), ("live", "real", True),
+        ):
+            with self.subTest(execution_mode=execution_mode), tempfile.TemporaryDirectory() as tmp:
+                client, _default_port, storage, findings = self._client(Path(tmp))
+                self.addCleanup(client.close)
+                port = _RecordingCodeActionPort(execution_mode=execution_mode)
+                client.app.state.code_action_port = port
+                settings = client.app.state.settings
+                project = settings.projects[0].model_copy(update={"source_mode": source_mode})
+                client.app.state.settings = settings.model_copy(update={
+                    "projects": (project,), "external_writes_enabled": external_writes,
+                })
+                finding = findings[0]
+                auth = self._authenticate(client)
+                headers = {**auth, "Idempotency-Key": f"approval-gate-{execution_mode}-0001"}
+                path = f"/api/v1/runs/{RUN_ID}/findings/{finding.id}/decision"
+                body = {
+                    "decision": "approve", "suggested_code_override": "    return value.strip()",
+                    "reason": "Un defecto confirmado no revisa el parche correctivo exacto.",
+                }
+                before_report = storage.get_report(REPORT_ID).model_dump_json()
+                before_findings = storage.get_findings(RUN_ID)
 
-            response = client.post(path, headers=headers, json=body)
+                for _attempt in range(2):
+                    response = client.post(path, headers=headers, json=body)
+                    self.assertEqual(response.status_code, 409, response.text)
+                    self.assertEqual(response.json()["error"]["code"], "revision_independiente_requerida")
+                    self.assertEqual(
+                        response.json()["error"]["message"],
+                        "No se puede aprobar ni ejecutar esta corrección de GitHub: requiere una "
+                        "revisión independiente vinculada al parche exacto y ese mecanismo aún no está disponible.",
+                    )
 
-            self.assertEqual(response.status_code, 200, response.text)
-            result = response.json()
-            self.assertEqual(result["repository_id"], "frontend")
-            self.assertEqual(result["repository_owner"], "acme")
-            self.assertEqual(result["repository_name"], "frontend")
-            self.assertEqual(result["source_commit_sha"], COMMIT_SHA)
-            self.assertEqual(len(port.calls), 1)
-            self.assertEqual(port.calls[0]["repo"], "acme/frontend")
-            self.assertEqual(port.calls[0]["base_branch"], "release/frontend")
-            self.assertEqual(port.calls[0]["file_path"], FILE_PATH)
-            self.assertEqual(port.calls[0]["original_excerpt"], "    return value")
-            self.assertNotEqual(result["commit_sha_applied"], COMMIT_SHA)
-            self.assertRegex(result["branch_name"], r"^quality/[A-Za-z0-9._/-]+$")
-            self.assertNotIn(":", result["branch_name"])
-
-            replay = client.post(path, headers=headers, json=body)
-            self.assertEqual(replay.status_code, 200, replay.text)
-            self.assertTrue(replay.json()["reused"])
-            self.assertEqual(replay.json(), result | {"reused": True})
-            self.assertEqual(len(port.calls), 1)
-
-            audit = client.get(f"/api/v1/projects/{PROJECT_ID}/audit/{result['audit_event_id']}")
-            self.assertEqual(audit.status_code, 200, audit.text)
-            self.assertEqual(audit.json()["details"]["finding_id"], finding.id)
-            self.assertEqual(audit.json()["details"]["repository_id"], "frontend")
-            self.assertEqual(audit.json()["details"]["repository_owner"], "acme")
-            self.assertEqual(audit.json()["details"]["repository_name"], "frontend")
-            self.assertEqual(audit.json()["details"]["source_commit_sha"], COMMIT_SHA)
-
-            backend_finding = findings[1]
-            backend_headers = {
-                **headers,
-                "Idempotency-Key": "multirepo-backend-0001",
-            }
-            backend_path = f"/api/v1/runs/{RUN_ID}/findings/{backend_finding.id}/decision"
-            cross_scope_replay = client.post(
-                backend_path,
-                headers={**backend_headers, "Idempotency-Key": headers["Idempotency-Key"]},
-                json=body,
-            )
-            self.assertEqual(cross_scope_replay.status_code, 409, cross_scope_replay.text)
-            self.assertEqual(cross_scope_replay.json()["error"]["code"], "decision_conflictiva")
-            self.assertEqual(len(port.calls), 1)
-
-            backend = client.post(backend_path, headers=backend_headers, json=body)
-            self.assertEqual(backend.status_code, 200, backend.text)
-            self.assertEqual(backend.json()["repository_id"], "backend")
-            self.assertEqual(backend.json()["repository_name"], "backend")
-            self.assertEqual(port.calls[1]["repo"], "acme/backend")
-            self.assertEqual(port.calls[1]["base_branch"], "release/backend")
-            self.assertNotEqual(backend.json()["branch_name"], result["branch_name"])
-
-            client_supplied_origin = client.post(
-                f"/api/v1/runs/{RUN_ID}/findings/{backend_finding.id}/decision",
-                headers={**backend_headers, "Idempotency-Key": "multirepo-client-origin-0001"},
-                json={**body, "repository": "acme/frontend", "commit_sha": COMMIT_SHA},
-            )
-            self.assertEqual(client_supplied_origin.status_code, 422)
-            self.assertEqual(len(port.calls), 2)
+                self.assertEqual(storage.get_report(REPORT_ID).model_dump_json(), before_report)
+                self.assertEqual(storage.get_findings(RUN_ID), before_findings)
+                self.assertEqual(port.calls, [])
+                with closing(sqlite3.connect(Path(tmp) / "actions.sqlite")) as connection:
+                    counts = tuple(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                                   for table in ("finding_decisions", "finding_decision_requests", "security_audit_log"))
+                self.assertEqual(counts, (0, 0, 0))
 
 
     def test_reject_and_request_changes_are_scoped_replayable_and_audited(self):
@@ -451,14 +417,14 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             body = {"decision": "approve", "reason": "Only the stored origin is authorized."}
             refused = client.post(path, headers=headers, json=body)
             self.assertEqual(refused.status_code, 409, refused.text)
-            self.assertEqual(refused.json()["error"]["code"], "fuente_no_verificable")
+            self.assertEqual(refused.json()["error"]["code"], "revision_independiente_requerida")
             self.assertEqual(port.calls, [])
 
             client.app.state.settings = settings
             retry = client.post(path, headers=headers, json=body)
-            self.assertEqual(retry.status_code, 200, retry.text)
-            self.assertEqual(retry.json()["repository_id"], "frontend")
-            self.assertEqual(len(port.calls), 1)
+            self.assertEqual(retry.status_code, 409, retry.text)
+            self.assertEqual(retry.json()["error"]["code"], "revision_independiente_requerida")
+            self.assertEqual(len(port.calls), 0)
 
     def test_removed_configuration_keeps_stored_origin_visible_for_nonwriting_decisions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -512,7 +478,7 @@ class MultiRepoFindingActionTests(unittest.TestCase):
                 "decision": "approve", "reason": "Approval needs a known repository origin.",
             })
             self.assertEqual(approval.status_code, 409, approval.text)
-            self.assertEqual(approval.json()["error"]["code"], "fuente_no_verificable")
+            self.assertEqual(approval.json()["error"]["code"], "revision_independiente_requerida")
             self.assertEqual(port.calls, [])
 
             classification = client.post(path, headers=headers, json={
@@ -567,7 +533,7 @@ class MultiRepoFindingActionTests(unittest.TestCase):
                     **auth, "Idempotency-Key": f"{case}-refusal-0001",
                 }, json={"decision": "approve", "reason": "Must stay bound to stored origin."})
                 self.assertEqual(response.status_code, 409, response.text)
-                self.assertEqual(response.json()["error"]["code"], "fuente_no_verificable")
+                self.assertEqual(response.json()["error"]["code"], "revision_independiente_requerida")
                 self.assertEqual(port.calls, [])
 
     def test_missing_full_source_hash_and_missing_excerpt_refuse_without_branch_calls(self):
@@ -602,7 +568,7 @@ class MultiRepoFindingActionTests(unittest.TestCase):
                     **auth, "Idempotency-Key": f"{case}-refusal-0001",
                 }, json={"decision": "approve", "reason": "An exact full source and excerpt are required."})
                 self.assertEqual(response.status_code, 409, response.text)
-                self.assertEqual(response.json()["error"]["code"], "fuente_no_verificable")
+                self.assertEqual(response.json()["error"]["code"], "revision_independiente_requerida")
                 self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
                 self.assertEqual(port.calls, [])
 
@@ -639,13 +605,15 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             response = client.post(path, headers={
                 **auth, "Idempotency-Key": "unsupported-syntax-refusal-0001",
             }, json={"decision": "approve", "reason": "Unsupported syntax must fail closed."})
-            self.assertEqual(response.status_code, 422, response.text)
-            self.assertEqual(response.json()["error"]["code"], "validacion_sintaxis_no_soportada")
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(response.json()["error"]["code"], "revision_independiente_requerida")
+            self.assertIn("parche exacto", response.json()["error"]["message"])
             self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
             self.assertEqual(port.calls, [])
 
-    def test_legacy_approval_receipt_is_not_replayed_without_a_stored_origin(self):
+    def test_successful_approval_receipt_replay_is_blocked_even_with_bound_origin(self):
         from agente_gestion.application.finding_decisions import FindingDecisionService
+        from agente_gestion.api.finding_actions import _configured_origin
         from agente_gestion.domain.security_rbac import SecurityAuditEntry, hash_token_fingerprint
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -660,14 +628,16 @@ class MultiRepoFindingActionTests(unittest.TestCase):
                 "decision": "approve", "target_branch": "quality/legacy-branch",
                 "reason": "Legacy approval request.",
             }
-            legacy_request = {
+            request = {
                 "decision": body["decision"], "suggested_code_override": None,
                 "target_branch": body["target_branch"], "reason": body["reason"],
                 "actor_id": session.actor,
             }
-            request_json = json.dumps(
-                legacy_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-            )
+            settings = client.app.state.settings
+            origin = client.app.state.repository.finding_action_context(RUN_ID, finding.id)[-1]
+            origin = _configured_origin(origin, settings, settings.projects[0])
+            request["origin"] = origin.model_dump(mode="json")
+            request_json = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
             request_id, event_id = FindingDecisionService._ids(
                 PROJECT_ID, RUN_ID, finding.id, key,
             )
@@ -708,7 +678,8 @@ class MultiRepoFindingActionTests(unittest.TestCase):
                 headers={**auth, "Idempotency-Key": key}, json=body,
             )
             self.assertEqual(response.status_code, 409, response.text)
-            self.assertEqual(response.json()["error"]["code"], "fuente_no_verificable")
+            self.assertEqual(response.json()["error"]["code"], "revision_independiente_requerida")
+            self.assertIn("parche exacto", response.json()["error"]["message"])
             self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "approved")
             self.assertEqual(port.calls, [])
 
@@ -736,7 +707,7 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             with self.assertRaises(FindingDecisionError) as caught:
                 service.decide(
                     project_id=PROJECT_ID, run_id=RUN_ID, finding_id=findings[0].id,
-                    candidate=forged_candidate, decision="approve",
+                    candidate=forged_candidate, decision="reject",
                     idempotency_key="crafted-cross-repository-0001", actor_id="test-operator",
                     session_cookie="synthetic-cookie", original_excerpt=backend_excerpt,
                     source=backend_source, repository=backend_repo,
@@ -755,7 +726,7 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             with self.assertRaises(FindingDecisionError) as bad_sha:
                 service.decide(
                     project_id=PROJECT_ID, run_id=RUN_ID, finding_id=findings[0].id,
-                    candidate=front, decision="approve", idempotency_key="tampered-source-sha-0001",
+                    candidate=front, decision="reject", idempotency_key="tampered-source-sha-0001",
                     actor_id="test-operator", session_cookie="synthetic-cookie",
                     original_excerpt=front_excerpt, source=front_source, repository=front_repo,
                     base_branch="release/frontend", origin=tampered_sha,
@@ -765,7 +736,7 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             with self.assertRaises(FindingDecisionError) as bad_excerpt:
                 service.decide(
                     project_id=PROJECT_ID, run_id=RUN_ID, finding_id=findings[0].id,
-                    candidate=front, decision="approve", idempotency_key="tampered-excerpt-0001",
+                    candidate=front, decision="reject", idempotency_key="tampered-excerpt-0001",
                     actor_id="test-operator", session_cookie="synthetic-cookie",
                     original_excerpt="    return attacker_controlled", source=front_source,
                     repository=front_repo, base_branch="release/frontend",
@@ -779,10 +750,10 @@ class MultiRepoFindingActionTests(unittest.TestCase):
             path = f"/api/v1/runs/{RUN_ID}/findings/{findings[0].id}/decision"
             accepted = client.post(path, headers={
                 **auth, "Idempotency-Key": "tampered-source-sha-0001",
-            }, json={"decision": "approve", "reason": "The stored frontend origin is valid."})
+            }, json={"decision": "request_changes", "reason": "The stored frontend origin is valid."})
             self.assertEqual(accepted.status_code, 200, accepted.text)
-            self.assertEqual(accepted.json()["repository_id"], "frontend")
-            self.assertEqual(len(port.calls), 1)
+            self.assertEqual(accepted.json()["decision_status"], "changes_requested")
+            self.assertEqual(len(port.calls), 0)
 
     def test_fake_github_refuses_cross_repository_and_changed_head_before_writes(self):
         from agente_gestion.adapters.github_code_action_adapter import CodeActionError, GitHubCodeActionAdapter

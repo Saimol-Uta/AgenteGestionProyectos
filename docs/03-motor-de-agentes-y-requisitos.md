@@ -51,6 +51,10 @@ El `ProjectOrchestrator` coordina etapas y persistencia. El fallback depende de 
 
 El coordinador es lógica de aplicación, no un agente adicional con autoridad. El uso académico de los nombres no cambia las capacidades del código.
 
+## Gate de aprobación correctiva GitHub
+
+La verificación independiente disponible corrobora si el defecto reportado existe; no revisa el código que se propone para corregirlo. Como no existe un contrato de revisión independiente vinculado al parche correctivo exacto, `approve` se bloquea tanto en sandbox como en live con el código API `revision_independiente_requerida`. El mensaje explica que la aprobación y ejecución requieren esa revisión; el rechazo y la solicitud de cambios siguen disponibles con sus recibos e idempotencia. No se registra ni ejecuta una aprobación denegada. El ciclo correctivo aceptado inicialmente se demuestra mediante Trello en sandbox.
+
 ## Matriz REQ-01 a REQ-11
 
 La tabla enlaza comportamiento implementado y evidencia local del código. No expresa porcentaje global ni declara que una integración externa haya sido verificada en vivo. La suite backend terminó con 844 pruebas aprobadas y 1 optativa real omitida; la interfaz pasó tipos, compilación y 92 pruebas Playwright. El pipeline determinista se ejecutó sin claves con corrida e informe persistidos. Consultar [INFORME_PRUEBAS.md](../INFORME_PRUEBAS.md) para los límites y advertencias.

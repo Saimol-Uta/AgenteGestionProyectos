@@ -10,7 +10,12 @@ from agente_gestion.api.errors import ApiProblem
 from agente_gestion.api.repository import DataIntegrityError, SQLiteQueryRepository
 from agente_gestion.api.routes import _require_project_capability, _require_session
 from agente_gestion.api.schemas import FindingDecisionRequest, FindingDecisionResponse
-from agente_gestion.application.finding_decisions import FindingDecisionError, FindingDecisionService
+from agente_gestion.application.finding_decisions import (
+    APPROVAL_REVIEW_REQUIRED_CODE,
+    APPROVAL_REVIEW_REQUIRED_MESSAGE,
+    FindingDecisionError,
+    FindingDecisionService,
+)
 from agente_gestion.api.security import FINDING_IDENTIFIER_PATTERN
 from agente_gestion.api.settings import IDENTIFIER_PATTERN
 from agente_gestion.domain.code_action import FindingActionOrigin
@@ -146,6 +151,10 @@ def decide_run_finding(
     session = _require_project_capability(
         request, project_id, "quality:decide", mutation=True,
     )
+    if body.decision == "approve":
+        raise ApiProblem(
+            409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
+        )
     try:
         candidate, original_excerpt, source, source_repository, origin = repository.finding_action_context(
             run_id, finding_id,

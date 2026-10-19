@@ -5,8 +5,6 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event
 from pathlib import Path
 
 from agente_gestion.adapters.llm.fake import FakeProvider
@@ -220,7 +218,7 @@ class Phase2QualityTests(unittest.TestCase):
         project = next(item for item in settings.projects if item.id == PROJECT_ID)
         return _configured_origin(origin, settings, project)
 
-    def test_approve_without_complete_source_is_rejected_before_any_durable_or_branch_write(self):
+    def test_approve_without_complete_source_is_blocked_by_corrective_review_gate(self):
         from agente_gestion.api.app import create_app
         from agente_gestion.api.finding_actions import router as finding_actions_router
         from agente_gestion.domain.code import CodeDiffSnippet
@@ -264,7 +262,8 @@ class Phase2QualityTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(response.status_code, 409, response.text)
-                self.assertEqual(response.json()["error"]["code"], "fuente_no_verificable")
+                self.assertEqual(response.json()["error"]["code"], "revision_independiente_requerida")
+                self.assertIn("revisión independiente", response.json()["error"]["message"])
                 self.assertEqual(storage.get_report(REPORT_ID).model_dump_json(), report_before)
                 self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
                 with closing(sqlite3.connect(fixture.database_path)) as connection:
@@ -277,7 +276,7 @@ class Phase2QualityTests(unittest.TestCase):
                 self.assertFalse(branches_dir.exists())
                 client.close()
 
-    def test_protected_decision_is_durable_idempotent_and_leaves_report_immutable(self):
+    def test_protected_approval_gate_preserves_auth_and_request_changes_replay(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture, storage = self._action_fixture(Path(tmp))
             branches_dir = Path(tmp) / "branches"
@@ -336,8 +335,9 @@ class Phase2QualityTests(unittest.TestCase):
             invalid_code = client.post(path, headers=headers, json={
                 **body, "suggested_code_override": "    return (",
             })
-            self.assertEqual(invalid_code.status_code, 422, invalid_code.text)
-            self.assertEqual(invalid_code.json()["error"]["code"], "codigo_sugerido_invalido")
+            self.assertEqual(invalid_code.status_code, 409, invalid_code.text)
+            self.assertEqual(invalid_code.json()["error"]["code"], "revision_independiente_requerida")
+            self.assertIn("parche exacto", invalid_code.json()["error"]["message"])
             self.assertFalse(branches_dir.exists())
             with closing(sqlite3.connect(fixture.database_path)) as connection:
                 counts = tuple(connection.execute(
@@ -346,37 +346,34 @@ class Phase2QualityTests(unittest.TestCase):
                     "finding_decisions", "finding_decision_requests", "security_audit_log",
                 ))
             self.assertEqual(counts, (0, 0, 0))
-            created = client.post(path, headers=headers, json=body)
+            denied = client.post(path, headers=headers, json=body)
+            self.assertEqual(denied.status_code, 409, denied.text)
+            self.assertEqual(denied.json()["error"]["code"], "revision_independiente_requerida")
+            self.assertFalse(branches_dir.exists())
+            with closing(sqlite3.connect(fixture.database_path)) as connection:
+                counts = tuple(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                               for table in ("finding_decisions", "finding_decision_requests", "security_audit_log"))
+            self.assertEqual(counts, (0, 0, 0))
+
+            changes = {"decision": "request_changes", "reason": "Ajustar antes de aprobar."}
+            change_headers = {**headers, "Idempotency-Key": "phase2-changes-0001"}
+            created = client.post(path, headers=change_headers, json=changes)
             self.assertEqual(created.status_code, 200, created.text)
             result = created.json()
-            self.assertEqual(result["decision_status"], "approved")
-            self.assertEqual(result["execution_mode"], "sandbox")
-            self.assertEqual(result["branch_name"], "quality/finding-candidate-001-phase2")
-            self.assertEqual(result["suggested_code"], body["suggested_code_override"])
-            self.assertTrue(result["commit_sha_applied"])
-            audit_event = client.get(
-                f"/api/v1/projects/{PROJECT_ID}/audit/{result['audit_event_id']}",
-            )
+            self.assertEqual(result["decision_status"], "changes_requested")
+            self.assertIsNone(result["branch_name"])
+            self.assertIsNone(result["commit_sha_applied"])
+            audit_event = client.get(f"/api/v1/projects/{PROJECT_ID}/audit/{result['audit_event_id']}")
             self.assertEqual(audit_event.status_code, 200, audit_event.text)
             self.assertEqual(audit_event.json()["event_id"], result["audit_event_id"])
-            patched_file = (Path(tmp) / "branches" / "quality" / "finding-candidate-001-phase2"
-                            / "src" / "api" / "input.py")
-            self.assertEqual(patched_file.read_text(encoding="utf-8"),
-                             "def parse_input(value):\n    return value.strip()\n")
-            replay = client.post(path, headers=headers, json=body)
+            replay = client.post(path, headers=change_headers, json=changes)
             self.assertEqual(replay.status_code, 200, replay.text)
             self.assertTrue(replay.json()["reused"])
-            conflict = client.post(path, headers=headers, json={**body, "reason": "otro motivo"})
+            conflict = client.post(path, headers=change_headers, json={**changes, "reason": "otro motivo"})
             self.assertEqual(conflict.status_code, 409)
             self.assertEqual(conflict.json()["error"]["code"], "idempotencia_conflictiva")
-            other_key = client.post(path, headers={**headers, "Idempotency-Key": "phase2-key-0003"}, json=body)
-            self.assertEqual(other_key.status_code, 409)
-            self.assertEqual(other_key.json()["error"]["code"], "aprobacion_ya_registrada")
             self.assertEqual(storage.get_report(REPORT_ID).model_dump_json(), before_report)
-            finding_row = storage.get_findings(RUN_ID)[0]
-            self.assertEqual(finding_row["decision_status"], "approved")
-            self.assertEqual(finding_row["suggested_code"], body["suggested_code_override"])
-            self.assertEqual(finding_row["branch_name"], result["branch_name"])
+            self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "changes_requested")
             with closing(sqlite3.connect(fixture.database_path)) as connection:
                 decisions = connection.execute("SELECT count(*) FROM finding_decisions").fetchone()[0]
                 requests = connection.execute("SELECT count(*) FROM finding_decision_requests").fetchone()[0]
@@ -390,7 +387,89 @@ class Phase2QualityTests(unittest.TestCase):
             with closing(sqlite3.connect(fixture.database_path)) as connection:
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute("DELETE FROM finding_decisions")
+            self.assertFalse(branches_dir.exists())
             client.close()
+
+    def test_direct_approval_requires_corrective_review_even_for_confirmed_defects(self):
+        from agente_gestion.application.finding_decisions import FindingDecisionError, FindingDecisionService
+        from agente_gestion.api.repository import SQLiteQueryRepository
+        from agente_gestion.domain.code_action import BranchExecutionResult
+
+        class RecordingPort:
+            def __init__(self):
+                self.calls = []
+
+            def create_verification_branch(self, **kwargs):
+                self.calls.append(kwargs)
+                return BranchExecutionResult(
+                    execution_mode="live", branch_name=kwargs["target_branch"],
+                    branch_url="https://example.invalid/branch", commit_sha_applied="d" * 40,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture, storage = self._action_fixture(Path(tmp))
+            candidate, excerpt, source, repo, origin = SQLiteQueryRepository(
+                fixture.client.app.state.settings,
+            ).finding_action_context(RUN_ID, FINDING_ID)
+            candidate = candidate.model_copy(update={"verification_status": "confirmed"})
+            origin = self._configured_action_origin(fixture, origin)
+            port = RecordingPort()
+            before_report = storage.get_report(REPORT_ID).model_dump_json()
+            service = FindingDecisionService(storage, port)
+
+            with self.assertRaises(FindingDecisionError) as caught:
+                service.decide(
+                    project_id=PROJECT_ID, run_id=RUN_ID, finding_id=FINDING_ID,
+                    candidate=candidate, decision="approve", idempotency_key="confirmed-approve-0001",
+                    actor_id="gestor-local", session_cookie="synthetic-cookie",
+                    original_excerpt=excerpt, source=source, repository=repo, base_branch="main",
+                    suggested_code_override="    return value.strip()", target_branch="quality/confirmed",
+                    reason="A defect confirmation is not review of its corrective patch.", origin=origin,
+                )
+            self.assertEqual((caught.exception.status_code, caught.exception.code),
+                             (409, "revision_independiente_requerida"))
+            self.assertEqual(
+                caught.exception.message,
+                "No se puede aprobar ni ejecutar esta corrección de GitHub: requiere una "
+                "revisión independiente vinculada al parche exacto y ese mecanismo aún no está disponible.",
+            )
+            self.assertEqual(port.calls, [])
+            self.assertEqual(storage.get_report(REPORT_ID).model_dump_json(), before_report)
+            self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
+            with closing(sqlite3.connect(fixture.database_path)) as connection:
+                counts = tuple(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                               for table in ("finding_decisions", "finding_decision_requests", "security_audit_log"))
+            self.assertEqual(counts, (0, 0, 0))
+
+    def test_direct_approval_gate_precedes_syntax_validation(self):
+        from agente_gestion.application.finding_decisions import FindingDecisionError, FindingDecisionService
+        from agente_gestion.api.repository import SQLiteQueryRepository
+
+        class UnexpectedPort:
+            def create_verification_branch(self, **_kwargs):
+                raise AssertionError("approval gate must precede code action")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture, storage = self._action_fixture(Path(tmp))
+            candidate, excerpt, source, repo, origin = SQLiteQueryRepository(
+                fixture.client.app.state.settings,
+            ).finding_action_context(RUN_ID, FINDING_ID)
+            origin = self._configured_action_origin(fixture, origin)
+            service = FindingDecisionService(storage, UnexpectedPort())
+            with self.assertRaises(FindingDecisionError) as caught:
+                service.decide(
+                    project_id=PROJECT_ID, run_id=RUN_ID, finding_id=FINDING_ID,
+                    candidate=candidate, decision="approve", idempotency_key="syntax-approve-0001",
+                    actor_id="gestor-local", session_cookie="synthetic-cookie",
+                    original_excerpt=excerpt, source=source, repository=repo, base_branch="main",
+                    suggested_code_override="    return (", target_branch="quality/invalid-syntax",
+                    reason="Sintaxis válida no sustituye revisión correctiva.", origin=origin,
+                )
+            self.assertEqual((caught.exception.status_code, caught.exception.code),
+                             (409, "revision_independiente_requerida"))
+            self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
+            with closing(sqlite3.connect(fixture.database_path)) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM finding_decision_requests").fetchone()[0], 0)
 
     def test_request_changes_records_without_calling_branch_port(self):
         from agente_gestion.application.finding_decisions import FindingDecisionService
@@ -417,7 +496,7 @@ class Phase2QualityTests(unittest.TestCase):
             self.assertIsNone(result["branch_name"])
             self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "changes_requested")
 
-    def test_failure_is_durably_replayed_without_a_second_code_action(self):
+    def test_approval_gate_prevents_replaying_or_calling_a_failing_action_port(self):
         from agente_gestion.adapters.github_code_action_adapter import CodeActionError
         from agente_gestion.application.finding_decisions import FindingDecisionError, FindingDecisionService
         from agente_gestion.api.repository import SQLiteQueryRepository
@@ -450,37 +529,25 @@ class Phase2QualityTests(unittest.TestCase):
                 with self.assertRaises(FindingDecisionError) as caught:
                     service.decide(**args)
                 self.assertEqual((caught.exception.status_code, caught.exception.code),
-                                 (503, "github_no_disponible"))
-            self.assertEqual(port.calls, 1)
-            self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "failed")
+                                 (409, "revision_independiente_requerida"))
+            self.assertEqual(port.calls, 0)
+            self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
             with closing(sqlite3.connect(fixture.database_path)) as connection:
-                rows = connection.execute(
-                    "SELECT state, error_code FROM finding_decision_requests WHERE finding_id=?",
-                    (FINDING_ID,),
-                ).fetchall()
+                requests = connection.execute("SELECT count(*) FROM finding_decision_requests").fetchone()[0]
                 decisions = connection.execute("SELECT count(*) FROM finding_decisions").fetchone()[0]
-            self.assertEqual(rows, [("failed", "github_no_disponible")])
-            self.assertEqual(decisions, 1)
+            self.assertEqual((requests, decisions), (0, 0))
 
-    def test_concurrent_decision_is_refused_while_first_action_is_reserved(self):
+    def test_repeated_direct_approvals_cannot_bypass_review_gate(self):
         from agente_gestion.application.finding_decisions import FindingDecisionError, FindingDecisionService
         from agente_gestion.api.repository import SQLiteQueryRepository
-        from agente_gestion.domain.code_action import BranchExecutionResult
 
-        class BlockingPort:
+        class UnexpectedPort:
             def __init__(self):
-                self.started = Event()
-                self.release = Event()
                 self.calls = 0
+
             def create_verification_branch(self, **_kwargs):
                 self.calls += 1
-                self.started.set()
-                if not self.release.wait(5):
-                    raise TimeoutError("test release timed out")
-                return BranchExecutionResult(
-                    execution_mode="sandbox", branch_name="quality/concurrent",
-                    branch_url="sandbox://branches/quality/concurrent", commit_sha_applied="d" * 64,
-                )
+                raise AssertionError("approval gate must precede code action")
 
         with tempfile.TemporaryDirectory() as tmp:
             fixture, storage = self._action_fixture(Path(tmp))
@@ -488,30 +555,23 @@ class Phase2QualityTests(unittest.TestCase):
                 fixture.client.app.state.settings,
             ).finding_action_context(RUN_ID, FINDING_ID)
             origin = self._configured_action_origin(fixture, origin)
-            port = BlockingPort()
+            port = UnexpectedPort()
             service = FindingDecisionService(storage, port)
-            base = {
-                "project_id": PROJECT_ID, "run_id": RUN_ID, "finding_id": FINDING_ID,
-                "candidate": candidate, "decision": "approve", "actor_id": "gestor-local",
-                "session_cookie": "cookie-fingerprint-only", "original_excerpt": excerpt,
-                "source": source, "repository": repo, "base_branch": "main",
-                "suggested_code_override": None, "reason": None, "origin": origin,
-            }
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                first = executor.submit(service.decide, **{
-                    **base, "idempotency_key": "concurrent-key-0001",
-                    "target_branch": "quality/concurrent",
-                })
-                self.assertTrue(port.started.wait(5))
+            for key in ("repeated-approve-0001", "repeated-approve-0002"):
                 with self.assertRaises(FindingDecisionError) as caught:
-                    service.decide(**{
-                        **base, "idempotency_key": "concurrent-key-0002",
-                        "target_branch": "quality/concurrent-other",
-                    })
-                self.assertEqual(caught.exception.code, "decision_en_curso")
-                port.release.set()
-                self.assertEqual(first.result(timeout=5)["decision_status"], "approved")
-            self.assertEqual(port.calls, 1)
+                    service.decide(
+                        project_id=PROJECT_ID, run_id=RUN_ID, finding_id=FINDING_ID,
+                        candidate=candidate, decision="approve", idempotency_key=key,
+                        actor_id="gestor-local", session_cookie="cookie-fingerprint-only",
+                        original_excerpt=excerpt, source=source, repository=repo, base_branch="main",
+                        suggested_code_override=None, target_branch="quality/repeated-approval",
+                        reason=None, origin=origin,
+                    )
+                self.assertEqual(caught.exception.code, "revision_independiente_requerida")
+            self.assertEqual(port.calls, 0)
+            self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
+            with closing(sqlite3.connect(fixture.database_path)) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM finding_decision_requests").fetchone()[0], 0)
 
     def test_decision_requires_idempotency_key_and_manager_project_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
