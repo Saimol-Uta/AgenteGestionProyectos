@@ -67,6 +67,6 @@ La clasificación es conservadora: cuando el resumen no alcanza para probar una 
 - Un proyecto, una captura o una tarea ajenos responden 404 y no devuelven datos de riesgo.
 - La consulta de etapas sigue resolviendo el run en la base local y devuelve 404 para un run inexistente.
 
-## 4. G3 (pendiente, no implementado)
+## 4. G3 (implementado)
 
-G3 asociará un riesgo a las propuestas que lo originan. Requiere un `risk_id` compartido, una referencia opcional de riesgo en `DomainProposalRule`, candidatos por riesgo en `monitoring_choices` y la cadena riesgo → tarea → propuesta → decisión en la interfaz. Nada de eso se implementó aquí: esta fase no toca `ActionProposal` ni el contrato de reglas.
+G3 ya vincula cada riesgo determinista con las propuestas que lo atienden y con las decisiones del gestor. El contrato completo está en `docs/g3-riesgos-y-propuestas.md`: las reglas declaran el **tipo** de riesgo, Monitoring resuelve el riesgo concreto contra la captura real, la propuesta conserva la referencia y la interfaz muestra la cadena riesgo → tarea → propuesta → revisión → decisión. Un riesgo nunca se marca como resuelto por aprobar o ejecutar una propuesta.

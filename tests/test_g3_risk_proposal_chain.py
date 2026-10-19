@@ -380,6 +380,44 @@ class RiskLinkReadModelTests(unittest.TestCase):
         risk = self._risk()
         self.assertEqual(risk["proposals"], [])
 
+    def test_relation_of_an_older_capture_is_historical_and_never_current(self):
+        older = next(
+            item for item in self.storage.list_snapshot_captures(PROJECT_ID)
+            if item.snapshot.id != CURRENT_SNAPSHOT_ID
+        )
+        due = older.snapshot.tasks[0].due_date
+        proposal = ActionProposal(
+            proposal_id="proposal-g3-older-capture",
+            project_id=PROJECT_ID,
+            task_id=TASK_ID,
+            observed_capture_id=older.capture_id,
+            field="due_date",
+            current_value=due,
+            proposed_value=due + timedelta(days=1),
+            evidence_ids=[self.evidence.provenance.id],
+            rationale="Ajustar el vencimiento con base en una captura anterior.",
+            expected_impact="Mantener el cronograma verificable.",
+            schema_version="action_proposal_v2",
+            risk_refs=[ProposalRiskRef(
+                risk_id="risk-" + "1" * 24, kind=RiskKind.due_soon, task_id=TASK_ID,
+                capture_id=older.capture_id,
+            )],
+        )
+        self.storage.save_action_proposal(proposal, [self.evidence])
+
+        # The current capture never shows a proposal of another capture.
+        risk = self._risk()
+        self.assertEqual(risk["proposals"], [])
+
+        # The historical proposal keeps its own capture and is reported as stale.
+        body = self.client.get(f"/api/v1/projects/{PROJECT_ID}/proposals").json()
+        historical = next(item for item in body["items"]
+                           if item["proposal_id"] == "proposal-g3-older-capture")
+        self.assertEqual(historical["capture_id"], older.capture_id)
+        self.assertEqual(historical["freshness"], "stale")
+        self.assertEqual(historical["risk_refs"][0]["capture_id"], older.capture_id)
+        self.assertFalse(historical["risk_refs"][0]["resolved"])
+
 
 if __name__ == "__main__":
     unittest.main()
