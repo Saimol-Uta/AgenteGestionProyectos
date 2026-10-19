@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installApi, proposalDetail } from "./fixtures";
 
-const risksRegion = (page: Page) => page.getByRole("region", { name: "Riesgos de la captura" });
+const risksRegion = (page: Page) => page.getByRole("region", { name: "Alertas de la captura" });
 const riskOrigin = (page: Page) => page.getByRole("region", { name: "Riesgo que motivó la acción" });
 
 test("el dashboard enlaza cada riesgo con las propuestas que lo motivaron y su estado", async ({ page }) => {
@@ -41,7 +41,7 @@ test("el detalle de tarea acepta el deep link con captura y muestra la propuesta
   await expect(dialog).toBeVisible();
   expect(observer.taskDetailReads.some((read) => read.includes("capture_id=capture-current"))).toBe(true);
 
-  const riskSection = dialog.locator("section").filter({ hasText: "Clasificación de riesgo" }).first();
+  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
   await expect(riskSection.getByText("Propuestas vinculadas (1):")).toBeVisible();
   await expect(riskSection.getByRole("link", { name: "proposal-date-001" })).toHaveAttribute("href", "/proposals?proposal_id=proposal-date-001");
   await expect(riskSection.getByText("Decisión pendiente", { exact: true })).toBeVisible();
@@ -60,7 +60,7 @@ test("el detalle de tarea de otra captura presenta la propuesta vinculada como h
   await expect(dialog).toBeVisible();
   expect(observer.taskDetailReads.some((read) => read.includes("capture_id=capture-previous"))).toBe(true);
 
-  const riskSection = dialog.locator("section").filter({ hasText: "Clasificación de riesgo" }).first();
+  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
   await expect(riskSection.getByText("Histórica", { exact: true })).toBeVisible();
 });
 
@@ -70,7 +70,7 @@ test("el detalle de tarea declara la ausencia de propuesta vinculada al riesgo",
 
   const dialog = page.getByRole("dialog", { name: "Validar sincronización 1" });
   await expect(dialog).toBeVisible();
-  const riskSection = dialog.locator("section").filter({ hasText: "Clasificación de riesgo" }).first();
+  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
   await expect(riskSection.getByText("No hay una propuesta vinculada a este riesgo")).toBeVisible();
 });
 
@@ -122,11 +122,12 @@ test("la navegación recorre riesgo, tarea y propuesta sin perder el origen", as
   await page.goto("/");
 
   const risks = risksRegion(page);
-  await risks.getByRole("link", { name: "task-1" }).click();
+  await risks.getByRole("link", { name: "Implementar API de pagos" }).click();
   await expect(page).toHaveURL(/task=task-1/);
 
   const dialog = page.getByRole("dialog", { name: "Implementar API de pagos" });
-  await dialog.getByRole("link", { name: "proposal-date-001" }).click();
+  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
+  await riskSection.getByRole("link", { name: "proposal-date-001" }).click();
   await expect(page).toHaveURL(/proposal_id=proposal-date-001/);
   await expect(page.getByRole("heading", { name: "Riesgo que motivó la acción" })).toBeVisible();
   await expect(page.getByText("risk-fixture-overdue", { exact: true })).toBeVisible();

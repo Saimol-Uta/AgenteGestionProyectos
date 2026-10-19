@@ -16,11 +16,11 @@ test("el dashboard enlaza estados y señales desde conteos del backend sin sumar
   await expect(page.getByRole("link", { name: /Pendientes/ }).getByText("0", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /En curso/ }).getByText("1", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Próximas a vencer/ }).getByText("1", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Actividades críticas/ }).getByText("1", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Requieren atención/ }).getByText("1", { exact: true })).toBeVisible();
   await expect(page.getByRole("img", { name: "Distribución de tareas por estado" })).toBeVisible();
-  await expect(page.getByRole("img", { name: "Señales de actividad crítica por categoría" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Señales de alerta por tipo" })).toBeVisible();
   await expect(page.getByText("Las categorías de alerta se solapan; no deben sumarse como un total.")).toBeVisible();
-  await expect(page.getByRole("link", { name: /Actividades críticas/ })).toHaveAttribute("href", "/tasks?critical_only=true");
+  await expect(page.getByRole("link", { name: /Requieren atención/ })).toHaveAttribute("href", "/tasks?critical_only=true");
 
   await page.getByRole("link", { name: /Pendientes/ }).click();
   await expect(page).toHaveURL(/state=pending/);
@@ -33,9 +33,9 @@ test("mantiene visibles los KPI y gráficos del dashboard en una pantalla móvil
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
-  await expect(page.getByRole("link", { name: /Actividades críticas/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Requieren atención/ })).toBeVisible();
   await expect(page.getByRole("img", { name: "Distribución de tareas por estado" })).toBeVisible();
-  await expect(page.getByRole("img", { name: "Señales de actividad crítica por categoría" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Señales de alerta por tipo" })).toBeVisible();
   const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(hasHorizontalOverflow).toBe(false);
 });
@@ -78,10 +78,10 @@ test("un error en la consulta crítica permanece desconocido y no se presenta co
   await installApi(page, { criticalStatus: 503 });
   await page.goto("/");
 
-  const criticalMetric = page.getByRole("link", { name: /Actividades críticas/ });
+  const criticalMetric = page.getByRole("link", { name: /Requieren atención/ });
   await expect(criticalMetric.getByText("Sin dato")).toBeVisible();
   await expect(criticalMetric.getByText("0", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "No se pudieron cargar las tareas críticas" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No se pudieron cargar las tareas que requieren atención" })).toBeVisible();
 });
 
 test("el dashboard presenta políticas e historial de ejecuciones solo con registros reales", async ({ page }) => {
@@ -388,10 +388,10 @@ test("conecta dashboard, filtros URL y comparación basada en capturas", async (
   await expect(page).toHaveURL(/\/tasks/);
   await page.getByLabel("Buscar tareas", { exact: true }).fill("Implementar API");
   await page.getByLabel("Estado").selectOption("en_curso");
-  await page.getByLabel("Responsable (ID)").fill("operator-1");
+  await page.getByLabel("ID de responsable").fill("operator-1");
   await page.getByLabel("Fase o lista").fill("Construcción");
-  await page.getByLabel("Solo críticas").click();
-  await expect(page.getByLabel("Solo críticas")).toBeChecked();
+  await page.getByLabel("Solo con alertas").click();
+  await expect(page.getByLabel("Solo con alertas")).toBeChecked();
   await expect(page).toHaveURL(/q=Implementar/);
   await expect(page).toHaveURL(/state=en_curso/);
   await expect(page).toHaveURL(/assignee_id=operator-1/);
@@ -400,8 +400,8 @@ test("conecta dashboard, filtros URL y comparación basada en capturas", async (
 
   await page.getByRole("button", { name: /Implementar API de pagos/ }).click();
   await expect(page.getByRole("dialog", { name: /Implementar API de pagos/ })).toBeVisible();
-  await expect(page.getByText("Prueba observada en el tablero")).toBeVisible();
-  await page.getByRole("button", { name: "Comparar capturas" }).click();
+  await expect(page.getByText("Prueba observada en el tablero").first()).toBeVisible();
+  await page.getByRole("button", { name: "Ver cambios" }).click();
   await expect(page.getByRole("deletion")).toHaveText("Pendiente");
   await expect(page.locator(".diff-after")).toHaveText("En curso");
 });
@@ -532,7 +532,7 @@ test("expone desconocidos como desconocidos cuando falta evidencia de responsabl
   await expect(page.locator(".task-table").getByText("Desconocido", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Ver detalle de Validar sincronización", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Validar sincronización" })).toBeVisible();
-  await expect(page.getByText("Prioridad desconocida")).toBeVisible();
+  await expect(page.getByText("No disponible en la fuente")).toBeVisible();
   await expect(page.getByText("No observado", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("La respuesta no incluye información de evidencia para esta tarea.")).toBeVisible();
 });

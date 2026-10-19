@@ -5,20 +5,20 @@ test("el dashboard identifica las tareas afectadas por cada riesgo y lleva a su 
   await installApi(page);
   await page.goto("/");
 
-  const risks = page.getByRole("region", { name: "Riesgos de la captura" });
+  const risks = page.getByRole("region", { name: "Alertas de la captura" });
   await expect(risks).toBeVisible();
-  await expect(risks.getByText("Clasificación determinista calculada sobre la captura")).toBeVisible();
+  await expect(risks.getByText("Alertas de la tarea calculadas sobre la captura actual")).toBeVisible();
   await expect(risks.getByText("Tareas no completadas cuyo vencimiento es anterior al corte de la captura.")).toBeVisible();
   await expect(risks.getByText("Tareas no completadas cuyo vencimiento cae dentro de los 7 días posteriores al corte.")).toBeVisible();
 
-  const taskLink = risks.getByRole("link", { name: "task-1" });
+  const taskLink = risks.getByRole("link", { name: "Implementar API de pagos" });
   await expect(taskLink).toHaveAttribute("href", "/tasks?task=task-1");
 
   await taskLink.click();
   await expect(page).toHaveURL(/task=task-1/);
   const dialog = page.getByRole("dialog", { name: "Implementar API de pagos" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "Clasificación de riesgo" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "¿Por qué requiere atención?" })).toBeVisible();
 });
 
 test("el detalle de la tarea muestra la clasificación, su fundamento y la trazabilidad de la captura", async ({ page }) => {
@@ -27,15 +27,15 @@ test("el detalle de la tarea muestra la clasificación, su fundamento y la traza
 
   const dialog = page.getByRole("dialog", { name: "Implementar API de pagos" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "Clasificación de riesgo" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "¿Por qué requiere atención?" })).toBeVisible();
 
-  const riskSection = dialog.locator("section").filter({ hasText: "Clasificación de riesgo" }).first();
+  const riskSection = dialog.locator("section").filter({ hasText: "¿Por qué requiere atención?" }).first();
   await expect(riskSection.getByText("Vencida", { exact: true })).toBeVisible();
   await expect(riskSection.getByText("Tareas no completadas cuyo vencimiento es anterior al corte de la captura.")).toBeVisible();
   await expect(riskSection.getByText("Trazabilidad: captura capture-current · identificación risk-fixture-overdue")).toBeVisible();
   await expect(riskSection).not.toContainText("Implementar API de pagos");
 
-  await expect(dialog.getByRole("heading", { name: "Evidencia disponible" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Evidencias de Trello" })).toBeVisible();
   await expect(dialog.getByText("trello", { exact: true })).toBeVisible();
 });
 
@@ -45,8 +45,8 @@ test("el detalle de la tarea declara la ausencia cuando no hay riesgo determinis
 
   const dialog = page.getByRole("dialog", { name: "Validar sincronización" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "Clasificación de riesgo" })).toBeVisible();
-  await expect(dialog.getByText("El backend no clasificó esta tarea con riesgo determinista en la captura consultada.")).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "¿Por qué requiere atención?" })).toBeVisible();
+  await expect(dialog.getByText("Esta tarea no tiene alertas en la captura consultada.")).toBeVisible();
 });
 
 test("el detalle de la ejecución explica por qué no hubo propuestas y conserva los códigos técnicos", async ({ page }) => {

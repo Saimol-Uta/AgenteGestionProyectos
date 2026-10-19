@@ -47,6 +47,8 @@ export const summary: ProjectSummaryView = {
       summary: "1 tarea(s) vencida(s) no completada(s).",
       basis: "Tareas no completadas cuyo vencimiento es anterior al corte de la captura.",
       source: "deterministic",
+      cutoff_datetime: "2026-01-11T23:59:59-05:00",
+      task_titles: { "task-1": "Implementar API de pagos" },
       proposals: [
         {
           proposal_id: "proposal-date-001",
@@ -71,6 +73,8 @@ export const summary: ProjectSummaryView = {
       summary: "1 tarea(s) próxima(s) a vencer en la ventana de 7 días.",
       basis: "Tareas no completadas cuyo vencimiento cae dentro de los 7 días posteriores al corte.",
       source: "deterministic",
+      cutoff_datetime: "2026-01-11T23:59:59-05:00",
+      task_titles: { "task-3": "Validar sincronización 1" },
       proposals: [],
     },
   ],
@@ -739,6 +743,8 @@ export async function installApi(page: Page, options: {
   repositoryResultsByProject?: Record<string, unknown>;
   summaryPayload?: unknown;
   historyPayload?: unknown;
+  tasksPayload?: unknown;
+  taskDetailPayload?: unknown;
   criticalStatus?: number;
   authenticated?: boolean;
   capabilities?: string[];
@@ -1313,13 +1319,18 @@ export async function installApi(page: Page, options: {
 
     if (path.endsWith("/projects/hormigestio/tasks/task-1")) {
       taskDetailReads.push(`${path}${url.search}`);
-      await json(route, {
+      await json(route, options.taskDetailPayload ?? {
         ...tasks[0],
         capture_id: requestedTaskCapture(url),
         risks: taskRisksFor("task-1", requestedTaskCapture(url)),
         evidence: [
           {
-            provenance: { id: "evidence-1", source: "trello", project_id: "hormigestio", timestamp: summary.captured_at },
+            provenance: { id: "evidence-1", source: "trello", project_id: "hormigestio", external_id: "task-1", timestamp: "2026-01-11T10:00:00-05:00" },
+            category: "task",
+            summary: "Prueba observada en el tablero",
+          },
+          {
+            provenance: { id: "evidence-2", source: "trello", project_id: "hormigestio", external_id: "task-1", timestamp: summary.captured_at },
             category: "task",
             summary: "Prueba observada en el tablero",
           },
@@ -1380,7 +1391,7 @@ export async function installApi(page: Page, options: {
       if (sort === "title") filtered.sort((left, right) => left.title.localeCompare(right.title) * direction);
       if (sort === "due_date") filtered.sort((left, right) => (left.due_date ?? "").localeCompare(right.due_date ?? "") * direction);
       const offset = (pageNumber - 1) * requestedPageSize;
-      await json(route, {
+      await json(route, options.tasksPayload ?? {
         items: filtered.slice(offset, offset + requestedPageSize),
         total: filtered.length,
         page: pageNumber,
