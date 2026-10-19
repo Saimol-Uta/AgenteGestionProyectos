@@ -43,7 +43,11 @@ from agente_gestion.domain.findings import (
 )
 from agente_gestion.domain.llm import LLMCallAttempt, GenerationStatus
 from agente_gestion.domain.evidence import EvidenceItem
-from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
+from agente_gestion.domain.action_proposal import (
+    ActionProposal,
+    OPTIONAL_SUBMISSION_FIELDS,
+    validate_action_proposal,
+)
 from agente_gestion.domain.proposal_review import DecisionEvent, Projection, fold_decisions, _raw
 from agente_gestion.domain.proposal_dry_run import DryRunRequest, DryRunResult, _checked, _known_keys, simulate_proposal
 from agente_gestion.domain.action_execution import ExecutionRequest, ExecutionResult
@@ -967,7 +971,9 @@ class SQLiteStorageAdapter(StoragePort):
             raise PermissionError("Action proposal catalogue is read-only")
         try:
             data = proposal.model_dump(mode='json', warnings='error')
-            if set(proposal.__dict__) - set(data):
+            # Documented optional fields may be absent from the body; every other
+            # field of the model must be part of the frozen submission.
+            if set(proposal.__dict__) - set(data) - OPTIONAL_SUBMISSION_FIELDS:
                 raise ValueError
             evidence_dtos = [item.model_dump(mode='json', warnings='error') for item in supporting_evidence]
             selected = [item for item in evidence_dtos

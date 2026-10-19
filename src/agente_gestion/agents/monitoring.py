@@ -9,6 +9,7 @@ from agente_gestion.domain.code import CIRunResult
 from agente_gestion.domain.report import MonitoringDraft, TaskStateClaim, DomainProposalRuleSet
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.llm import GenerationRequest
+from agente_gestion.domain.risks import TaskRisk
 from agente_gestion.ports.llm import LLMProviderPort
 from agente_gestion.agents.context import ContextBuilder, ContextBudgetExceededError, monitoring_choices
 from agente_gestion.application.generation import StageInvocationCoordinator
@@ -79,6 +80,7 @@ class ProjectMonitoringAgent:
         source_commit_sha: Optional[str] = None,
         proposal_rules: Optional[DomainProposalRuleSet] = None,
         task_evidence: Optional[list[EvidenceItem]] = None,
+        proposal_risks: Optional[list[TaskRisk]] = None,
     ) -> MonitoringDraft:
         available_task_ids = {t.id for t in tasks}
         valid_ev_ids = (set(evidence_ids) if evidence_ids else set()) | available_task_ids
@@ -113,7 +115,7 @@ class ProjectMonitoringAgent:
         )
 
         choices, limitations = monitoring_choices(project_id, tasks, evidences_payload["tasks"],
-                                                 proposal_rules, task_evidence)
+                                                 proposal_rules, task_evidence, proposal_risks)
         schema = MonitoringDraftSchema.model_json_schema()
         if choices:
             optional_context = context.model_copy(deep=True)

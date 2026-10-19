@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from agente_gestion.domain.snapshot import WeeklySnapshot
 from agente_gestion.domain.action_proposal import ActionProposal, validate_action_proposal
+from agente_gestion.domain.risks import TaskRisk, risks_from_metrics
 from agente_gestion.application.proposal_auto_review import ProposalAutoReviewService
 from agente_gestion.agents.context import monitoring_choices
 from agente_gestion.domain.tasks import (
@@ -384,6 +385,13 @@ class ProjectOrchestrator:
             due_soon_days=self.config.due_soon_days,
         )
 
+        # Deterministic risks of this very capture, resolved once for every consumer.
+        proposal_risks: list[TaskRisk] = []
+        if capture is not None:
+            proposal_risks = risks_from_metrics(
+                task_metrics, proj_id, capture.capture_id, self.config.due_soon_days,
+            )
+
         # MultiRepo has no arbitrary project-wide primary repository or commit.
         multi_repository = bool(snapshot.repository_results)
         eval_commit_sha = None
@@ -436,7 +444,8 @@ class ProjectOrchestrator:
                 source_is_complete=snapshot.is_complete,
                 source_commit_sha=eval_commit_sha,
                 **({"proposal_rules": rules.model_copy(deep=True) if rules else None,
-                    "task_evidence": [e.model_copy(deep=True) for e in task_evidence]}
+                    "task_evidence": [e.model_copy(deep=True) for e in task_evidence],
+                    "proposal_risks": proposal_risks}
                    if proposal_rules is not None and not proposal_codes else {}),
             )
             run.stages["monitoring"] = StageExecutionRecord(
@@ -465,7 +474,7 @@ class ProjectOrchestrator:
             )
 
         self._persist_proposals(run, monitoring_draft, rules, capture, task_evidence,
-                                proposal_codes)
+                                proposal_codes, proposal_risks)
 
         # ================= STAGE 2: Code Quality (Revisor) =================
         stg2_start = time.time()
@@ -931,7 +940,7 @@ class ProjectOrchestrator:
                 logging.getLogger(__name__).warning("manager_notification_failed run_id=%s", run_id)
         return run
 
-    def _persist_proposals(self, run, draft, rules, capture, evidence, limitations):
+    def _persist_proposals(self, run, draft, rules, capture, evidence, limitations, risks=None):
         """Catalogue recommendations only; pure fact checks do not prove chronology."""
         codes = list(limitations)
         saved, failures = 0, []
@@ -941,7 +950,7 @@ class ProjectOrchestrator:
             codes.append("missing_rules")
         elif capture is not None and not codes:
             choices, choice_codes = monitoring_choices(run.project_id, capture.snapshot.tasks,
-                [t.model_dump(mode="json") for t in capture.snapshot.tasks], rules, evidence)
+                [t.model_dump(mode="json") for t in capture.snapshot.tasks], rules, evidence, risks)
             codes.extend(choice_codes)
         # Do not put arbitrary draft prose/exception text in the stage summary.
         safe_codes = {"unknown_choice", "conflicting_selection", "proposal_context_budget",
@@ -971,6 +980,10 @@ class ProjectOrchestrator:
                 body = canonical.model_dump(mode="python")
                 body.pop("rule_id")
                 body["observed_capture_id"] = capture.capture_id
+                if canonical.risk_refs:
+                    # Only a risk-bound proposal uses the v2 schema; a proposal
+                    # without a risk keeps the exact v1 body it had before.
+                    body["schema_version"] = "action_proposal_v2"
                 proposal_id = "proposal-" + compute_sha256({
                     "snapshot": run.snapshot_hash, "config": run.config_hash,
                     "choice": canonical.model_dump(mode="json"), "capture": capture.capture_id,

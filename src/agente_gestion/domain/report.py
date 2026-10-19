@@ -6,6 +6,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, ConfigDict, StrictStr, model_validator
 from agente_gestion.domain.action_proposal import ProposalField, ProposalValue, _value
 
+from agente_gestion.domain.risks import ProposalRiskRef, RiskKind
 from agente_gestion.domain.tasks import TaskState, DeterministicTaskMetrics
 from agente_gestion.domain.code import CIRunResult
 from agente_gestion.domain.findings import CandidateFinding, FindingVerification
@@ -29,7 +30,13 @@ class TaskStateClaim(BaseModel):
 
 
 class DomainProposalRule(BaseModel):
-    """Owner-supplied constraints, not authorization or authenticated identity."""
+    """Owner-supplied constraints, not authorization or authenticated identity.
+
+    ``risk_kind`` optionally declares the deterministic risk family this rule
+    addresses. It selects a type, never a concrete risk identifier: the risk is
+    resolved later against the capture that the run actually uses. A rule
+    without the selector keeps its exact previous serialization.
+    """
     model_config = ConfigDict(extra="forbid")
     rule_id: StrictStr
     task_ids: list[StrictStr]
@@ -37,6 +44,7 @@ class DomainProposalRule(BaseModel):
     allowed_values: list[ProposalValue]
     rationale: StrictStr
     expected_impact: StrictStr
+    risk_kind: Optional[RiskKind] = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="before")
     @classmethod
@@ -75,6 +83,9 @@ class MonitoringRequestedChange(BaseModel):
     evidence_ids: list[StrictStr]
     rationale: StrictStr
     expected_impact: StrictStr
+    risk_refs: list[ProposalRiskRef] = Field(
+        default_factory=list, exclude_if=lambda refs: not refs,
+    )
 
     @model_validator(mode="before")
     @classmethod

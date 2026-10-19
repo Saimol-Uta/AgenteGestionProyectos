@@ -4,14 +4,20 @@ from datetime import datetime
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError, model_validator
 
 from agente_gestion.domain.evidence import EvidenceItem
+from agente_gestion.domain.risks import ProposalRiskRef
 from agente_gestion.domain.snapshot import SnapshotCapture
 from agente_gestion.domain.tasks import TaskState
 
 ProposalField = Literal["start_date", "due_date", "priority", "assignee_ids", "state"]
 ProposalValue = datetime | TaskState | StrictStr | list[StrictStr] | None
+
+# Submission fields that a stored proposal may omit when they carry no value.
+# Keeping them out preserves the exact bytes of every proposal created before
+# the field existed, so its identifier and its content hash never change.
+OPTIONAL_SUBMISSION_FIELDS = frozenset({"risk_refs"})
 
 
 def _value(field, value):
@@ -46,7 +52,7 @@ class ActionProposal(BaseModel):
     """A versioned proposal, never an authorization or an execution receipt."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: Literal["action_proposal_v1"] = "action_proposal_v1"
+    schema_version: Literal["action_proposal_v1", "action_proposal_v2"] = "action_proposal_v1"
     proposal_id: StrictStr
     project_id: StrictStr
     task_id: StrictStr
@@ -57,6 +63,9 @@ class ActionProposal(BaseModel):
     evidence_ids: list[StrictStr]
     rationale: StrictStr
     expected_impact: StrictStr
+    risk_refs: list[ProposalRiskRef] = Field(
+        default_factory=list, exclude_if=lambda refs: not refs,
+    )
     review_status: Literal["pending"] = "pending"
     authorization_status: Literal["not_authorized"] = "not_authorized"
     execution_status: Literal["not_executed"] = "not_executed"
@@ -74,6 +83,12 @@ class ActionProposal(BaseModel):
                     "rationale", "expected_impact"):
             if key in result and (type(result[key]) is not str or not result[key].strip()):
                 raise ValueError("Proposal identifiers and explanations must be nonempty strings")
+        refs = result.get("risk_refs")
+        version = result.get("schema_version", "action_proposal_v1")
+        if refs and version != "action_proposal_v2":
+            raise ValueError("Risk references require the action_proposal_v2 schema")
+        if not refs and version == "action_proposal_v2":
+            raise ValueError("The action_proposal_v2 schema requires risk references")
         return result
 
 
@@ -101,6 +116,13 @@ def validate_action_proposal(
         errors.append("capture_mismatch")
     if proposal.project_id != capture.snapshot.project_id:
         errors.append("project_mismatch")
+    for ref in proposal.risk_refs:
+        if re.fullmatch(r"risk-[0-9a-f]{24}", ref.risk_id) is None:
+            errors.append("risk_reference_invalid")
+        if ref.capture_id != proposal.observed_capture_id:
+            errors.append("risk_capture_mismatch")
+        if ref.task_id != proposal.task_id:
+            errors.append("risk_task_mismatch")
     targets = [card for card in capture.snapshot.tasks if card.id == proposal.task_id]
     if len(targets) != 1:
         errors.append("target_not_unique")

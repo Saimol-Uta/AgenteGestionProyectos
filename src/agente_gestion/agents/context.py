@@ -13,6 +13,7 @@ from agente_gestion.domain.action_proposal import _value, _same
 from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.findings import CandidateFinding
 from agente_gestion.domain.policies import QualityRule, PolicyEvaluationResult
+from agente_gestion.domain.risks import ProposalRiskRef
 
 
 class BoundedContextType(str, Enum):
@@ -52,9 +53,17 @@ def estimate_tokens_from_data(data: Any) -> int:
     return max(1, len(raw_text) // 3 + 1)
 
 
-def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[EvidenceItem]]):
-    """Build only observed, visible, rule-backed choices; never infer change intent."""
+def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[EvidenceItem]],
+                       risks: Optional[list] = None):
+    """Build only observed, visible, rule-backed choices; never infer change intent.
+
+    ``risks`` holds the deterministic risks of the very same capture. A rule that
+    declares ``risk_kind`` only produces a choice when a risk of that kind
+    actually covers the task, so a proposal can never claim a risk the capture
+    does not support.
+    """
     choices, limitations = [], []
+    known_risks = list(risks or [])
     if rules is None:
         return [], ["missing_rules"]
     try:
@@ -86,6 +95,15 @@ def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[E
                 limitations.append(code)
                 continue
             card = cards[0]
+            risk_refs = []
+            if rule.risk_kind is not None:
+                matched_risk = next((risk for risk in known_risks
+                                    if risk.kind == rule.risk_kind and tid in risk.task_ids), None)
+                if matched_risk is None:
+                    limitations.append("risk_not_present")
+                    continue
+                risk_refs = [ProposalRiskRef(risk_id=matched_risk.risk_id, kind=matched_risk.kind,
+                                             task_id=tid, capture_id=matched_risk.capture_id)]
             try:
                 current = _value(rule.field, getattr(card, rule.field))
             except (ValueError, TypeError):
@@ -129,7 +147,8 @@ def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[E
             for value in alternatives:
                 choices.append(MonitoringRequestedChange(project_id=project_id, rule_id=rule.rule_id,
                     task_id=tid, field=rule.field, current_value=current, proposed_value=value,
-                    evidence_ids=sorted(matched), rationale=rule.rationale, expected_impact=rule.expected_impact))
+                    evidence_ids=sorted(matched), rationale=rule.rationale, expected_impact=rule.expected_impact,
+                    risk_refs=risk_refs))
     return choices, sorted(set(limitations))
 
 
