@@ -545,6 +545,13 @@ class AnalysisPreflight(ApiModel):
     repositories: list[RepositoryPreflight] = Field(
         default_factory=list, exclude_if=lambda value: not value,
     )
+    proposal_rules_status: Literal["configured", "not_configured", "invalid"] = Field(
+        default="not_configured",
+        description=(
+            "Owner rules availability for this project. Absent rules never block the "
+            "analysis; they only mean no corrective proposal will be published."
+        ),
+    )
 
 
 class AnalysisPreparation(ApiModel):

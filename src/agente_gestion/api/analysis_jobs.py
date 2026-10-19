@@ -16,6 +16,10 @@ from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 
+from agente_gestion.adapters.sources.local_monitoring_rules import (
+    MonitoringRulesError,
+    load_monitoring_rules,
+)
 from agente_gestion.api.errors import ApiProblem
 from agente_gestion.api.repository import SQLiteQueryRepository
 from agente_gestion.api.schemas import (
@@ -30,6 +34,7 @@ from agente_gestion.api.schemas import (
 from agente_gestion.api.security import safe_identifier, sanitize_text
 from agente_gestion.api.settings import ApiSettings
 from agente_gestion.application.config import Settings as EngineSettings
+from agente_gestion.domain.report import DomainProposalRuleSet
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,8 @@ class AnalysisRuntimePlan:
     execution_mode: str = "sandbox"
     fallback_reasons: tuple[str, ...] = ()
     engine_settings: EngineSettings | None = field(default=None, repr=False, compare=False)
+    proposal_rules: DomainProposalRuleSet | None = field(default=None, repr=False, compare=False)
+    proposal_rules_status: str = "not_configured"
 
     @property
     def eligible(self) -> bool:
@@ -50,6 +57,27 @@ class AnalysisRuntimePlan:
             and (not self.remote.required or self.remote.server_allowed)
             and self.engine_settings is not None
         )
+
+
+def _resolve_proposal_rules(
+    project: Any, engine: EngineSettings | None, project_id: str,
+) -> tuple[DomainProposalRuleSet | None, str]:
+    """Load owner rules for one project through the validated shared loader.
+
+    The explicit per-project path wins over the shared YAML key. The loader
+    itself binds the file to ``project_id`` and rejects any other project, so a
+    rules file can never serve a project it was not written for.
+    """
+    explicit = getattr(project, "monitoring_rules_path", None)
+    shared = getattr(engine, "monitoring_rules_path", None) if engine is not None else None
+    path = explicit or shared
+    if not isinstance(path, str) or not path.strip():
+        return None, "not_configured"
+    try:
+        rules = load_monitoring_rules(path, project_id)
+    except MonitoringRulesError as error:
+        return None, "invalid" if error.reason != "project_mismatch" else "not_configured"
+    return rules, "configured"
 
 
 def _credential_status(secret: SecretStr | None) -> str:
@@ -79,7 +107,10 @@ def _repository_config_fingerprint(repositories: tuple[Any, ...]) -> list[dict[s
     return [repository.model_dump(mode="json") for repository in repositories]
 
 
-def _fingerprint(api_settings: ApiSettings, engine: EngineSettings | None, project_id: str) -> str:
+def _fingerprint(
+    api_settings: ApiSettings, engine: EngineSettings | None, project_id: str,
+    proposal_rules: DomainProposalRuleSet | None = None,
+) -> str:
     effective: dict[str, Any] = {
         "project_id": project_id,
         "api_db_path": str(Path(api_settings.db_path).absolute()),
@@ -89,6 +120,8 @@ def _fingerprint(api_settings: ApiSettings, engine: EngineSettings | None, proje
     project = next((item for item in api_settings.projects if item.id == project_id), None)
     if project is not None and project.repositories:
         effective["api_repository_collection"] = _repository_config_fingerprint(project.repositories)
+    if proposal_rules is not None:
+        effective["proposal_rules"] = proposal_rules.model_dump(mode="json")
     if engine is not None:
         engine_values: dict[str, Any] = {}
         for name in EngineSettings.model_fields:
@@ -216,6 +249,7 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
     except Exception:
         return _unavailable_plan(api_settings, project_id)
 
+    proposal_rules, proposal_rules_status = _resolve_proposal_rules(project, engine, project_id)
     configured_repositories = tuple(project_repositories or engine.github_repositories or ())
     repository_preflights = _repository_preflight(configured_repositories, engine.github_token)
     providers: list[ProviderPreflight] = []
@@ -367,17 +401,20 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
         providers=providers,
     )
     return AnalysisRuntimePlan(
-        fingerprint=_fingerprint(api_settings, engine, project_id),
+        fingerprint=_fingerprint(api_settings, engine, project_id, proposal_rules),
         preflight=AnalysisPreflight(
             source_mode=engine.source_mode,
             configuration_status=configuration_status,
             checks=checks,
             repositories=repository_preflights,
+            proposal_rules_status=proposal_rules_status,
         ),
         remote=remote,
         execution_mode=execution_mode,
         fallback_reasons=tuple(fallback_reasons),
         engine_settings=engine,
+        proposal_rules=proposal_rules,
+        proposal_rules_status=proposal_rules_status,
     )
 
 
@@ -861,7 +898,12 @@ class AnalysisJobService:
         })
         from agente_gestion.cli import _build_orchestrator
         orchestrator, *_ = _build_orchestrator(effective, effective_mode=effective.source_mode)
-        return orchestrator.execute(project_id=project_id)
+        execute_options: dict[str, Any] = {}
+        if plan.proposal_rules is not None:
+            # Same validated rules contract the CLI uses; the orchestrator still
+            # owns the decision to publish, and no rule authorizes any action.
+            execute_options["proposal_rules"] = plan.proposal_rules
+        return orchestrator.execute(project_id=project_id, **execute_options)
 
     def get_job(self, job_id: str) -> AnalysisJobView:
         row = self.ledger.get(job_id)

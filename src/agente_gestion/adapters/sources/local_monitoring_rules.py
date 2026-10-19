@@ -9,9 +9,15 @@ MAX_MONITORING_RULES_BYTES = 1024 * 1024
 
 
 class MonitoringRulesError(ValueError):
-    """Static public failure without private input or filesystem details."""
+    """Static public failure without private input or filesystem details.
 
-    def __init__(self):
+    ``reason`` separates an unreadable or malformed rules file from a valid file
+    that belongs to another project. The public message stays identical so every
+    caller keeps reporting the same static failure.
+    """
+
+    def __init__(self, reason: str = "invalid"):
+        self.reason = reason
         super().__init__("Monitoring rules input invalid.")
 
 
@@ -24,7 +30,9 @@ def load_monitoring_rules(path: str | Path, project_id: str) -> DomainProposalRu
             raise ValueError
         rules = DomainProposalRuleSet.model_validate(json.loads(content.decode("utf-8")))
         if rules.project_id != project_id:
-            raise ValueError
+            raise MonitoringRulesError("project_mismatch")
         return rules
+    except MonitoringRulesError:
+        raise
     except (OSError, UnicodeError, ValueError, TypeError, RecursionError):
         raise MonitoringRulesError() from None

@@ -5,7 +5,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -47,6 +47,14 @@ class ProjectConfig(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     source_mode: Literal["fixtures", "real", "stored"] = "stored"
     repositories: tuple[RepositoryConfiguration, ...] = Field(default_factory=tuple)
+    monitoring_rules_path: str | None = Field(
+        default=None,
+        repr=False,
+        description=(
+            "Optional local JSON owner constraints for this project only. "
+            "Not quality policies and not an authorization."
+        ),
+    )
 
     @field_validator("repositories")
     @classmethod
@@ -277,6 +285,22 @@ def _is_repository_collection_error(error: BaseException) -> bool:
     ))
 
 
+def project_rules_path(project: Mapping[str, object]) -> str | None:
+    """Read the optional per-project owner rules path from the project section.
+
+    The value is an explicit local path only. It never carries a rule, never
+    implies a policy and never authorizes an action; the rules file itself is
+    validated against the project scope when it is loaded.
+    """
+    raw = project.get("monitoring_rules_path")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("project.monitoring_rules_path debe ser una ruta local.")
+    value = raw.strip()
+    return value or None
+
+
 def _validate_alias_pair(
     values: Mapping[str, object], first: str, second: str, description: str,
 ) -> None:
@@ -437,6 +461,7 @@ def load_api_settings(*, env_file: str | Path | None = ".env") -> ApiSettings:
         configured = None
         engine = None
 
+    project: dict[str, Any] = {}
     if configured is None or engine is None:
         project_id = project_name = None
         source_mode, due_soon_days, timezone_name = "fixtures", 7, "America/Guayaquil"
@@ -462,6 +487,7 @@ def load_api_settings(*, env_file: str | Path | None = ".env") -> ApiSettings:
                 name=project_name,
                 source_mode=source_mode,
                 repositories=engine.github_repositories if engine is not None and engine.github_repositories else (),
+                monitoring_rules_path=project_rules_path(project),
             )
         except ValidationError:
             configured_project = None
