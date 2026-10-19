@@ -294,12 +294,25 @@ def get_project(
         _raise_lookup(exc)
 
 
-def _risk_views(risks, links) -> list[RiskView]:
+def _risk_views(
+    risks,
+    links,
+    *,
+    task_titles: dict[str, str] | None = None,
+    cutoff_datetime: datetime | None = None,
+) -> list[RiskView]:
     """Attach to every risk the proposals of this project that really answer it."""
     views: list[RiskView] = []
     for risk in risks:
         payload = risk.model_dump()
         payload.pop("proposals", None)
+        if task_titles is not None:
+            payload["task_titles"] = {
+                task_id: task_titles.get(task_id, "")
+                for task_id in payload.get("task_ids", [])
+            }
+        if cutoff_datetime is not None:
+            payload["cutoff_datetime"] = cutoff_datetime
         views.append(RiskView(
             **payload,
             proposals=[link for link in links if link.risk_id == risk.risk_id],
@@ -324,7 +337,12 @@ def project_summary(
         payload.pop("risks", None)
         return ProjectSummaryView(
             **payload,
-            risks=_risk_views(summary.risks, links),
+            risks=_risk_views(
+                summary.risks,
+                links,
+                task_titles=repository.task_titles(capture),
+                cutoff_datetime=repository.capture_cutoff(capture),
+            ),
             proposals_context=repository.proposals_context(project_id),
         )
     except LookupError as exc:

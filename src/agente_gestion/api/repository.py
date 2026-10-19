@@ -690,6 +690,18 @@ class SQLiteQueryRepository:
             summary=self.summary(capture),
         )
 
+    def task_titles(self, capture: SnapshotCapture) -> dict[str, str]:
+        """Readable titles of the tasks of one capture, keyed by task id."""
+        secrets = self._configured_secrets()
+        return {
+            card.id: sanitize_text(card.title, secrets_to_redact=secrets, limit=2000) or ""
+            for card in capture.snapshot.tasks
+        }
+
+    def capture_cutoff(self, capture: SnapshotCapture) -> datetime:
+        """Reference date of one capture, normalized to the configured timezone."""
+        return self._normalize_datetime(capture.snapshot.cutoff_datetime)
+
     def summary(self, capture: SnapshotCapture) -> TaskPlanSummary:
         summary = query_tasks_view(
             capture.snapshot,
@@ -817,13 +829,20 @@ class SQLiteQueryRepository:
             due_soon_days=self.settings.due_soon_days,
             timezone_name=self.settings.timezone,
         )
+        titles = self.task_titles(capture)
         return TaskDetailResponse(
             **sanitized.model_dump(mode="python"),
             capture_id=capture.capture_id,
             evidence=self.task_evidence(project_id, capture.snapshot.id, view.id),
             history=self.task_history(project_id, capture, view.id),
             risks=[
-                RiskView(**risk.model_dump())
+                RiskView(
+                    **risk.model_dump(),
+                    task_titles={
+                        task_id: titles[task_id] for task_id in risk.task_ids if task_id in titles
+                    },
+                    cutoff_datetime=self.capture_cutoff(capture),
+                )
                 for risk in plan.risks if view.id in risk.task_ids
             ],
         )

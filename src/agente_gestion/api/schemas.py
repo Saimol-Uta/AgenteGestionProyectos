@@ -235,6 +235,14 @@ class RiskProposalLink(ApiModel):
 class RiskView(TaskRisk):
     """A deterministic risk together with the proposals bound to it."""
     proposals: list[RiskProposalLink] = Field(default_factory=list)
+    task_titles: dict[str, str] = Field(
+        default_factory=dict,
+        description="Readable title of each affected task, resolved against the same capture.",
+    )
+    cutoff_datetime: datetime | None = Field(
+        default=None,
+        description="Reference date of the capture the risk was computed against.",
+    )
 
 
 class TaskDetailResponse(TaskDetailView):
