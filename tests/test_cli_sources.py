@@ -73,6 +73,8 @@ class FakeTransport(HttpGetTransportPort):
                 "id": "card-1", "idBoard": "board-1", "idList": "list-1", "name": "Task 1",
                 "desc": "Detail", "closed": False, "due": "2026-10-06T12:00:00Z", "idMembers": [], "labels": []
             }])
+        if "api.trello.com/1/boards/" in url and "/members" in url:
+            return HttpResponse(status_code=200, body=[])
         if "api.github.com/repos/" in url and "/commits/" in url:
             return HttpResponse(status_code=200, body={"sha": SAMPLE_SHA, "files": []})
         if "api.github.com/repos/" in url and "/actions/runs" in url:
@@ -582,7 +584,7 @@ class CLISourceCheckTestCase(unittest.TestCase):
         self.assertNotIn("Invalid/Nonexistent_TZ", combined)
 
     def test_cli_source_check_real_trello_date_fields(self):
-        """source-check trello in date_fields mode executes read-only, verifies states, and issues 2 GETs."""
+        """source-check trello in date_fields mode executes read-only, verifies states, and issues 3 GETs."""
         config_path = os.path.join(self.temp_dir, "date_config.yaml")
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(
@@ -630,7 +632,7 @@ class CLISourceCheckTestCase(unittest.TestCase):
         out = stdout_capture.getvalue()
         self.assertIn("success", out.lower())
         self.assertIn("2", out)  # 2 cards found
-        self.assertEqual(len(fake_tr.calls), 2)
+        self.assertEqual(len(fake_tr.calls), 3)
         # Verify factory created adapter derived correct task states
         settings = Settings.from_env_and_file(config_path=config_path, _env_file=self.empty_env)
         adapter = create_task_source(settings, transport=fake_tr)

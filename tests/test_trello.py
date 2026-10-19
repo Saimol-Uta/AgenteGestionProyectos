@@ -65,6 +65,7 @@ class TestTrelloSourceAdapter(unittest.TestCase):
         self.token = "sentinel_token_abc"
         self.lists_url = f"https://api.trello.com/1/boards/{self.board_id}/lists/all"
         self.cards_url = f"https://api.trello.com/1/boards/{self.board_id}/cards/all"
+        self.members_url = f"https://api.trello.com/1/boards/{self.board_id}/members"
         self.tz = ZoneInfo("America/Guayaquil")
 
     def _sample_lists(self) -> list[dict[str, Any]]:
@@ -113,13 +114,21 @@ class TestTrelloSourceAdapter(unittest.TestCase):
             },
         ]
 
+    def _sample_members(self) -> list[dict[str, Any]]:
+        return [
+            {"id": "mem_1", "fullName": "Ada Lovelace", "username": "ada"},
+            {"id": "mem_2", "fullName": "", "username": "gracehopper"},
+        ]
+
     def _make_transport(
         self,
         lists: list[dict[str, Any]] | Exception | None = None,
         cards: list[dict[str, Any]] | Exception | None = None,
+        members: list[dict[str, Any]] | Exception | None = None,
     ) -> FakeTransport:
         lists_val = lists if lists is not None else self._sample_lists()
         cards_val = cards if cards is not None else self._sample_cards()
+        members_val = members if members is not None else self._sample_members()
 
         responses: dict[str, HttpResponse | Exception] = {}
         if isinstance(lists_val, Exception):
@@ -131,6 +140,11 @@ class TestTrelloSourceAdapter(unittest.TestCase):
             responses[self.cards_url] = cards_val
         else:
             responses[self.cards_url] = HttpResponse(status_code=200, body=cards_val)
+
+        if isinstance(members_val, Exception):
+            responses[self.members_url] = members_val
+        else:
+            responses[self.members_url] = HttpResponse(status_code=200, body=members_val)
 
         return FakeTransport(responses)
 
@@ -485,7 +499,9 @@ class TestTrelloSourceAdapter(unittest.TestCase):
         for call in transport.calls:
             self.assertNotIn(self.api_key, call["url"])
             self.assertNotIn(self.token, call["url"])
-            self.assertIsNone(call["params"])
+            if call["params"] is not None:
+                self.assertNotIn(self.api_key, str(call["params"]))
+                self.assertNotIn(self.token, str(call["params"]))
             auth = call["headers"].get("Authorization", "")
             self.assertIn(self.api_key, auth)
             self.assertIn(self.token, auth)
@@ -570,21 +586,22 @@ class TestTrelloSourceAdapter(unittest.TestCase):
             self.assertEqual(ctx.exception.category, SourceErrorCategory.configuration)
 
     def test_single_cached_collection_for_tasks_and_evidence(self):
-        """Calling get_tasks and get_evidence triggers exactly 2 GETs and returns consistent data."""
+        """Calling get_tasks and get_evidence triggers exactly 3 GETs and returns consistent data."""
         transport = self._make_transport()
         adapter = self._make_adapter(transport=transport)
 
         tasks = adapter.get_tasks("proj_1")
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 3)
         self.assertEqual(transport.calls[0]["url"], self.lists_url)
         self.assertEqual(transport.calls[1]["url"], self.cards_url)
+        self.assertEqual(transport.calls[2]["url"], self.members_url)
 
         evidence = adapter.get_evidence("proj_1")
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 3)
         self.assertEqual(len(tasks), len(evidence))
 
         tasks2 = adapter.get_tasks("proj_1")
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 3)
         self.assertEqual(len(tasks2), len(tasks))
 
     def test_evidence_first_call_order(self):
@@ -593,10 +610,10 @@ class TestTrelloSourceAdapter(unittest.TestCase):
         adapter = self._make_adapter(transport=transport)
 
         evidence = adapter.get_evidence("proj_ev_first")
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 3)
 
         tasks = adapter.get_tasks("proj_ev_first")
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 3)
         self.assertEqual(len(tasks), len(evidence))
 
     def test_evidence_provenance_and_payload_allowlisting(self):
@@ -624,6 +641,7 @@ class TestTrelloSourceAdapter(unittest.TestCase):
             "list_name",
             "labels",
             "member_ids",
+            "assignee_names",
             "due_date",
             "last_activity",
             "is_archived",
@@ -663,14 +681,14 @@ class TestTrelloSourceAdapter(unittest.TestCase):
         adapter = self._make_adapter(transport=transport)
 
         adapter.get_tasks("proj_inv")
-        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(len(transport.calls), 3)
 
         adapter.invalidate_cache("proj_inv")
         adapter.get_tasks("proj_inv")
-        self.assertEqual(len(transport.calls), 4)
+        self.assertEqual(len(transport.calls), 6)
 
         refreshed = adapter.refresh("proj_inv")
-        self.assertEqual(len(transport.calls), 6)
+        self.assertEqual(len(transport.calls), 9)
         self.assertEqual(len(refreshed), 3)
 
     def test_failure_retry_leaves_no_cached_partial_state(self):
@@ -690,7 +708,7 @@ class TestTrelloSourceAdapter(unittest.TestCase):
         transport.responses[self.cards_url] = HttpResponse(status_code=200, body=self._sample_cards())
         tasks = adapter.get_tasks("proj_fail")
         self.assertEqual(len(tasks), 3)
-        self.assertEqual(len(transport.calls), 4)
+        self.assertEqual(len(transport.calls), 5)
 
     def test_invalid_project_id_or_timezone_rejected(self):
         """Empty project_id or invalid timezone name raises configuration error."""
@@ -1083,6 +1101,136 @@ class TestTrelloSourceAdapter(unittest.TestCase):
                 t = adapter.get_tasks("test_proj")[0]
                 self.assertEqual(t.state, TaskState.unknown)
                 self.assertFalse(t.has_contradiction)
+
+
+class TestTrelloBoardMembers(unittest.TestCase):
+    """The visible name of a responsible member is read once per board and never invented."""
+
+    def setUp(self):
+        self.board_id = "board123"
+        self.api_key = "sentinel_api_key_xyz"
+        self.token = "sentinel_token_abc"
+        self.lists_url = f"https://api.trello.com/1/boards/{self.board_id}/lists/all"
+        self.cards_url = f"https://api.trello.com/1/boards/{self.board_id}/cards/all"
+        self.members_url = f"https://api.trello.com/1/boards/{self.board_id}/members"
+        self.tz = ZoneInfo("America/Guayaquil")
+
+    def _cards(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "card_1",
+                "name": "Task 1",
+                "desc": "Detail for task 1",
+                "idList": "list_todo",
+                "idBoard": self.board_id,
+                "closed": False,
+                "due": None,
+                "labels": [],
+                "idMembers": ["mem_1", "mem_unknown"],
+            },
+        ]
+
+    def _lists(self) -> list[dict[str, Any]]:
+        return [{"id": "list_todo", "name": "To Do", "closed": False, "idBoard": self.board_id}]
+
+    def _transport(self, members) -> FakeTransport:
+        return FakeTransport({
+            self.lists_url: HttpResponse(status_code=200, body=self._lists()),
+            self.cards_url: HttpResponse(status_code=200, body=self._cards()),
+            self.members_url: HttpResponse(status_code=200, body=members),
+        })
+
+    def _adapter(self, transport: FakeTransport) -> TrelloSourceAdapter:
+        return TrelloSourceAdapter(
+            board_id=self.board_id,
+            api_key=self.api_key,
+            token=self.token,
+            transport=transport,
+            mapping_config=TaskMappingConfig(pending_list_ids=["list_todo"]),
+            state_strategy="list_mapping",
+            clock=lambda: datetime(2026, 10, 10, tzinfo=timezone.utc),
+        )
+
+    def test_member_names_are_read_once_for_the_whole_board(self):
+        transport = self._transport([
+            {"id": "mem_1", "fullName": "Ada Lovelace", "username": "ada"},
+        ])
+        adapter = self._adapter(transport)
+
+        tasks = adapter.get_tasks("proj_1")
+        adapter.get_evidence("proj_1")
+
+        member_calls = [call for call in transport.calls if call["url"] == self.members_url]
+        self.assertEqual(len(member_calls), 1)
+        self.assertEqual(tasks[0].assignee_names, {"mem_1": "Ada Lovelace"})
+
+    def test_only_the_identifier_and_the_visible_name_are_requested(self):
+        transport = self._transport([])
+        self._adapter(transport).get_tasks("proj_1")
+
+        call = next(call for call in transport.calls if call["url"] == self.members_url)
+        self.assertEqual(call["params"], {"fields": "id,fullName,username"})
+        self.assertNotIn("email", str(call["params"]))
+        self.assertNotIn(self.api_key, str(call["params"]))
+        self.assertNotIn(self.token, str(call["params"]))
+
+    def test_the_username_is_the_fallback_when_the_full_name_is_empty(self):
+        transport = self._transport([
+            {"id": "mem_1", "fullName": "", "username": "ada"},
+        ])
+        tasks = self._adapter(transport).get_tasks("proj_1")
+        self.assertEqual(tasks[0].assignee_names, {"mem_1": "ada"})
+
+    def test_a_member_without_a_visible_name_keeps_only_its_identifier(self):
+        transport = self._transport([
+            {"id": "mem_1", "fullName": "   ", "username": "  "},
+        ])
+        tasks = self._adapter(transport).get_tasks("proj_1")
+        self.assertEqual(tasks[0].assignee_ids, ["mem_1", "mem_unknown"])
+        self.assertEqual(tasks[0].assignee_names, {})
+
+    def test_a_malformed_member_payload_fails_closed(self):
+        for members in ([{"fullName": "No identifier"}], [{"id": 7}], "not-a-list"):
+            with self.subTest(members=members):
+                transport = self._transport(members)
+                with self.assertRaises(SourceError) as error:
+                    self._adapter(transport).get_tasks("proj_1")
+                self.assertEqual(error.exception.category, SourceErrorCategory.malformed_payload)
+
+    def test_a_failing_member_read_leaves_no_cached_partial_state(self):
+        transport = FakeTransport({
+            self.lists_url: HttpResponse(status_code=200, body=self._lists()),
+            self.cards_url: HttpResponse(status_code=200, body=self._cards()),
+            self.members_url: SourceError(SourceProvider.trello, SourceErrorCategory.network),
+        })
+        adapter = self._adapter(transport)
+        with self.assertRaises(SourceError) as error:
+            adapter.get_tasks("proj_1")
+        self.assertEqual(error.exception.category, SourceErrorCategory.network)
+        self.assertEqual(len(adapter._cache), 0)
+
+    def test_a_capture_without_names_keeps_its_exact_content_and_identity(self):
+        transport = self._transport([])
+        adapter = self._adapter(transport)
+        task = adapter.get_tasks("proj_1")[0]
+        # The field is omitted while no name was resolved, so the serialized capture
+        # keeps the exact bytes and the identity it had before the names existed.
+        self.assertNotIn("assignee_names", task.model_dump_json())
+        self.assertEqual(task.assignee_names, {})
+
+    def test_the_names_of_a_capture_travel_with_the_card_and_its_evidence(self):
+        transport = self._transport([
+            {"id": "mem_1", "fullName": "Ada Lovelace", "username": "ada"},
+        ])
+        adapter = self._adapter(transport)
+        task = adapter.get_tasks("proj_1")[0]
+        evidence = adapter.get_evidence("proj_1")[0]
+        self.assertEqual(task.assignee_names, {"mem_1": "Ada Lovelace"})
+        self.assertEqual(
+            evidence.provenance.payload["assignee_names"], {"mem_1": "Ada Lovelace"},
+        )
+        restored = TaskCard.model_validate_json(task.model_dump_json())
+        self.assertEqual(restored, task)
 
 
 if __name__ == "__main__":

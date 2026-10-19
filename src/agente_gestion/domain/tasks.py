@@ -43,6 +43,16 @@ class TaskCard(BaseModel):
     is_included: bool = Field(default=True, description="Whether this card counts for completion progress")
     has_contradiction: bool = Field(default=False, description="Flag indicating contradictory state signals")
     assignee_ids: Optional[list[StrictStr]] = Field(default=None, strict=True)
+    assignee_names: dict[str, StrictStr] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description=(
+            "Visible name of each responsible member, keyed by the member identifier. "
+            "The identifier stays the identity; the name is only a display projection. "
+            "It is omitted from the serialized capture while no name was resolved, so a "
+            "capture without names keeps the exact content and identity it had before."
+        ),
+    )
     start_date: Optional[datetime] = None
     due_complete: Optional[StrictBool] = None
     is_archived: Optional[StrictBool] = None
@@ -66,6 +76,14 @@ class TaskCard(BaseModel):
     def normalize_metadata_ids(cls, value):
         """Stable set ordering keeps serialized snapshots reproducible."""
         return sorted(set(value)) if value is not None else None
+
+    @field_validator("assignee_names")
+    @classmethod
+    def normalize_metadata_names(cls, value):
+        """Sorted keys keep the serialized snapshot reproducible."""
+        if value is None:
+            return None
+        return {key: value[key] for key in sorted(value)}
 
 
 class DeterministicTaskMetrics(BaseModel):

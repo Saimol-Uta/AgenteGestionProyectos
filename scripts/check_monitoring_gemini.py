@@ -206,7 +206,8 @@ def main(argv=None) -> int:
             metadata["error_category"] = "commit_unavailable"
             return code
         trello_http = ScopedGet(SourceProvider.trello,
-                                {BOARD_URL + "/lists/all", BOARD_URL + "/cards/all"}, 10)
+                                {BOARD_URL + "/lists/all", BOARD_URL + "/cards/all",
+                                 BOARD_URL + "/members"}, 10)
         trello = TrelloSourceAdapter(board_id=BOARD, api_key=credentials["TRELLO_API_KEY"],
             token=credentials["TRELLO_TOKEN"], transport=trello_http, state_strategy="date_fields",
             mapping_config=TaskMappingConfig(blocked_labels=[], included_list_ids=None),

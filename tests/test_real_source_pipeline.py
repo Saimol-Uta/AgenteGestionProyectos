@@ -92,6 +92,8 @@ class MockPipelineTransport(HttpGetTransportPort):
                     "labels": [],
                 }],
             )
+        if "api.trello.com/1/boards/" in url and "/members" in url:
+            return HttpResponse(status_code=200, body=[])
         if "api.github.com/repos/" in url and f"/contents/src/module.py?ref=" in url:
             if url != (
                 "https://api.github.com/repos/test-owner/test-repo/contents/src/module.py"

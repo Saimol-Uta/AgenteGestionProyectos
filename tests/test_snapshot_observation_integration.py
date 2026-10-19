@@ -34,6 +34,8 @@ class BoardTransport:
             }])
         if url == f"https://api.trello.com/1/boards/{self.board}/cards/all":
             return HttpResponse(status_code=200, body=self.cards)
+        if url == f"https://api.trello.com/1/boards/{self.board}/members":
+            return HttpResponse(status_code=200, body=[])
         raise AssertionError("Unexpected request")
 
 

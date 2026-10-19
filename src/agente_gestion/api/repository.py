@@ -814,6 +814,13 @@ class SQLiteQueryRepository:
             identifier for value in fields["assignee_ids"]
             if (identifier := safe_identifier(value)) is not None
         ]
+        fields["assignee_names"] = {
+            identifier: sanitize_text(
+                value, secrets_to_redact=secrets_to_redact, limit=200,
+            ) or ""
+            for key, value in fields["assignee_names"].items()
+            if (identifier := safe_identifier(key)) is not None
+        }
         for name in ("start_date", "due_date", "last_activity_at"):
             if fields[name] is not None:
                 fields[name] = self._normalize_datetime(fields[name])

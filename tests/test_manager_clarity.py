@@ -123,6 +123,65 @@ class RiskReadModelTests(unittest.TestCase):
         })
         self.assertEqual(own["cutoff_datetime"], cutoff.isoformat())
 
+    def test_task_detail_exposes_the_resolved_responsible_names(self):
+        cutoff = datetime(2026, 3, 6, 18, 0, tzinfo=DEFAULT_TIMEZONE)
+        named = WeeklySnapshot(
+            id="snap-named-assignee",
+            project_id=PROJECT_ID,
+            cutoff_datetime=cutoff,
+            captured_at=cutoff,
+            tasks=[TaskCard(
+                id=TASK_ID,
+                title="Tarea con responsable",
+                state=TaskState.pending,
+                list_name="Fase",
+                is_included=True,
+                due_complete=False,
+                due_date=cutoff + timedelta(days=10),
+                assignee_ids=["mem_1", "mem_2"],
+                assignee_names={"mem_1": "Ada Lovelace"},
+            )],
+        )
+        capture = SQLiteStorageAdapter(
+            self.fixture.database_path,
+        ).save_snapshot_with_capture_receipt(named)
+        detail = self.client.get(
+            f"/api/v1/projects/{PROJECT_ID}/tasks/{TASK_ID}",
+            params={"capture_id": capture.capture_id},
+        ).json()
+        # The identifier stays the identity of the responsible person; the name is a projection.
+        self.assertEqual(detail["assignee_ids"], ["mem_1", "mem_2"])
+        self.assertEqual(detail["assignee_names"], {"mem_1": "Ada Lovelace"})
+
+    def test_a_capture_without_names_keeps_its_own_content(self):
+        cutoff = datetime(2026, 3, 8, 18, 0, tzinfo=DEFAULT_TIMEZONE)
+        unnamed = WeeklySnapshot(
+            id="snap-unnamed-assignee",
+            project_id=PROJECT_ID,
+            cutoff_datetime=cutoff,
+            captured_at=cutoff,
+            tasks=[TaskCard(
+                id=TASK_ID,
+                title="Tarea sin nombre resuelto",
+                state=TaskState.pending,
+                list_name="Fase",
+                is_included=True,
+                due_complete=False,
+                due_date=cutoff + timedelta(days=10),
+                assignee_ids=["mem_1"],
+            )],
+        )
+        capture = SQLiteStorageAdapter(
+            self.fixture.database_path,
+        ).save_snapshot_with_capture_receipt(unnamed)
+        detail = self.client.get(
+            f"/api/v1/projects/{PROJECT_ID}/tasks/{TASK_ID}",
+            params={"capture_id": capture.capture_id},
+        ).json()
+        self.assertEqual(detail["assignee_ids"], ["mem_1"])
+        self.assertEqual(detail["assignee_names"], {})
+        self.assertNotIn("assignee_names", capture.snapshot.tasks[0].model_dump_json())
+
     def test_titles_of_tasks_outside_the_risk_are_not_leaked(self):
         cutoff = datetime(2026, 3, 4, 18, 0, tzinfo=DEFAULT_TIMEZONE)
         snapshot = WeeklySnapshot(

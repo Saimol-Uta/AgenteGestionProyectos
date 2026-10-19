@@ -38,6 +38,8 @@ SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 MAX_TRELLO_CARDS_CEILING = 1000
 DEFAULT_MAX_CARDS = 1000
 DEFAULT_MAX_LISTS = 100
+# Max allowable board members per response
+MAX_TRELLO_MEMBERS_CEILING = 500
 DEFAULT_MAX_TEXT_LENGTH = 16384
 MAX_CACHE_ENTRIES = 20
 
@@ -421,6 +423,60 @@ class TrelloSourceAdapter(TaskSourcePort):
 
         return validated_cards
 
+    @staticmethod
+    def _member_display_name(item: dict[str, Any]) -> str:
+        """Visible name of a member: the full name, or the username when it is empty."""
+        for key in ("fullName", "username"):
+            value = item.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    return text
+        return ""
+
+    def _fetch_board_members(self) -> dict[str, str]:
+        """Visible names of the board members, keyed by member identifier.
+
+        One request resolves every member of the board, so the read never scales with
+        the number of cards. Only the identifier and the visible name are requested:
+        no email address nor any other personal field is read, and the member
+        identifier stays the identity of the responsible person.
+        """
+        url = f"https://api.trello.com/1/boards/{self._board_id}/members"
+        try:
+            resp = self._transport.get(
+                url=url,
+                params={"fields": "id,fullName,username"},
+                headers=self._auth_headers(),
+            )
+        except SourceError as e:
+            if e.provider != SourceProvider.trello:
+                raise SourceError(SourceProvider.trello, e.category) from None
+            raise
+        except Exception:
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.network) from None
+
+        if resp.status_code != 200:
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.unexpected_status) from None
+        if not isinstance(resp.body, list):
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+        if len(resp.body) > MAX_TRELLO_MEMBERS_CEILING:
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.limit_exceeded) from None
+
+        names: dict[str, str] = {}
+        for item in resp.body:
+            if not isinstance(item, dict):
+                raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+            member_id = item.get("id")
+            if not isinstance(member_id, str) or not SAFE_IDENTIFIER_RE.match(member_id):
+                raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+            self._assert_no_credential_echo(member_id)
+            name = self._sanitize_text(self._member_display_name(item))
+            if not name:
+                continue
+            names[member_id] = name
+        return names
+
     def _ensure_collection(self, project_id: str) -> _CachedCollection:
         """Fetch and normalize cards and lists into a consistent cached collection."""
         if not isinstance(project_id, str) or not project_id.strip():
@@ -444,6 +500,8 @@ class TrelloSourceAdapter(TaskSourcePort):
         # Retrieve both responses; fail-fast without modifying cache on any error
         raw_lists = self._fetch_lists()
         raw_cards = self._fetch_cards()
+        # One read resolves every member of the board, reused by every card below.
+        member_names = self._fetch_board_members()
 
         lists_by_id = {l["id"]: l for l in raw_lists}
 
@@ -551,6 +609,11 @@ class TrelloSourceAdapter(TaskSourcePort):
                 is_included=is_included,
                 has_contradiction=has_contradiction,
                 assignee_ids=c["idMembers"],
+                assignee_names={
+                    member_id: member_names[member_id]
+                    for member_id in (c["idMembers"] or [])
+                    if member_id in member_names
+                },
                 start_date=normalize_datetime_to_tz(c["start_dt"], self._tz) if c["start_dt"] else None,
                 due_complete=c["dueComplete"],
                 is_archived=c["closed"],
@@ -595,6 +658,8 @@ class TrelloSourceAdapter(TaskSourcePort):
             for field in ("assignee_ids", "start_date", "due_complete", "is_archived",
                           "priority", "last_activity_at", "observed_fields"):
                 payload[field] = normalized[field]
+            if "assignee_names" in normalized:
+                payload["assignee_names"] = normalized["assignee_names"]
 
             provenance = EvidenceProvenance(
                 id=f"trello-task-{card_id}",

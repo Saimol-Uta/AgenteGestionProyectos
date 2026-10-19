@@ -37,7 +37,8 @@ class TestTaskMetadata(unittest.TestCase):
             state_strategy=strategy, clock=lambda: datetime(2026, 10, 10, tzinfo=timezone.utc))
         tasks = adapter.get_tasks("synthetic")
         evidence = adapter.get_evidence("synthetic")
-        self.assertEqual(len(transport.calls), 2)  # No member/name lookup.
+        # One members read for the whole board, reused by every card of the collection.
+        self.assertEqual(len(transport.calls), 3)
         return tasks, evidence
 
     def card(self, **metadata):

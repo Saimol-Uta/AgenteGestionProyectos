@@ -72,6 +72,8 @@ class RunnerTests(unittest.TestCase):
         if url.endswith("/lists/all"):
             return self.response([{"id": "phase", "name": "Completed Phase", "closed": False,
                                    "idBoard": runner.BOARD}])
+        if url.endswith("/members"):
+            return self.response([])
         self.assertEqual(url, runner.BOARD_URL + "/cards/all")
         return self.response([{"id": "card1", "name": "PRIVATE FIXTURE TITLE", "idList": "phase",
                                "idBoard": runner.BOARD, "closed": False, "labels": ["blocked"],
@@ -136,7 +138,7 @@ class RunnerTests(unittest.TestCase):
         self.clock.now.assert_called_once()
         self.assertEqual(metadata["cutoff"], self.cutoff.isoformat())
         self.assertIsNone(metadata["source_is_complete"])
-        self.assertEqual(metadata["request_counts"], {"trello": 2, "github": 2, "gemini": 1})
+        self.assertEqual(metadata["request_counts"], {"trello": 3, "github": 2, "gemini": 1})
         self.assertEqual(metadata["usage"]["thoughtsTokenCount"], 12)
         self.assertEqual(self.context["source_context"]["commit_sha"], runner.SHA)
         self.assertIsNone(self.context["source_context"]["is_complete"])

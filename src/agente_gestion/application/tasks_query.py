@@ -57,6 +57,7 @@ class TaskDetailView(BaseModel):
     list_id: Optional[str] = None
     list_name: Optional[str] = None
     assignee_ids: list[str] = Field(default_factory=list)
+    assignee_names: dict[str, str] = Field(default_factory=dict)
     start_date: Optional[datetime] = None
     due_date: Optional[datetime] = None
     due_complete: Optional[bool] = None
@@ -243,6 +244,7 @@ def query_tasks_view(
             list_id=card.list_id,
             list_name=card.list_name,
             assignee_ids=card.assignee_ids or [],
+            assignee_names=dict(card.assignee_names),
             start_date=card.start_date,
             due_date=card.due_date,
             due_complete=card.due_complete,
