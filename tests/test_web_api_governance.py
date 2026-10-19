@@ -86,6 +86,9 @@ class WebApiGovernanceTests(unittest.TestCase):
         proposal_detail = self.client.get(self._proposal_path())
         self.assertEqual(proposal_detail.status_code, 200, proposal_detail.text)
         self.assertNotIn("decision_history", proposal_detail.json())
+        self.assertNotIn("latest_receipt", proposal_detail.json())
+        self.assertNotIn("original_proposal_id", proposal_detail.json())
+        self.assertNotIn("derived_proposal_ids", proposal_detail.json())
         self.assertNotIn("dry_runs", proposal_detail.json())
 
         history = self.client.get(f"/api/v1/projects/{PROJECT_ID}/history")
@@ -169,6 +172,24 @@ class WebApiGovernanceTests(unittest.TestCase):
             for item in audit.json()["items"]
         ))
 
+    def test_proposal_ledger_detail_requires_project_scoped_audit_read_but_summary_stays_public(self):
+        public = self.client.get(self._proposal_path())
+        self.assertEqual(public.status_code, 200, public.text)
+        self.assertEqual(public.json()["proposal_id"], self.fixture.proposal_id)
+        self.assertNotIn("decision_history", public.json())
+
+        self.client.app.state.sessions._project_ids = ("OTHER-PROJECT",)
+        self._login()
+        no_scope = self.client.get(self._proposal_path())
+        self.assertEqual(no_scope.status_code, 200, no_scope.text)
+        self.assertEqual(no_scope.json()["proposal_id"], self.fixture.proposal_id)
+        self.assertTrue({
+            "decision_history", "latest_receipt", "original_proposal_id", "derived_proposal_ids",
+        }.isdisjoint(no_scope.json()))
+        proposals = self.client.get(f"/api/v1/projects/{PROJECT_ID}/proposals")
+        self.assertEqual(proposals.status_code, 200, proposals.text)
+        self.assertEqual(proposals.json()["items"][0]["proposal_id"], self.fixture.proposal_id)
+
     def test_only_unified_proposal_mutation_is_advertised_and_manual_routes_are_retired(self):
         csrf = self._login()
         session = self.client.get("/api/v1/auth/session")
@@ -233,7 +254,7 @@ class WebApiGovernanceTests(unittest.TestCase):
         self.assertEqual(
             self.client.get(self._proposal_path()).json()["proposal_id"], self.fixture.proposal_id,
         )
-        self.assertNotIn("decision_history", proposal)
+        self.assertEqual(proposal["decision_history"], [])
 
     def test_unified_execute_requires_reason_and_exposes_automatic_review_and_audit(self):
         csrf = self._login()

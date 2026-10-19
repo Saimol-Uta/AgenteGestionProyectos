@@ -1,13 +1,15 @@
 """SQLite storage adapter for execution runs, audit records, and human decisions."""
 
+from dataclasses import dataclass
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
 
 from agente_gestion.ports.storage import StoragePort
@@ -47,6 +49,16 @@ from agente_gestion.domain.proposal_dry_run import DryRunRequest, DryRunResult, 
 from agente_gestion.domain.action_execution import ExecutionRequest, ExecutionResult
 from agente_gestion.domain.notification_outbox import OutboxMessage, OutboxReceipt
 from agente_gestion.domain.security_rbac import SecurityAuditEntry
+
+
+@dataclass(frozen=True)
+class ProposalExecutionLedgerRecord:
+    result: ExecutionResult
+    decision: str | None
+    original_proposal_id: str | None
+    human_reason: str | None
+    audit_event_id: str | None
+    actor_verification: Literal["verified_local_session", "unknown"]
 
 
 class FindingDecisionStorageError(RuntimeError):
@@ -1299,6 +1311,162 @@ class SQLiteStorageAdapter(StoragePort):
             return [ExecutionResult.model_validate_json(row["result_json"]) for row in cur.fetchall()]
         finally:
             conn.close()
+
+    def list_proposal_execution_records(
+        self, project_id: str,
+    ) -> tuple[list[ProposalExecutionLedgerRecord], Literal["available", "unknown"]]:
+        """Read allowlisted execution receipt metadata without creating any ledger schema."""
+        connection = self._get_connection()
+        try:
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            )}
+            if "proposal_executions" not in tables:
+                return [], "unknown"
+            execution_columns = {row["name"] for row in connection.execute(
+                "PRAGMA table_info(proposal_executions)",
+            )}
+            required_columns = {
+                "execution_id", "request_id", "project_id", "proposal_id", "status",
+                "verification_status", "actor_id", "recorded_at", "result_json",
+            }
+            if not required_columns.issubset(execution_columns):
+                return [], "unknown"
+            outcomes_available = False
+            if "proposal_execution_outcomes" in tables:
+                outcome_columns = {row["name"] for row in connection.execute(
+                    "PRAGMA table_info(proposal_execution_outcomes)",
+                )}
+                outcomes_available = {"execution_id", "response_json", "response_sha256"}.issubset(
+                    outcome_columns,
+                )
+            audit_columns = set()
+            if "security_audit_log" in tables:
+                audit_columns = {row["name"] for row in connection.execute(
+                    "PRAGMA table_info(security_audit_log)",
+                )}
+            select_human_reason = "human_reason" in execution_columns
+            rows = connection.execute(
+                "SELECT execution_id, request_id, project_id, proposal_id, status, verification_status, "
+                "actor_id, recorded_at, result_json"
+                + (", human_reason" if select_human_reason else "")
+                + " FROM proposal_executions WHERE project_id=? ORDER BY recorded_at, execution_id",
+                (project_id,),
+            ).fetchall()
+            records: list[ProposalExecutionLedgerRecord] = []
+            availability: Literal["available", "unknown"] = (
+                "available" if outcomes_available or not rows else "unknown"
+            )
+            for row in rows:
+                try:
+                    result = ExecutionResult.model_validate_json(row["result_json"])
+                    recorded_at = datetime.fromisoformat(str(row["recorded_at"]))
+                    if (
+                        row["project_id"] != project_id
+                        or result.execution_id != row["execution_id"]
+                        or result.request_id != row["request_id"]
+                        or result.proposal_id != row["proposal_id"]
+                        or result.status != row["status"]
+                        or result.verification_status != row["verification_status"]
+                        or result.actor_id != row["actor_id"]
+                        or recorded_at != result.recorded_at
+                    ):
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    raise ValueError("Proposal execution ledger integrity mismatch") from None
+
+                decision = None
+                original_proposal_id = None
+                audit_event_id = None
+                actor_verification: Literal["verified_local_session", "unknown"] = "unknown"
+                if outcomes_available:
+                    outcome = connection.execute(
+                        "SELECT response_json, response_sha256 FROM proposal_execution_outcomes "
+                        "WHERE execution_id=?", (result.request_id,),
+                    ).fetchone()
+                    if outcome is None:
+                        availability = "unknown"
+                    else:
+                        response_json = outcome["response_json"]
+                        if (not isinstance(response_json, str)
+                                or hashlib.sha256(response_json.encode("utf-8")).hexdigest()
+                                != outcome["response_sha256"]):
+                            raise ValueError("Proposal execution receipt integrity mismatch")
+                        try:
+                            receipt = json.loads(response_json)
+                            execution_view = receipt["execution"]
+                            decision_value = receipt["decision"]
+                            original_value = receipt["original_proposal_id"]
+                            valid_id = lambda value: (
+                                isinstance(value, str)
+                                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is not None
+                                and value not in {".", ".."}
+                            )
+                            if (
+                                not isinstance(receipt, dict)
+                                or not isinstance(execution_view, dict)
+                                or receipt.get("proposal_id") != result.proposal_id
+                                or not valid_id(original_value)
+                                or decision_value not in {
+                                    "approve_and_execute", "modify_and_execute", "reject",
+                                }
+                                or execution_view.get("execution_id") != result.execution_id
+                                or execution_view.get("result_status") != result.status
+                                or execution_view.get("verification_status") != result.verification_status
+                                or receipt.get("execution_mode") not in {"live", "sandbox"}
+                                or execution_view.get("execution_mode") != receipt["execution_mode"]
+                                or (result.execution_mode is not None
+                                    and result.execution_mode != receipt["execution_mode"])
+                            ):
+                                raise ValueError
+                            decision = decision_value
+                            original_proposal_id = original_value
+                        except (KeyError, TypeError, ValueError):
+                            raise ValueError("Proposal execution receipt binding mismatch") from None
+
+                        if "security_audit_log" in tables and {
+                            "event_id", "project_id", "actor_id", "role", "permission_checked",
+                            "resource_id", "decision", "reason", "token_fingerprint",
+                        }.issubset(audit_columns):
+                            expected_audit_id = "web-exec-" + hashlib.sha256(
+                                "|".join((project_id, result.proposal_id, result.request_id)).encode("utf-8"),
+                            ).hexdigest()[:32]
+                            audit = connection.execute(
+                                "SELECT event_id, project_id, actor_id, role, permission_checked, resource_id, "
+                                "decision, reason, token_fingerprint FROM security_audit_log WHERE event_id=?",
+                                (expected_audit_id,),
+                            ).fetchone()
+                            if audit is not None and (
+                                audit["event_id"].startswith("web-")
+                                and audit["project_id"] == project_id
+                                and audit["actor_id"] == result.actor_id
+                                and audit["role"] == "local_operator"
+                                and audit["permission_checked"] == "web:proposal_execute"
+                                and audit["resource_id"] == result.proposal_id
+                                and audit["decision"] in {"granted", "denied"}
+                                and isinstance(audit["reason"], str)
+                                and audit["reason"].startswith("request_sha256=")
+                                and re.fullmatch(r"sha256:[0-9a-f]{16}", str(audit["token_fingerprint"]))
+                            ):
+                                audit_event_id = expected_audit_id
+                                actor_verification = "verified_local_session"
+
+                human_reason = (
+                    row["human_reason"] if select_human_reason else None
+                )
+                if human_reason is not None and not isinstance(human_reason, str):
+                    human_reason = None
+                records.append(ProposalExecutionLedgerRecord(
+                    result=result,
+                    decision=decision,
+                    original_proposal_id=original_proposal_id,
+                    human_reason=human_reason,
+                    audit_event_id=audit_event_id,
+                    actor_verification=actor_verification,
+                ))
+            return records, availability
+        finally:
+            connection.close()
 
     def get_proposal_execution(self, execution_id: str) -> Optional[ExecutionResult]:
         conn = self._get_connection()

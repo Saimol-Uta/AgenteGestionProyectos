@@ -63,8 +63,55 @@ class ProposalSummary(ApiModel):
     ]
 
 
+class ProposalDecisionHistoryEntry(ApiModel):
+    event_id: str
+    decision: Literal[
+        "approve_offline", "reject", "authorize_dry_run", "deny", "revoke",
+        "approve_and_execute", "modify_and_execute", "unknown",
+    ]
+    proposal_id: str
+    related_proposal_id: str | None = None
+    actor_id: str | None = None
+    actor_verification: Literal["verified_local_session", "asserted_offline", "unknown"] = "unknown"
+    reason: str | None = None
+    recorded_at: datetime | None = None
+    execution_mode: Literal["live", "sandbox"] | None = None
+    execution_status: Literal[
+        "EXECUTED", "ALREADY_APPLIED", "DENIED", "CONFLICT", "FAILED", "unknown",
+    ] | None = None
+    verification_status: Literal[
+        "verified", "verification_failed", "verification_unsupported", "unknown",
+    ] | None = None
+    reasons: list[str] = Field(default_factory=list)
+    audit_event_id: str | None = None
+
+
+class ProposalExecutionReceiptView(ApiModel):
+    execution_id: str
+    proposal_id: str
+    original_proposal_id: str | None = None
+    decision: Literal["approve_and_execute", "modify_and_execute", "reject", "unknown"]
+    execution_mode: Literal["live", "sandbox"] | None = None
+    status: Literal["EXECUTED", "ALREADY_APPLIED", "DENIED", "CONFLICT", "FAILED", "unknown"]
+    verification_status: Literal[
+        "verified", "verification_failed", "verification_unsupported", "unknown",
+    ]
+    reasons: list[str]
+    actor_id: str | None = None
+    actor_verification: Literal["verified_local_session", "unknown"] = "unknown"
+    reason: str | None = None
+    recorded_at: datetime
+    audit_event_id: str | None = None
+
+
 class ProposalDetail(ProposalSummary):
-    pass
+    decision_history: list[ProposalDecisionHistoryEntry] | None = None
+    decision_history_availability: Literal["available", "unknown"] = "unknown"
+    original_proposal_id: str | None = None
+    derived_proposal_ids: list[str] | None = None
+    relationship_availability: Literal["available", "unknown"] = "unknown"
+    latest_receipt: ProposalExecutionReceiptView | None = None
+    receipt_availability: Literal["available", "unknown"] = "unknown"
 
 
 class ProposalCollection(ApiModel):
@@ -73,6 +120,7 @@ class ProposalCollection(ApiModel):
     total: int = Field(ge=0)
     page: int = Field(ge=1)
     page_size: int = Field(ge=1, le=100)
+    pending_actionable_count: int | None = Field(default=None, ge=0)
 
 
 class ReportMetrics(ApiModel):

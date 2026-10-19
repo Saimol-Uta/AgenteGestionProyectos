@@ -699,17 +699,21 @@ def list_project_proposals(
 ) -> ProposalCollection:
     try:
         _repository(request).require_project(project_id)
-        items, total, availability = request.app.state.control_plane.proposals(
+        items, total, availability, pending_actionable_count = request.app.state.control_plane.proposals(
             project_id, page, page_size, review_status,
         )
     except LookupError as exc:
         _raise_lookup(exc)
     return ProposalCollection(
         availability=availability, items=items, total=total, page=page, page_size=page_size,
+        pending_actionable_count=pending_actionable_count,
     )
 
 
-@router.get("/projects/{project_id}/proposals/{proposal_id}", response_model=ProposalDetail, tags=["Gobernanza"])
+@router.get(
+    "/projects/{project_id}/proposals/{proposal_id}", response_model=ProposalDetail,
+    response_model_exclude_unset=True, tags=["Gobernanza"],
+)
 def get_project_proposal(
     request: Request,
     project_id: Annotated[str, Path(pattern=_ID, max_length=128)],
@@ -717,7 +721,14 @@ def get_project_proposal(
 ) -> ProposalDetail:
     try:
         _repository(request).require_project(project_id)
-        return request.app.state.control_plane.proposal_detail(project_id, proposal_id)
+        cookie = request.cookies.get(request.app.state.settings.session_cookie_name)
+        session = request.app.state.sessions.get(cookie)
+        include_decision_details = session is not None and project_id in session.project_ids
+        if include_decision_details:
+            _require_project_capability(request, project_id, "audit:read", mutation=False)
+        return request.app.state.control_plane.proposal_detail(
+            project_id, proposal_id, include_decision_details=include_decision_details,
+        )
     except LookupError as exc:
         _raise_lookup(exc)
 

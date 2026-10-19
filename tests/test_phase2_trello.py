@@ -590,6 +590,16 @@ class ProposalExecutionApiTests(unittest.TestCase):
             self.assertEqual(response.json()["execution_mode"], "live")
             self.assertEqual(response.json()["execution"]["status"], "FAILED")
             self.assertEqual(response.json()["execution"]["verification_status"], "unknown")
+            detail = client.get(
+                f"/api/v1/projects/{self.PROJECT}/proposals/proposal-1"
+            )
+            self.assertEqual(detail.status_code, 200, detail.text)
+            latest_receipt = detail.json()["latest_receipt"]
+            self.assertEqual(latest_receipt["execution_mode"], "live")
+            self.assertEqual(latest_receipt["status"], "FAILED")
+            self.assertEqual(latest_receipt["verification_status"], "unknown")
+            self.assertIn("mutation_error", latest_receipt["reasons"])
+            self.assertIsNotNone(latest_receipt["audit_event_id"])
             self.assertTrue(replay.json()["replayed"])
             self.assertEqual(replay.json()["execution_mode"], "live")
             self.assertEqual(concurrent.status_code, 409)

@@ -29,8 +29,10 @@ from agente_gestion.api.control_schemas import (
     OutboxReceiptSummary,
     PoliciesConfiguration,
     ProposalCollection,
+    ProposalDecisionHistoryEntry,
     ProposalDetail,
     ProposalEvidence,
+    ProposalExecutionReceiptView,
     ProposalSummary,
     ProposalTechnicalReviewView,
     ProposalTechnicalDryRun,
@@ -436,11 +438,43 @@ class ControlPlaneRepository:
             recorded_at=_normalized_datetime(review.recorded_at, self.settings.timezone),
         )
 
+    def _stored_proposal_digest(self, project_id: str, proposal_id: str) -> str:
+        with self._connect() as connection:
+            if connection is None:
+                raise DataIntegrityError("Stored proposal digest is unavailable")
+            row = connection.execute(
+                "SELECT content_hash FROM action_proposals WHERE project_id=? AND proposal_id=?",
+                (project_id, proposal_id),
+            ).fetchone()
+        digest = str(row["content_hash"]) if row is not None else ""
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise DataIntegrityError("Stored proposal digest is invalid")
+        return digest
+
+    @staticmethod
+    def _safe_execution_reasons(reasons) -> list[str]:
+        """Expose stable reason codes, never provider exception text or payloads."""
+        safe = []
+        for reason in reasons:
+            code = str(reason).split(":", 1)[0].strip()
+            safe.append(code if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,79}", code) else "unknown")
+        return list(dict.fromkeys(safe))
+
     def _proposal_data(self, project_id: str, proposal: ActionProposal, evidence_items, storage):
-        review = storage.get_proposal_review_state(project_id, proposal.proposal_id)
-        if review is None:
-            raise DataIntegrityError("Stored proposal review state is unavailable")
-        digest, _events, projection = review
+        with self._connect() as connection:
+            tables = self._tables(connection)
+        review_available = "proposal_decisions" in tables
+        if review_available:
+            try:
+                review = storage.get_proposal_review_state(project_id, proposal.proposal_id)
+            except NotImplementedError:
+                review = None
+            if review is None:
+                raise DataIntegrityError("Stored proposal review state is unavailable")
+            digest, events, projection = review
+        else:
+            digest = self._stored_proposal_digest(project_id, proposal.proposal_id)
+            events, projection = [], None
         try:
             capture = self.queries.selected_capture(project_id, proposal.observed_capture_id)
             assessment = assess_proposal(proposal, capture, evidence_items)
@@ -514,26 +548,224 @@ class ControlPlaneRepository:
             ),
             "projection": projection,
             "digest": digest,
+            "events": events,
         }
 
     def proposals(
         self, project_id: str, page: int, page_size: int, review_status: str | None = None,
-    ) -> tuple[list[ProposalSummary], int, str]:
+    ) -> tuple[list[ProposalSummary], int, str, int | None]:
         storage = self._read_storage()
         if storage is None:
-            return [], 0, "unknown"
+            return [], 0, "unknown", None
         with self._connect() as connection:
-            if "action_proposals" not in self._tables(connection):
-                return [], 0, "unknown"
+            tables = self._tables(connection)
+            if "action_proposals" not in tables:
+                return [], 0, "unknown", None
         proposals = storage.list_action_proposals(project_id)
-        views = [self._proposal_data(project_id, proposal, evidence, storage)["summary"]
-                 for proposal, evidence in proposals]
+        data = [self._proposal_data(project_id, proposal, evidence, storage)
+                for proposal, evidence in proposals]
+        views = [item["summary"] for item in data]
+        actionable_count = None
+        if {
+            "proposal_decisions", "proposal_executions", "proposal_technical_reviews",
+        }.issubset(tables):
+            try:
+                execution_records, execution_availability = storage.list_proposal_execution_records(project_id)
+                if execution_availability == "available":
+                    consumed_originals = {
+                        record.original_proposal_id
+                        for record in execution_records
+                        if record.decision == "modify_and_execute"
+                        and record.original_proposal_id is not None
+                        and record.original_proposal_id != record.result.proposal_id
+                    }
+                    actionable_count = sum(
+                        1 for item in data
+                        if item["summary"].proposal_id not in consumed_originals
+                        and item["summary"].freshness == "current"
+                        and item["summary"].technical_eligibility == "eligible"
+                        and item["summary"].technical_review is not None
+                        and item["summary"].technical_review.technical_status == "ready"
+                        and item["summary"].execution_status == "not_executed"
+                        and item["summary"].review_status == "pending"
+                    )
+            except (sqlite3.Error, ValueError, DataIntegrityError):
+                actionable_count = None
         if review_status is not None:
             views = [item for item in views if item.review_status == review_status]
         total = len(views)
-        return views[(page - 1) * page_size:page * page_size], total, "available"
+        return views[(page - 1) * page_size:page * page_size], total, "available", actionable_count
 
-    def proposal_detail(self, project_id: str, proposal_id: str) -> ProposalDetail:
+    def _proposal_decision_details(self, project_id: str, proposal_id: str, data, storage) -> dict[str, Any]:
+        with self._connect() as connection:
+            tables = self._tables(connection)
+        decision_available = "proposal_decisions" in tables
+        if "proposal_executions" in tables:
+            try:
+                execution_records, receipt_availability = storage.list_proposal_execution_records(project_id)
+            except (sqlite3.Error, ValueError):
+                execution_records, receipt_availability = [], "unknown"
+        else:
+            execution_records, receipt_availability = [], "unknown"
+        relationship_availability = receipt_availability
+        relationship_available = relationship_availability == "available"
+        original_ids = {
+            record.original_proposal_id for record in execution_records
+            if record.result.proposal_id == proposal_id
+            and record.original_proposal_id is not None
+            and record.original_proposal_id != proposal_id
+        }
+        if len(original_ids) > 1:
+            raise DataIntegrityError("Stored proposal relationship is ambiguous")
+        original_proposal_id = next(iter(original_ids), None)
+        derived_ids = sorted({
+            record.result.proposal_id for record in execution_records
+            if record.original_proposal_id == proposal_id and record.result.proposal_id != proposal_id
+        })
+        if not relationship_available:
+            original_proposal_id = None
+            derived_proposal_ids = None
+        else:
+            derived_proposal_ids = derived_ids
+
+        decision_history: list[ProposalDecisionHistoryEntry] = []
+        history_availability = "available" if decision_available else "unknown"
+        if decision_available:
+            try:
+                timestamps, timestamp_availability = self._decision_timestamps(project_id, proposal_id)
+            except (sqlite3.Error, ValueError, DataIntegrityError):
+                timestamps, timestamp_availability = {}, "unknown"
+            if timestamp_availability != "available":
+                history_availability = "unknown"
+            execution_decision_event_ids = set()
+            for record in execution_records:
+                if record.result.proposal_id != proposal_id or record.decision not in {
+                    "approve_and_execute", "modify_and_execute", "reject",
+                }:
+                    continue
+                suffix = "reject" if record.decision == "reject" else "approve"
+                execution_decision_event_ids.add(
+                    "web-exec-" + hashlib.sha256("|".join((
+                        project_id, proposal_id, record.result.request_id, suffix,
+                    )).encode("utf-8")).hexdigest()[:32]
+                )
+            for event in data["events"]:
+                if event.event_id in execution_decision_event_ids:
+                    continue
+                event_id = safe_identifier(event.event_id)
+                if event_id is None:
+                    continue
+                recorded_at = timestamps.get(event.event_id)
+                if recorded_at is None:
+                    history_availability = "unknown"
+                    continue
+                decision_history.append(ProposalDecisionHistoryEntry(
+                    event_id=event_id,
+                    decision=event.decision,
+                    proposal_id=proposal_id,
+                    actor_id=self._safe_text(event.actor.actor_id, 128),
+                    actor_verification="asserted_offline",
+                    reason=None,
+                    recorded_at=recorded_at,
+                    audit_event_id=(
+                        "proposal-" + hashlib.sha256(event.event_id.encode("utf-8")).hexdigest()[:24]
+                    ),
+                ))
+
+        related_records = [
+            record for record in execution_records
+            if record.result.proposal_id == proposal_id or record.original_proposal_id == proposal_id
+        ]
+        if receipt_availability != "available":
+            history_availability = "unknown"
+        for record in related_records:
+            if record.decision not in {
+                "approve_and_execute", "modify_and_execute", "reject",
+            }:
+                history_availability = "unknown"
+                continue
+            result = record.result
+            event_id = safe_identifier(result.execution_id)
+            acted_on = safe_identifier(result.proposal_id)
+            if event_id is None or acted_on is None:
+                history_availability = "unknown"
+                continue
+            related_id = None
+            if record.original_proposal_id == proposal_id and acted_on != proposal_id:
+                related_id = acted_on
+            elif acted_on == proposal_id and record.original_proposal_id not in {None, proposal_id}:
+                related_id = safe_identifier(record.original_proposal_id)
+            status = result.status if result.status in {
+                "EXECUTED", "ALREADY_APPLIED", "DENIED", "CONFLICT", "FAILED",
+            } else "unknown"
+            decision_history.append(ProposalDecisionHistoryEntry(
+                event_id=event_id,
+                decision=record.decision if record.decision in {
+                    "approve_and_execute", "modify_and_execute", "reject",
+                } else "unknown",
+                proposal_id=acted_on,
+                related_proposal_id=related_id,
+                actor_id=self._safe_text(result.actor_id, 128),
+                actor_verification=record.actor_verification,
+                reason=self._safe_text(record.human_reason, 1000),
+                recorded_at=_normalized_datetime(result.recorded_at, self.settings.timezone),
+                execution_mode=result.execution_mode,
+                execution_status=status,
+                verification_status=result.verification_status,
+                reasons=self._safe_execution_reasons(result.reasons),
+                audit_event_id=safe_identifier(record.audit_event_id),
+            ))
+        decision_history.sort(key=lambda item: (
+            _utc_key(item.recorded_at, self.settings.timezone) if item.recorded_at else datetime.min.replace(
+                tzinfo=timezone.utc,
+            ),
+            item.event_id,
+        ))
+
+        latest_record = max(
+            related_records,
+            key=lambda record: (_utc_key(record.result.recorded_at, self.settings.timezone),
+                                record.result.execution_id),
+            default=None,
+        )
+        latest_receipt = None
+        if latest_record is not None and latest_record.decision in {
+            "approve_and_execute", "modify_and_execute", "reject",
+        }:
+            result = latest_record.result
+            latest_receipt = ProposalExecutionReceiptView(
+                execution_id=safe_identifier(result.execution_id) or "unknown",
+                proposal_id=safe_identifier(result.proposal_id) or "unknown",
+                original_proposal_id=safe_identifier(latest_record.original_proposal_id),
+                decision=latest_record.decision if latest_record.decision in {
+                    "approve_and_execute", "modify_and_execute", "reject",
+                } else "unknown",
+                execution_mode=result.execution_mode,
+                status=result.status if result.status in {
+                    "EXECUTED", "ALREADY_APPLIED", "DENIED", "CONFLICT", "FAILED",
+                } else "unknown",
+                verification_status=result.verification_status,
+                reasons=self._safe_execution_reasons(result.reasons),
+                actor_id=self._safe_text(result.actor_id, 128),
+                actor_verification=latest_record.actor_verification,
+                reason=self._safe_text(latest_record.human_reason, 1000),
+                recorded_at=_normalized_datetime(result.recorded_at, self.settings.timezone),
+                audit_event_id=safe_identifier(latest_record.audit_event_id),
+            )
+
+        return {
+            "decision_history": decision_history,
+            "decision_history_availability": history_availability,
+            "original_proposal_id": original_proposal_id,
+            "derived_proposal_ids": derived_proposal_ids,
+            "relationship_availability": relationship_availability,
+            "latest_receipt": latest_receipt,
+            "receipt_availability": receipt_availability,
+        }
+
+    def proposal_detail(
+        self, project_id: str, proposal_id: str, *, include_decision_details: bool = False,
+    ) -> ProposalDetail:
         storage = self._read_storage()
         if storage is None:
             raise LookupError("proposal_not_found")
@@ -546,7 +778,11 @@ class ControlPlaneRepository:
             raise LookupError("proposal_not_found")
         proposal, evidence = item
         data = self._proposal_data(project_id, proposal, evidence, storage)
-        return ProposalDetail(**data["summary"].model_dump())
+        details = (
+            self._proposal_decision_details(project_id, proposal_id, data, storage)
+            if include_decision_details else {}
+        )
+        return ProposalDetail(**data["summary"].model_dump(), **details)
 
     def _web_audit_entry(
         self, *, project_id: str, actor_id: str, session_cookie: str | None,

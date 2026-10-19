@@ -1,6 +1,7 @@
 """Isolated HTTP walkthrough from deterministic Monitoring to Trello sandbox decisions."""
 from datetime import datetime, timedelta
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -11,6 +12,7 @@ from pydantic import SecretStr
 from agente_gestion.api.app import create_app
 from agente_gestion.api.settings import ApiSettings, ProjectConfig
 from agente_gestion.application.orchestrator import OrchestratorConfig, ProjectOrchestrator
+from agente_gestion.application.proposal_auto_review import ProposalAutoReviewService
 from agente_gestion.domain.llm import GenerationResult, GenerationStatus
 from agente_gestion.domain.report import DomainProposalRuleSet
 from agente_gestion.domain.run import RunStatus
@@ -172,6 +174,12 @@ class Req08DecisionWorkflowTests(unittest.TestCase):
         self.assertEqual(detail["evidence"][0]["evidence_id"], "E")
         self.assertEqual(detail["technical_review"]["technical_status"], "ready")
         self.assertFalse(detail["technical_review"]["execution_authorized"])
+        self.assertEqual(detail["relationship_availability"], "available")
+        self.assertIsNone(detail["original_proposal_id"])
+        self.assertEqual(detail["derived_proposal_ids"], [])
+        self.assertEqual(detail["decision_history"], [])
+        self.assertEqual(detail["decision_history_availability"], "available")
+        self.assertIsNone(detail["latest_receipt"])
 
         _base, empty_client, empty_csrf, _empty_run = self._harness(evidence=False)
         empty = self._proposal_list(empty_client)
@@ -218,12 +226,106 @@ class Req08DecisionWorkflowTests(unittest.TestCase):
         detail = self._proposal_detail(client, proposal_id)
         self.assertEqual(detail["review_status"], "approved_offline")
         self.assertEqual(detail["execution_status"], "EXECUTED")
+        self.assertEqual(detail["decision_history_availability"], "available")
+        self.assertEqual(len(detail["decision_history"]), 1)
+        decision = detail["decision_history"][0]
+        self.assertEqual(decision["decision"], "approve_and_execute")
+        self.assertEqual(decision["actor_id"], self.ACTOR)
+        self.assertEqual(decision["actor_verification"], "verified_local_session")
+        self.assertEqual(decision["reason"], reason)
+        self.assertIsNotNone(datetime.fromisoformat(decision["recorded_at"]).tzinfo)
+        self.assertEqual(detail["latest_receipt"]["execution_mode"], "sandbox")
+        self.assertEqual(detail["latest_receipt"]["status"], "EXECUTED")
+        self.assertEqual(detail["latest_receipt"]["verification_status"], "verified")
+        self.assertEqual(detail["latest_receipt"]["reasons"], [])
+        self.assertIsNotNone(detail["latest_receipt"]["audit_event_id"])
         self._assert_public_receipt_audit(client, proposal_id, outcome="EXECUTED", reason=reason)
         execution_events = client.get(
             f"/api/v1/projects/{self.PROJECT}/audit",
             params={"event_type": "proposal_execution", "page_size": 100},
         ).json()
         self.assertEqual(execution_events["total"], 1)
+
+    def test_incomplete_execution_outcomes_never_expose_unproven_receipt_fields(self):
+        for outcome_state in ("missing", "tampered"):
+            with self.subTest(outcome_state=outcome_state):
+                base, client, csrf, _run = self._harness()
+                proposal_id = self._proposal_list(client)["items"][0]["proposal_id"]
+                response = self._decide(client, csrf, proposal_id, {
+                    "decision": "approve_and_execute",
+                    "reason": "Aprobación aislada para probar integridad del recibo.",
+                }, f"t3-{outcome_state}-outcome-key")
+                self.assertEqual(response.status_code, 200, response.text)
+                execution_id = response.json()["execution"]["execution_id"]
+                proven_detail = self._proposal_detail(client, proposal_id)
+                self.assertEqual(proven_detail["receipt_availability"], "available")
+                self.assertEqual(proven_detail["latest_receipt"]["execution_mode"], "sandbox")
+                self.assertEqual(
+                    proven_detail["latest_receipt"]["actor_verification"], "verified_local_session",
+                )
+                public_fields = set(self._proposal_list(client)["items"][0])
+                proven_public_fields = {key: proven_detail[key] for key in public_fields}
+
+                with sqlite3.connect(base.db_path) as connection:
+                    row = connection.execute(
+                        "SELECT request_id FROM proposal_executions WHERE execution_id=?",
+                        (execution_id,),
+                    ).fetchone()
+                    self.assertIsNotNone(row)
+                    request_id = row[0]
+                    outcome = connection.execute(
+                        "SELECT response_sha256 FROM proposal_execution_outcomes WHERE execution_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    self.assertIsNotNone(outcome)
+                    if outcome_state == "missing":
+                        connection.execute(
+                            "DROP TRIGGER IF EXISTS proposal_execution_outcomes_no_DELETE",
+                        )
+                        cursor = connection.execute(
+                            "DELETE FROM proposal_execution_outcomes WHERE execution_id=?",
+                            (request_id,),
+                        )
+                        self.assertEqual(cursor.rowcount, 1)
+                    else:
+                        connection.execute(
+                            "DROP TRIGGER IF EXISTS proposal_execution_outcomes_no_UPDATE",
+                        )
+                        cursor = connection.execute(
+                            "UPDATE proposal_execution_outcomes SET response_sha256=? WHERE execution_id=?",
+                            ("0" * 64, request_id),
+                        )
+                        self.assertEqual(cursor.rowcount, 1)
+                    self.assertEqual(connection.execute(
+                        "SELECT COUNT(*) FROM proposal_executions WHERE execution_id=?",
+                        (execution_id,),
+                    ).fetchone()[0], 1)
+                    self.assertEqual(connection.execute(
+                        "SELECT COUNT(*) FROM security_audit_log "
+                        "WHERE project_id=? AND resource_id=? AND permission_checked='web:proposal_execute'",
+                        (self.PROJECT, proposal_id),
+                    ).fetchone()[0], 1)
+
+                incomplete = self._proposal_detail(client, proposal_id)
+                self.assertEqual(incomplete["receipt_availability"], "unknown")
+                self.assertEqual(incomplete["relationship_availability"], "unknown")
+                self.assertEqual(incomplete["decision_history_availability"], "unknown")
+                self.assertIsNone(incomplete["latest_receipt"])
+                self.assertIsNone(incomplete["original_proposal_id"])
+                self.assertIsNone(incomplete["derived_proposal_ids"])
+                self.assertEqual(
+                    {key: incomplete[key] for key in public_fields}, proven_public_fields,
+                )
+                self.assertTrue(any(
+                    item["decision"] == "approve_offline"
+                    and item["actor_verification"] == "asserted_offline"
+                    for item in incomplete["decision_history"]
+                ))
+                self.assertFalse(any(
+                    item["actor_verification"] == "verified_local_session"
+                    or item.get("execution_mode") is not None
+                    for item in incomplete["decision_history"]
+                ))
 
     def test_modified_proposal_is_revalidated_against_its_new_immutable_digest(self):
         _base, client, csrf, _run = self._harness()
@@ -247,7 +349,23 @@ class Req08DecisionWorkflowTests(unittest.TestCase):
 
         original_after = self._proposal_detail(client, original_id)
         derived = self._proposal_detail(client, derived_id)
-        self.assertEqual(original_after, original_before)
+        relationship_fields = {
+            "relationship_availability", "original_proposal_id", "derived_proposal_ids",
+            "decision_history_availability", "decision_history", "receipt_availability", "latest_receipt",
+        }
+        self.assertEqual(
+            {key: value for key, value in original_after.items() if key not in relationship_fields},
+            {key: value for key, value in original_before.items() if key not in relationship_fields},
+        )
+        self.assertEqual(original_after["proposal_body_sha256"], original_before["proposal_body_sha256"])
+        self.assertEqual(original_after["version"], original_before["version"])
+        self.assertEqual(original_after["review_status"], original_before["review_status"])
+        self.assertEqual(original_after["authorization_status"], original_before["authorization_status"])
+        self.assertEqual(original_after["execution_status"], original_before["execution_status"])
+        self.assertEqual(original_after["original_proposal_id"], None)
+        self.assertEqual(original_after["derived_proposal_ids"], [derived_id])
+        self.assertEqual(derived["original_proposal_id"], original_id)
+        self.assertEqual(derived["derived_proposal_ids"], [])
         self.assertNotEqual(derived["proposal_body_sha256"], original_before["proposal_body_sha256"])
         self.assertEqual(
             receipt["technical_review"]["proposal_body_sha256"], derived["proposal_body_sha256"],
@@ -257,6 +375,9 @@ class Req08DecisionWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(derived["technical_review"]["technical_status"], "ready")
         self.assertEqual(derived["execution_status"], "EXECUTED")
+        self.assertEqual(self._proposal_list(client)["pending_actionable_count"], 0)
+        self.assertEqual(original_after["decision_history"][0]["decision"], "modify_and_execute")
+        self.assertEqual(original_after["decision_history"][0]["related_proposal_id"], derived_id)
         self._assert_public_receipt_audit(client, derived_id, outcome="EXECUTED", reason=reason)
 
     def test_rejection_remains_available_for_technically_blocked_proposal(self):
@@ -277,12 +398,18 @@ class Req08DecisionWorkflowTests(unittest.TestCase):
         after = self._proposal_detail(client, proposal_id)
         self.assertEqual(after["review_status"], "rejected")
         self.assertEqual(after["execution_status"], "DENIED")
+        self.assertEqual(after["decision_history"][0]["decision"], "reject")
+        self.assertEqual(after["decision_history"][0]["actor_id"], self.ACTOR)
+        self.assertEqual(after["decision_history"][0]["reason"], reason)
+        self.assertEqual(after["latest_receipt"]["status"], "DENIED")
+        self.assertEqual(after["latest_receipt"]["execution_mode"], "sandbox")
         self._assert_public_receipt_audit(client, proposal_id, outcome="DENIED", reason=reason)
 
-    def test_missing_operator_session_cannot_decide_a_valid_proposal(self):
+    def test_missing_operator_session_cannot_decide_or_read_sensitive_proposal_ledgers(self):
         _base, client, _csrf, _run = self._harness(authenticate=False)
         proposal_id = self._proposal_list(client)["items"][0]["proposal_id"]
         before = self._proposal_detail(client, proposal_id)
+        self.assertTrue({"decision_history", "latest_receipt", "original_proposal_id", "derived_proposal_ids"}.isdisjoint(before))
         denied = self._decide(client, None, proposal_id, {
             "decision": "approve_and_execute", "reason": "Intento sin sesión.",
         }, "t2-no-session-key")
@@ -293,6 +420,73 @@ class Req08DecisionWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(audit.status_code, 200, audit.text)
         self.assertEqual(audit.json()["items"][0]["execution_status"], "not_executed")
+
+    def test_pending_actionable_count_is_project_wide_across_pages_and_excludes_decided(self):
+        base, client, csrf, _run = self._harness()
+        original_id = self._proposal_list(client)["items"][0]["proposal_id"]
+        original, evidence = base.sqlite.get_action_proposal(original_id)
+        capture = base.sqlite.get_snapshot_capture(original.observed_capture_id)
+        self.assertIsNotNone(capture)
+        for index in range(1, 4):
+            proposal = original.model_copy(update={"proposal_id": f"proposal-count-{index:02d}"})
+            base.sqlite.save_action_proposal(proposal, evidence)
+            review = ProposalAutoReviewService(base.sqlite).review_and_record(
+                proposal, capture, evidence, project_captures=[capture],
+            )
+            self.assertEqual(review.technical_status, "ready")
+
+        first_page = client.get(
+            f"/api/v1/projects/{self.PROJECT}/proposals?page=1&page_size=1"
+        ).json()
+        last_page = client.get(
+            f"/api/v1/projects/{self.PROJECT}/proposals?page=4&page_size=1"
+        ).json()
+        self.assertEqual(first_page["total"], 4)
+        self.assertEqual(len(first_page["items"]), 1)
+        self.assertEqual(len(last_page["items"]), 1)
+        self.assertEqual(first_page["pending_actionable_count"], 4)
+        self.assertEqual(last_page["pending_actionable_count"], 4)
+
+        rejected = self._decide(client, csrf, "proposal-count-01", {
+            "decision": "reject", "reason": "Propuesta descartada con fundamento.",
+        }, "t3-count-reject")
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        approved = self._decide(client, csrf, "proposal-count-02", {
+            "decision": "approve_and_execute", "reason": "Propuesta ejecutada en sandbox.",
+        }, "t3-count-approve")
+        self.assertEqual(approved.status_code, 200, approved.text)
+
+        page_after_decisions = client.get(
+            f"/api/v1/projects/{self.PROJECT}/proposals?page=1&page_size=1"
+        ).json()
+        final_page = client.get(
+            f"/api/v1/projects/{self.PROJECT}/proposals?page=4&page_size=1"
+        ).json()
+        self.assertEqual(page_after_decisions["total"], 4)
+        self.assertEqual(page_after_decisions["pending_actionable_count"], 2)
+        self.assertEqual(final_page["pending_actionable_count"], 2)
+
+    def test_legacy_unavailable_ledgers_remain_unknown(self):
+        _base, client, _csrf, _run = self._harness()
+        proposal_id = self._proposal_list(client)["items"][0]["proposal_id"]
+        control_plane = client.app.state.control_plane
+        tables_method = control_plane._tables
+
+        def legacy_tables(connection):
+            return tables_method(connection) - {
+                "proposal_decisions", "proposal_executions", "proposal_execution_outcomes",
+            }
+
+        with patch.object(control_plane, "_tables", side_effect=legacy_tables):
+            collection = client.get(f"/api/v1/projects/{self.PROJECT}/proposals").json()
+            detail = self._proposal_detail(client, proposal_id)
+        self.assertIsNone(collection["pending_actionable_count"])
+        self.assertEqual(detail["review_status"], "unknown")
+        self.assertEqual(detail["execution_status"], "unknown")
+        self.assertEqual(detail["decision_history_availability"], "unknown")
+        self.assertEqual(detail["relationship_availability"], "unknown")
+        self.assertEqual(detail["receipt_availability"], "unknown")
+        self.assertIsNone(detail["latest_receipt"])
 
 
 if __name__ == "__main__":
