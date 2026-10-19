@@ -47,8 +47,8 @@ test("header actions replace the repeated workflow card and remain reachable on 
 
       if (path === "/analysis") {
         await expect(page.getByRole("heading", { name: "Centro de análisis de IA" })).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Resumen consolidado del proyecto" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toHaveCount(0);
+        await expect(page.getByRole("heading", { name: "Resumen consolidado del proyecto" })).toHaveCount(0);
         await expect(page.getByRole("heading", { name: "Preparar un análisis" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Historial de análisis" })).toBeVisible();
         await expect(page.getByRole("link", { name: "Abrir ejecución run-current" })).toBeVisible();
@@ -193,6 +193,12 @@ test("header actions replace the repeated workflow card and remain reachable on 
           }
         }
       }
+      if (path === "/analysis") {
+        await page.getByRole("link", { name: "Abrir ejecución run-current", exact: true }).click();
+        await expect(page).toHaveURL(/\/analysis\/run-current$/);
+        await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Resumen consolidado del proyecto" })).toBeVisible();
+      }
     }
   }
 });
@@ -286,7 +292,7 @@ test("running analysis remains inspectable from the header while polling continu
   await trigger.click();
   dialog = page.getByRole("dialog", { name: syncTitle });
   await expect(dialog.getByText(/Estado del análisis: En curso/)).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Preparar análisis" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Análisis en curso…", exact: true })).toBeDisabled();
   expect(api.analysisWrites).toHaveLength(2);
 
   await page.keyboard.press("Escape");

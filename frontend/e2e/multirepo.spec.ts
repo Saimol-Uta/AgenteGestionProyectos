@@ -9,6 +9,7 @@ import {
   installBrowserNetworkGuard,
   multiRepoResults,
   project,
+  runCurrent,
   secondProject,
   secondaryRepositoryResults,
 } from "./fixtures";
@@ -159,6 +160,10 @@ test.afterEach(async ({ page }) => {
 test("project and existing feature views keep repository identity, CI, coverage scope and partial failures separate", async ({ page }) => {
   await installApi(page, { authenticated: true, capabilities: ["audit:read"], repositoryResultsPayload: multiRepoResults });
   await page.goto("/projects");
+  await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toHaveCount(0);
+  await page.goto("/analysis");
+  await page.getByRole("link", { name: "Abrir ejecución run-current", exact: true }).click();
+  await expect(page).toHaveURL(/\/analysis\/run-current$/);
 
   await expect(page.getByRole("heading", { name: "Repositorios del proyecto" }).first()).toBeVisible();
   const backend = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
@@ -176,8 +181,12 @@ test("project and existing feature views keep repository identity, CI, coverage 
   await expect(page.getByRole("heading", { name: "Resumen consolidado del proyecto" })).toBeVisible();
   await expect(page.getByText(/no se calcula cobertura global/i)).toBeVisible();
 
-  for (const path of ["/analysis?run_id=run-current", "/quality?run_id=run-current", "/reports"]) {
+  for (const path of ["/analysis", "/quality?run_id=run-current", "/reports"]) {
     await page.goto(path);
+    await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toHaveCount(0);
+    await page.goto("/analysis");
+    await page.getByRole("link", { name: "Abrir ejecución run-current", exact: true }).click();
+    await expect(page).toHaveURL(/\/analysis\/run-current$/);
     await expect(page.getByRole("heading", { name: "Repositorios del proyecto" }).first()).toBeVisible();
     await expect(page.getByText("hormigestion-backend").first()).toBeVisible();
   }
@@ -196,10 +205,13 @@ test("repository history refreshes when a tracked analysis job reaches terminal 
     const payload = api.jobPollRequests >= 2 ? after : before;
     await route.fulfill({ json: payload });
   });
-  await page.goto("/projects");
+  await page.goto("/analysis/run-previous");
 
   const backend = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backend).toContainText("Ejecución run-previous");
+  await page.goto("/analysis/run-current");
+  await expect(backend).not.toContainText("Ejecución run-previous");
+  await expect(backend).toContainText("Sin observación de repositorio asociada a la ejecución run-current.");
   const initialHistoryReads = repositoryResultsReads;
   const header = page.getByRole("banner");
   const trigger = header.getByRole("button", { name: "Sincronizar proyecto" });
@@ -333,7 +345,7 @@ test("a workflow with a contradictory repository identity is not attributed to t
       : item),
   };
   await installApi(page, { authenticated: true, capabilities: ["audit:read"], repositoryResultsPayload: mismatchedRepositoryResults });
-  await page.goto("/projects");
+  await page.goto("/analysis/run-current");
 
   const backend = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backend.getByRole("heading", { name: "Workflows sin asociación confirmada" })).toBeVisible();
@@ -388,14 +400,38 @@ test("live project selection closes a stale finding and isolates repository hist
     repositoryResultsByProject: { [secondaryRepositoryResults.project_id]: secondaryRepositoryResults },
   });
   await installFindingApi(page, { legacy: true });
+  const secondaryRun = { ...runCurrent, run_id: "run-secondary", project_id: secondProject.id };
+  await page.route((url) => url.pathname === "/api/v1/runs" && url.searchParams.get("project_id") === secondProject.id, async (route) => {
+    await route.fulfill({ json: { items: [secondaryRun], total: 1, page: 1, page_size: 25 } });
+  });
+  await page.route("**/api/v1/runs/run-secondary**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/run-secondary")) {
+      await route.fulfill({ json: secondaryRun });
+    } else if (path.endsWith("/stages") || path.endsWith("/evidence")) {
+      await route.fulfill({ json: { run_id: "run-secondary", items: [], total: 0, page: 1, page_size: 100 } });
+    } else {
+      await route.fallback();
+    }
+  });
   await page.goto("/quality?run_id=run-current");
-  await expect(page.getByText("hormigestion-backend").first()).toBeVisible();
+  const repositoryFilter = page.getByLabel("Filtrar hallazgos por repositorio");
+  await expect(repositoryFilter).toBeVisible();
+  await expect(repositoryFilter).toContainText("hormigestion-backend");
   await page.getByRole("button", { name: "Revisar hallazgo finding-candidate" }).click();
   const staleDialog = page.getByRole("dialog");
   await expect(staleDialog).toBeVisible();
 
-  await page.getByLabel("Proyecto activo").first().selectOption("proyecto-secundario");
+  // A native project change must invalidate the detail even while the modal hides the shell from the accessibility tree.
+  await page.locator(".topbar").getByLabel("Proyecto activo").selectOption("proyecto-secundario");
   await expect(staleDialog).toHaveCount(0);
+  await expect(page.getByText("hormigestion-backend")).toHaveCount(0);
+  await expect(page.locator(".topbar").getByLabel("Proyecto activo")).toHaveValue(secondProject.id);
+  await page.getByRole("navigation", { name: "Navegación principal", exact: true }).getByRole("link", { name: "Análisis de IA", exact: true }).click();
+  await page.getByRole("link", { name: "Abrir ejecución run-secondary", exact: true }).click();
+  await expect(page).toHaveURL(/\/analysis\/run-secondary$/);
+  await expect(page.locator(".topbar").getByLabel("Proyecto activo")).toHaveValue(secondProject.id);
+  await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toBeVisible();
   await expect(page.getByText(/disponibilidad.*desconocida/i)).toBeVisible();
   await expect(page.getByText("hormigestion-backend")).toHaveCount(0);
 });
@@ -406,13 +442,15 @@ test("the legacy project keeps unknown repository history instead of an invented
   await page.goto("/quality");
 
   await expect(page.getByRole("heading", { name: "Hallazgos candidatos" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Repositorios del proyecto" }).first()).toBeVisible();
-  await expect(page.getByText(/disponibilidad.*desconocida/i)).toBeVisible();
-  await expect(page.getByText(/hormigestion-backend|hormigestion-frontend/)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Revisar hallazgo finding-candidate" })).toBeVisible();
   await page.getByRole("button", { name: "Revisar hallazgo finding-candidate" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: /Aprobar|Rechazar|Solicitar cambios/i })).toHaveCount(0);
-  await expect(dialog.getByText("El servidor no concedió quality:decide; las acciones de decisión están ocultas.", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("El servidor no concedió quality:decide; las decisiones protegidas están ocultas.", { exact: true })).toBeVisible();
+  await page.goto("/analysis/run-current");
+  await expect(page.getByRole("heading", { name: "Repositorios del proyecto" }).first()).toBeVisible();
+  await expect(page.getByText(/disponibilidad.*desconocida/i)).toBeVisible();
+  await expect(page.getByText(/hormigestion-backend|hormigestion-frontend/)).toHaveCount(0);
 });

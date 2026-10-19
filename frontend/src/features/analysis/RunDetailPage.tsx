@@ -28,7 +28,7 @@ const PIPELINE_STAGE_ORDER = [
   "source_collection",
   "monitoring",
   "quality",
-  "verification",
+  "verifier",
   "report",
 ] as const;
 
@@ -267,10 +267,12 @@ export function RunDetailPage() {
             {PIPELINE_STAGE_ORDER.map((stageName) => {
               const stage = stagesMap.get(stageName);
               const tone = stageTone(stage);
-              const statusLabel = stage ? stageStatusLabel(stage.status) : "No ejecutada";
+              const statusLabel = !stage?.recorded
+                ? "No registrado; estado desconocido"
+                : stageStatusLabel(stage.status);
 
               return (
-                <article key={stageName} className={`pipeline-stage-card stage-${stage?.status ?? "unknown"}`}>
+                <article key={stageName} className={`pipeline-stage-card stage-${stage?.recorded ? stage.status : "unknown"}`}>
                   <div className="stage-card-top">
                     <h3 className="stage-card-title">{stageNameLabel(stageName)}</h3>
                     <Pill tone={tone}>{statusLabel}</Pill>

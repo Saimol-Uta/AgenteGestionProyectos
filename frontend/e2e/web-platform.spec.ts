@@ -124,6 +124,33 @@ test("una etapa desconocida no se presenta como omitida y una omisión requiere 
   await expect(page.getByText("local · fixture-monitor", { exact: true })).toBeVisible();
 });
 
+test("pipeline stage states follow recorded public records", async ({ page }) => {
+  await installApi(page);
+  await page.route("**/api/v1/runs/run-current/stages**", async (route) => {
+    await route.fulfill({ json: {
+      ...stageRecords,
+      items: [
+        { ...stageRecords.items[0], status: "completed", recorded: true },
+        { ...stageRecords.items[1], status: "failed", recorded: true },
+        { ...stageRecords.items[2], status: "skipped", recorded: true },
+        { ...stageRecords.items[3], status: "unknown", recorded: true },
+        { ...stageRecords.items[4], status: "skipped", recorded: false },
+      ],
+    } });
+  });
+  await page.goto("/analysis/run-current");
+  const pipeline = page.getByRole("region", { name: "Etapas del pipeline" });
+  const card = (name: string) => pipeline.getByRole("article").filter({
+    has: page.getByRole("heading", { name, exact: true }),
+  });
+  await expect(card("Recopilación de fuentes").getByText("Completada", { exact: true })).toBeVisible();
+  await expect(card("Seguimiento del proyecto").getByText("Fallida", { exact: true })).toBeVisible();
+  await expect(card("Revisión de calidad").getByText("Omitida explícitamente", { exact: true })).toBeVisible();
+  await expect(card("Verificación de hallazgos").getByText("Desconocida", { exact: true })).toBeVisible();
+  await expect(card("Elaboración del informe").getByText("No registrado; estado desconocido", { exact: true })).toBeVisible();
+  await expect(card("Elaboración del informe").getByText("Omitida explícitamente", { exact: true })).toHaveCount(0);
+});
+
 test("la calidad conserva hallazgos candidatos, verificaciones y fragmentos como texto", async ({ page }) => {
   await installApi(page);
   await page.goto("/quality");
