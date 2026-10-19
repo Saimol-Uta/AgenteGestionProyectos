@@ -15,7 +15,7 @@ import { useToast } from "../../components/ToastProvider";
 import { useSession } from "../auth/SessionProvider";
 import { useWorkspace } from "../../app/WorkspaceContext";
 
-const pageSize = 25;
+const pageSize = 3;
 type DownloadFormat = "markdown" | "json";
 type DecisionChoice = Exclude<ReportHumanDecision, "pending">;
 

@@ -100,8 +100,8 @@ export function AnalysisPage() {
   const runsPage = pageValue(searchParams.get("runs_page"));
   const jobsPage = pageValue(searchParams.get("jobs_page"));
   const requestedRunId = searchParams.get("run_id") || null;
-  const runsQuery = useRuns(project?.id ?? null, runsPage, 25);
-  const jobsQuery = useAnalysisJobs(canReadJobs ? project?.id ?? null : null, jobsPage, 25);
+  const runsQuery = useRuns(project?.id ?? null, runsPage, 5);
+  const jobsQuery = useAnalysisJobs(canReadJobs ? project?.id ?? null : null, jobsPage, 5);
   const persistedActiveJob = jobsQuery.data?.items.find((job) => activeJobStatuses.includes(job.status));
   const trackedJobId = canReadJobs ? activeJobId ?? persistedActiveJob?.job_id ?? null : null;
   const trackedJobQuery = useQuery({
@@ -115,7 +115,7 @@ export function AnalysisPage() {
   useEffect(() => {
     const status = trackedJobQuery.data?.status;
     if (canReadJobs && project?.id && status && !activeJobStatuses.includes(status)) {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.analysisJobs(project.id, jobsPage, 25), exact: true });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.analysisJobs(project.id, jobsPage, 5), exact: true });
     }
   }, [canReadJobs, jobsPage, project?.id, queryClient, trackedJobQuery.data?.status]);
 
@@ -160,8 +160,8 @@ export function AnalysisPage() {
       setPreparation(null);
       setRemoteConsent(false);
       if (project) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.analysisJobs(project.id, jobsPage, 25) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.runs(project.id, 1, 25) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.analysisJobs(project.id, jobsPage, 5) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.runs(project.id, 1, 5) });
       }
       notify(result.reused ? "Se retomó un análisis existente." : "El análisis fue confirmado.", "success");
     },
