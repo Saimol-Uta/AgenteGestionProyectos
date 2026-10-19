@@ -36,7 +36,7 @@ Restricciones vigentes: no modificar el pipeline multiagente, no crear agentes, 
 - T9 [S10,S12] Propuestas: qué riesgo motivó la acción, navegación a su tarea y evidencia; detalle ejecutivo de REQ-08 intacto. Route: delegated (misma unidad que T8). Estado: hecho.
 - T10 [S14] Pruebas backend de los casos obligatorios y specs Playwright de navegación. Route: inline (backend) + parte de T8 (frontend). Estado: hecho.
 - T11 [S14] E2E aislado React–FastAPI–SQLite sobre los paneles reales de G2/G3. Route: inline. Estado: hecho.
-- T12 [S14] Suites completas, typecheck y build. Route: inline. Estado: en curso.
+- T12 [S14] Suites completas, typecheck y build. Route: inline. Estado: hecho.
 - T12 [S14] Suites completas, typecheck y build. Route: inline. Estado: pendiente.
 
 Commits: `feat(domain)` (T1–T5), `feat(api)` (T6–T7), `feat(web)` (T8–T10), `test(web)` (T11).
@@ -62,3 +62,5 @@ Commits: `feat(domain)` (T1–T5), `feat(api)` (T6–T7), `feat(web)` (T8–T10)
 - L17. Verificación de la presentación: 10 specs nuevas del worker (`frontend/e2e/g3-risk-proposal-chain.spec.ts`), suite completa 151/151 en verde y `tsc --noEmit` sin errores. Se comprobó la sensibilidad mutando el render del panel de riesgo: fallaron exactamente las 2 pruebas del dashboard afectadas; tras revertir, todo en verde.
 - L18. Lección de infraestructura: la suite Playwright es frágil si dos launas corren a la vez (comparten CPU y el servidor de desarrollo en el puerto 4173). Los fallos intermitentes observados en la primera pasada no provenían del código: con el worker inactivo la misma suite da 151/151. En el futuro, no ejecutar dos launas de Playwright en paralelo sobre este repositorio.
 - L19. E2E aislado de G3 en verde sobre datos reales: el recorrido completo riesgo → tarea → propuesta → revisión → decisión → recibo sandbox, con el SHA-256 de la base de origen sin cambios y sin peticiones fuera del origen permitido.
+- L20. Cierre: backend 1160 pruebas en verde (1 omitida), frontend 151/151, `tsc --noEmit` sin errores, `vite build` sin errores, E2E real de G1 en verde y E2E real de G3 en verde. `config/` y `.runtime/` intactos, la base de origen conserva su mtime (08:42) y su SHA-256. 21 commits locales adelantados, sin push ni merge. Los cuatro commits de G3: `3cc52a3` (dominio), `58a3d6c` (API), `cc3398e` (web), `ecc2199` (E2E y documentación).
+- L21. Pendiente para la siguiente fase: el vínculo riesgo→propuesta es de una sola dirección en el modelo (la propuesta conoce su riesgo; el riesgo conoce sus propuestas mediante el modelo de lectura). Una propuesta que responde a un riesgo que ya no existe conserva la referencia pero se declara no verificable; no se re-resuelve ni se reescribe.
