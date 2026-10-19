@@ -450,7 +450,7 @@ export function QualityPage() {
           <h1>Centro de calidad de código</h1>
           <p className="page-subtitle">Hallazgos candidatos, verificaciones persistidas, evidencia segura y evaluaciones de políticas.</p>
         </div>
-        {runId && <Link className="button button-secondary" to={`/analysis?run_id=${encodeURIComponent(runId)}`}>Ver ejecución <ArrowRight aria-hidden="true" size={14} /></Link>}
+        {runId && <Link className="button button-secondary" to={`/analysis/${encodeURIComponent(runId)}`}>Ver ejecución <ArrowRight aria-hidden="true" size={14} /></Link>}
       </div>
 
       <section className="panel quality-summary-panel" aria-labelledby="quality-summary-heading">

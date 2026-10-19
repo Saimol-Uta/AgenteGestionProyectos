@@ -252,7 +252,7 @@ function Workflow({ projectId }: { projectId: string | null }) {
         {jobId && !tracked.data && !tracked.isError && <p className="analysis-dialog-status" role="status">Consultando el estado del análisis confirmado…</p>}
         {tracked.data && <div className="analysis-dialog-status" role="status">
           <p>Estado del análisis: {analysisJobStatusLabel(tracked.data.status)}.{tracked.data.execution_mode && <> Modo de ejecución: {analysisExecutionModeLabel(tracked.data.execution_mode)}.</>}{tracked.data.fallback_reasons?.length ? <> Alternativas aplicadas: {tracked.data.fallback_reasons.join("; ")}.</> : null}</p>
-          {tracked.data.run_id && <Link className="text-link" to={`/analysis?run_id=${encodeURIComponent(tracked.data.run_id)}`}>Consultar resultados y validación</Link>}
+          {tracked.data.run_id && <Link className="text-link" to={`/analysis/${encodeURIComponent(tracked.data.run_id)}`}>Consultar resultados y validación</Link>}
         </div>}
         {running && !tracked.isError && <p className="analysis-dialog-note">El trabajo sigue consultándose aunque cierres este diálogo. No se iniciará otro análisis hasta conocer su estado terminal.</p>}
         {tracked.isError && <p className="workflow-error" role="alert">No se pudo consultar el estado: {tracked.error.message}</p>}

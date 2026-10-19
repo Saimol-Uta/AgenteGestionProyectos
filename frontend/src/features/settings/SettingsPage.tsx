@@ -139,7 +139,7 @@ export function SettingsPage() {
                 <div><dt>Modo de origen</dt><dd><code>{selectedProject.source_mode}</code></dd></div>
                 <div><dt>Última captura</dt><dd><Clock3 aria-hidden="true" size={13} />{formatDate(selectedProject.latest_capture_at, true)}</dd></div>
                 <div><dt>Última ejecución</dt><dd>{selectedProject.latest_run_status ? runStatusLabel(selectedProject.latest_run_status) : "Sin dato registrado"}</dd></div>
-                <div><dt>ID de ejecución</dt><dd>{selectedProject.latest_run_id ? <Link to={`/analysis?run_id=${encodeURIComponent(selectedProject.latest_run_id)}`}>{selectedProject.latest_run_id}</Link> : "Sin dato registrado"}</dd></div>
+                <div><dt>ID de ejecución</dt><dd>{selectedProject.latest_run_id ? <Link to={`/analysis/${encodeURIComponent(selectedProject.latest_run_id)}`}>{selectedProject.latest_run_id}</Link> : "Sin dato registrado"}</dd></div>
               </dl>
             </>
           )}

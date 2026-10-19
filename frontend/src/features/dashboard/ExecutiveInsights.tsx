@@ -77,7 +77,7 @@ function LatestAnalysis({ projectId }: { projectId: string }) {
     <div className="latest-analysis-card">
       <div><p className="eyebrow">ÚLTIMO ANÁLISIS REGISTRADO</p><strong>{formatDate(latest.created_at, true)}</strong><p>{latest.run_id}</p></div>
       <Pill tone={latestStatusTone(latest.status)}>{runStatusLabel(latest.status)}</Pill>
-      <Link className="text-link" to={`/analysis?run_id=${encodeURIComponent(latest.run_id)}`}>Abrir ejecución <ArrowRight aria-hidden="true" size={14} /></Link>
+      <Link className="text-link" to={`/analysis/${encodeURIComponent(latest.run_id)}`}>Abrir ejecución <ArrowRight aria-hidden="true" size={14} /></Link>
     </div>
   );
 }
@@ -142,7 +142,7 @@ function ExecutiveData({ data }: { data: ExecutiveSummary }) {
               <p>Fecha de corte: {formatDate(report.cutoff_datetime, true)}</p>
               <p>Decisión humana reportada: <code>{report.human_decision}</code></p>
               <p>{report.summary}</p>
-              {report.run_id && <Link className="text-link" to={`/analysis?run_id=${encodeURIComponent(report.run_id)}`}>Abrir ejecución de origen <ArrowRight aria-hidden="true" size={13} /></Link>}
+              {report.run_id && <Link className="text-link" to={`/analysis/${encodeURIComponent(report.run_id)}`}>Abrir ejecución de origen <ArrowRight aria-hidden="true" size={13} /></Link>}
             </>
           ) : <p className="executive-unknown">El backend no informó un informe persistido para este proyecto.</p>}
         </article>
@@ -157,7 +157,7 @@ function ExecutiveData({ data }: { data: ExecutiveSummary }) {
         {data.runs.series.length > 0 && (
           <ul className="executive-run-links">
             {data.runs.series.slice(-5).reverse().map((run) => (
-              <li key={run.run_id}><Link to={`/analysis?run_id=${encodeURIComponent(run.run_id)}`}>{run.run_id} · {runStatusLabel(run.status)} · {formatDurationSeconds(run.duration_seconds)} <ArrowRight aria-hidden="true" size={12} /></Link></li>
+              <li key={run.run_id}><Link to={`/analysis/${encodeURIComponent(run.run_id)}`}>{run.run_id} · {runStatusLabel(run.status)} · {formatDurationSeconds(run.duration_seconds)} <ArrowRight aria-hidden="true" size={12} /></Link></li>
             ))}
           </ul>
         )}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Clock3, FilePlus2, ShieldCheck, Sparkles } from "lucide-react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import {
   analysisExecutionModeLabel,
@@ -22,7 +22,6 @@ import { ErrorState, EmptyState, LoadingState, Pill } from "../../components/Sta
 import { useSession } from "../auth/SessionProvider";
 import { useToast } from "../../components/ToastProvider";
 import type { AnalysisJobStatus, RunStatus } from "../../api/types";
-import { RunDetailPanel } from "./RunDetailPanel";
 
 const activeJobStatuses: AnalysisJobStatus[] = ["queued", "running"];
 
@@ -176,10 +175,8 @@ export function AnalysisPage() {
     setSearchParams(next, { replace: true });
   }
 
-  function closeRunDetail() {
-    const next = new URLSearchParams(searchParams);
-    next.delete("run_id");
-    setSearchParams(next, { replace: true });
+  if (requestedRunId) {
+    return <Navigate to={`/analysis/${encodeURIComponent(requestedRunId)}`} replace />;
   }
 
   if (projectsQuery.isPending) return <LoadingState label="Cargando proyectos…" />;
@@ -346,7 +343,7 @@ export function AnalysisPage() {
           {trackedJob.error_code && <p className="stage-error">El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.</p>}
           {trackedJob.execution_mode && <p>Modo de ejecución: {analysisExecutionModeLabel(trackedJob.execution_mode)}</p>}
           {trackedJob.fallback_reasons?.length ? <p>Alternativas aplicadas: {trackedJob.fallback_reasons.join("; ")}</p> : null}
-          {trackedJob.run_id && <Link className="text-link" to={`/analysis?run_id=${encodeURIComponent(trackedJob.run_id)}`}>Abrir análisis <ArrowRight aria-hidden="true" size={14} /></Link>}
+          {trackedJob.run_id && <Link className="text-link" to={`/analysis/${encodeURIComponent(trackedJob.run_id)}`}>Abrir análisis <ArrowRight aria-hidden="true" size={14} /></Link>}
         </section>
       )}
       {trackedJobQuery.isError && <ErrorState title="No se pudo consultar el trabajo de análisis" message={trackedJobQuery.error.message} onRetry={() => void trackedJobQuery.refetch()} />}
@@ -367,7 +364,7 @@ export function AnalysisPage() {
             <ul className="run-history-list">
               {runSeries.map((run) => (
                 <li key={run.run_id}>
-                  <Link to={`/analysis?run_id=${encodeURIComponent(run.run_id)}`} aria-label={`Abrir ejecución ${run.run_id}`}>
+                  <Link to={`/analysis/${encodeURIComponent(run.run_id)}`} aria-label={`Abrir ejecución ${run.run_id}`}>
                     <span className="run-history-main"><strong>{run.run_id}</strong></span>
                     <span>{formatDate(run.created_at, true)}</span>
                     <Pill tone={statusTone(run.status)}>{runStatusLabel(run.status)}</Pill>
@@ -409,7 +406,7 @@ export function AnalysisPage() {
                   <span>{job.remote_consent ? "Autorización de servicios en la nube registrada" : "Sin autorización para servicios en la nube"}</span>
                   {job.execution_mode && <span>Modo de ejecución: {analysisExecutionModeLabel(job.execution_mode)}</span>}
                   {job.fallback_reasons?.length ? <span>Alternativas: {job.fallback_reasons.join("; ")}</span> : null}
-                  {job.run_id && <Link to={`/analysis?run_id=${encodeURIComponent(job.run_id)}`}>Abrir análisis <ArrowRight aria-hidden="true" size={13} /></Link>}
+                  {job.run_id && <Link to={`/analysis/${encodeURIComponent(job.run_id)}`}>Abrir análisis <ArrowRight aria-hidden="true" size={13} /></Link>}
                   {job.error_code && <span>El análisis no se completó correctamente.</span>}
                 </li>
               ))}
@@ -426,8 +423,6 @@ export function AnalysisPage() {
           </>
         ) : <EmptyState title="Sin trabajos asíncronos" message="La consulta del ledger no encontró trabajos almacenados." />)}
       </section>
-
-      {requestedRunId && <RunDetailPanel key={`${project.id}:${requestedRunId}`} runId={requestedRunId} projectId={project.id} onClose={closeRunDetail} />}
 
       <div className="analysis-security-note">
         <Pill tone="neutral">Sin escrituras externas</Pill>

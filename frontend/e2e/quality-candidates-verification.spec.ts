@@ -131,7 +131,7 @@ function buildMockRepositoryResults(findings: any[]): RepositoryResultsCollectio
         snapshot_id: "snap-backend",
         source_scope: "repository",
         source_item_key: "backend",
-        analysis_run_id: "run-e2e-test",
+        analysis_run_id: "run-current",
         report_id: "rep-e2e-test",
         repository: {
           repository_id: "backend",
@@ -164,7 +164,7 @@ function buildMockRepositoryResults(findings: any[]): RepositoryResultsCollectio
         snapshot_id: "snap-frontend",
         source_scope: "repository",
         source_item_key: "frontend",
-        analysis_run_id: "run-e2e-test",
+        analysis_run_id: "run-current",
         report_id: "rep-e2e-test",
         repository: {
           repository_id: "frontend",
@@ -218,7 +218,7 @@ test("visualiza candidatos confirmados, pendientes y la advertencia de código n
     repositoryResultsPayload: payload,
   });
 
-  await page.goto("/projects");
+  await page.goto("/analysis/run-current");
 
   // 1. Verificar presencia de ambos repositorios
   const backendCard = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
@@ -254,7 +254,7 @@ test("visualiza hallazgos rechazados e insuficientes sin acreditar parche ni dis
     repositoryResultsPayload: payload,
   });
 
-  await page.goto("/projects");
+  await page.goto("/analysis/run-current");
   const backendCard = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backendCard).toBeVisible();
 
@@ -278,7 +278,7 @@ test("soporta datos históricos sin campos nuevos y estados sin candidatos de fo
     repositoryResultsPayload: legacyPayload,
   });
 
-  await page.goto("/projects");
+  await page.goto("/analysis/run-current");
   const backendCard = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backendCard).toBeVisible();
   await expect(backendCard).toContainText("src/legacy.ts");
@@ -292,7 +292,7 @@ test("soporta datos históricos sin campos nuevos y estados sin candidatos de fo
     repositoryResultsPayload: emptyPayload,
   });
 
-  await page.goto("/projects");
+  await page.goto("/analysis/run-current");
   const backendEmpty = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backendEmpty).toBeVisible();
   await expect(backendEmpty.locator(".repository-finding-card")).toHaveCount(0);

@@ -16,6 +16,7 @@ import { ScrollToTop } from "./ScrollToTop";
 
 const DashboardPage = lazy(() => import("../features/dashboard/DashboardPage").then(({ DashboardPage: page }) => ({ default: page })));
 const AnalysisPage = lazy(() => import("../features/analysis/AnalysisPage").then(({ AnalysisPage: page }) => ({ default: page })));
+const RunDetailPage = lazy(() => import("../features/analysis/RunDetailPage").then(({ RunDetailPage: page }) => ({ default: page })));
 const QualityPage = lazy(() => import("../features/quality/QualityPage").then(({ QualityPage: page }) => ({ default: page })));
 const ProposalsPage = lazy(() => import("../features/proposals/ProposalsPage").then(({ ProposalsPage: page }) => ({ default: page })));
 const ReportsPage = lazy(() => import("../features/reports/ReportsPage").then(({ ReportsPage: page }) => ({ default: page })));
@@ -74,6 +75,7 @@ function RoutedApp() {
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="analysis" element={<Suspense fallback={<LoadingState label="Preparando el centro de análisis…" />}><AnalysisPage /></Suspense>} />
+          <Route path="analysis/:runId" element={<Suspense fallback={<LoadingState label="Preparando el detalle de ejecución…" />}><RunDetailPage /></Suspense>} />
           <Route path="quality" element={<Suspense fallback={<LoadingState label="Preparando el centro de calidad…" />}><QualityPage /></Suspense>} />
           <Route path="proposals" element={<Suspense fallback={<LoadingState label="Preparando la bandeja de propuestas…" />}><ProposalsPage /></Suspense>} />
           <Route path="reports" element={<Suspense fallback={<LoadingState label="Preparando los informes…" />}><ReportsPage /></Suspense>} />
