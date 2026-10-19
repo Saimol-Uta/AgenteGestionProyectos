@@ -8,7 +8,6 @@ import {
 } from "../../api/queries";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
-import { RepositoryResultsPanel } from "../../components/RepositoryResultsPanel";
 import type { CodeFindingDecision, DecideCodeFindingResponse, FindingDetail, FindingSummary } from "../../api/types";
 import { PolicyResults } from "./PolicyResults";
 import { useSession } from "../auth/SessionProvider";
@@ -453,8 +452,6 @@ export function QualityPage() {
         </div>
         {runId && <Link className="button button-secondary" to={`/analysis?run_id=${encodeURIComponent(runId)}`}>Ver ejecución <ArrowRight aria-hidden="true" size={14} /></Link>}
       </div>
-
-      <RepositoryResultsPanel projectId={project.id} runId={runId ?? undefined} />
 
       <section className="panel quality-summary-panel" aria-labelledby="quality-summary-heading">
         <div className="section-heading">

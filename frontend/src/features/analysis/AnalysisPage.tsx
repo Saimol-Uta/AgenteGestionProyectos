@@ -19,7 +19,6 @@ import {
 } from "../../api/queries";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { ErrorState, EmptyState, LoadingState, Pill } from "../../components/States";
-import { RepositoryResultsPanel } from "../../components/RepositoryResultsPanel";
 import { useSession } from "../auth/SessionProvider";
 import { useToast } from "../../components/ToastProvider";
 import type { AnalysisJobStatus, RunStatus } from "../../api/types";
@@ -169,7 +168,6 @@ export function AnalysisPage() {
   });
 
   const runSeries = useMemo(() => runsQuery.data?.items ?? [], [runsQuery.data?.items]);
-  const repositoryScopeRunId = requestedRunId ?? runSeries[0]?.run_id ?? undefined;
 
   function updatePage(key: "runs_page" | "jobs_page", nextPage: number) {
     const next = new URLSearchParams(searchParams);
@@ -212,8 +210,6 @@ export function AnalysisPage() {
         </div>
         <Pill tone="neutral">Consulta de ejecuciones · inicio solo con confirmación</Pill>
       </div>
-
-      <RepositoryResultsPanel projectId={project.id} runId={repositoryScopeRunId} />
 
       <section className="panel analysis-preparation-panel" aria-labelledby="preparation-heading">
         <div className="section-heading">
