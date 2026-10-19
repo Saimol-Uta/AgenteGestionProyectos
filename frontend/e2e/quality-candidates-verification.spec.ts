@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { RepositoryHistoryView, RepositoryResultsCollection } from "../src/api/types";
-import { installApi } from "./fixtures";
+import { assertNoBrowserNetworkAttempts, installApi, installBrowserNetworkGuard } from "./fixtures";
 
 const BACKEND_SHA = "af6aa59757886d3f1f8437f0a10d9f1e89ed6345";
 const FRONTEND_SHA = "68e2b9a13af5193738bd6b4706b0c073918dab7c";
@@ -200,14 +200,11 @@ function buildMockRepositoryResults(findings: any[]): RepositoryResultsCollectio
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.route("**/*", async (route) => {
-    const url = new URL(route.request().url());
-    if (url.hostname === "127.0.0.1" && url.port === "4173") {
-      await route.continue();
-      return;
-    }
-    await route.abort();
-  });
+  await installBrowserNetworkGuard(page);
+});
+
+test.afterEach(async ({ page }) => {
+  assertNoBrowserNetworkAttempts(page);
 });
 
 test("visualiza candidatos confirmados, pendientes y la advertencia de código no validado por repositorio", async ({ page }) => {

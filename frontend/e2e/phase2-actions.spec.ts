@@ -1,64 +1,46 @@
 import { expect, test } from "@playwright/test";
-import { assigneeProposalDetail, findingDetail, installApi, priorityProposalDetail, proposalDetail } from "./fixtures";
+import { assertNoBrowserNetworkAttempts, assigneeProposalDetail, findingDetail, installApi, installBrowserNetworkGuard, priorityProposalDetail, proposalDetail } from "./fixtures";
 
 test.beforeEach(async ({ page }) => {
-  await page.route("**/*", async (route) => {
-    const url = new URL(route.request().url());
-    if (url.origin === "http://127.0.0.1:4173") return route.continue();
-    return route.abort();
-  });
+  await installBrowserNetworkGuard(page);
 });
 
-const capabilities = ["governance:proposal_execute", "quality:decide", "notifications:email_send"];
+test.afterEach(async ({ page }) => {
+  assertNoBrowserNetworkAttempts(page);
+});
+
+const capabilities = ["governance:proposal_execute", "quality:decide", "notifications:email_send", "audit:read"];
 const phase2Finding = {
   ...findingDetail,
   suggested_code: "export function backendSuggestion(): string { return 'review me'; }",
   improvement_summary: "La sugerencia proviene de la respuesta del backend.",
+  decision_status: "pending",
 };
 
-const approvedFinding = {
-  decision_status: "approved",
-  suggested_code: "export function reviewedSuggestion(): string { return 'approved'; }",
-  improvement_summary: "Valida el valor antes de usarlo.",
-  branch_name: "ai-fix/Q2-reviewed",
-  branch_url: "https://github.com/org/project/tree/ai-fix/Q2-reviewed",
-  commit_sha_applied: "c".repeat(40),
-  execution_mode: "sandbox",
-};
-
-test("quality approval uses the backend suggestion and reports its sandbox result without claiming a GitHub branch", async ({ page }) => {
+test("la recomendación de Quality permanece visible y la aprobación GitHub no tiene controles ejecutables", async ({ page }) => {
   const requests: Array<{ body: Record<string, unknown>; csrf: string | undefined; key: string | undefined }> = [];
   await installApi(page, { authenticated: true, capabilities });
   await page.route("**/api/v1/runs/run-current/findings/finding-candidate**", async (route) => {
-    if (route.request().method() === "GET") return route.fulfill({ json: phase2Finding });
+    if (route.request().method() === "GET") return route.fulfill({ json: { ...phase2Finding, verification_status: "confirmed" } });
     requests.push({
       body: route.request().postDataJSON(),
       csrf: route.request().headers()["x-csrf-token"],
       key: route.request().headers()["idempotency-key"],
     });
-    await route.fulfill({ json: approvedFinding });
+    await route.fulfill({ status: 409, json: { error: { code: "revision_independiente_requerida", message: "Aprobación bloqueada: falta revisión independiente del parche exacto." } } });
   });
 
   await page.goto("/quality");
   await page.getByRole("button", { name: "Revisar hallazgo finding-candidate" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.locator(".quality-code-after code")).toContainText("backendSuggestion");
-  await expect(dialog.getByRole("button", { name: "Editar código sugerido", exact: true })).toHaveCount(0);
-  await dialog.getByLabel("Rama separada de verificación").fill("ai-fix/Q2-reviewed");
-  await dialog.getByRole("button", { name: "Aprobar y crear rama", exact: true }).click();
-
-  await expect(dialog.locator(".quality-decision-result")).toContainText("Aprobada");
-  await expect(dialog.locator(".quality-decision-result")).toContainText("Local");
-  await expect(dialog.getByText(new RegExp(`c{40}`))).toBeVisible();
-  await expect(dialog.getByText("Valida el valor antes de usarlo.", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("link", { name: /GitHub|Pull Request/i })).toHaveCount(0);
-  expect(requests).toHaveLength(1);
-  expect(requests[0]).toMatchObject({ csrf: "csrf-fixture", body: {
-    decision: "approve",
-    target_branch: "ai-fix/Q2-reviewed",
-  } });
-  expect(requests[0].body).not.toHaveProperty("suggested_code_override");
-  expect(requests[0].key).toBeTruthy();
+  await expect(dialog.getByText("Aprobación bloqueada: falta revisión independiente del parche exacto.", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Aprobar y crear rama", exact: true })).toBeDisabled();
+  await expect(dialog.getByLabel("Rama separada de verificación")).toHaveCount(0);
+  await expect(dialog.getByLabel("Código sugerido editable")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Rechazar sugerencia", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Solicitar cambios", exact: true })).toBeVisible();
+  expect(requests).toHaveLength(0);
 });
 
 const editableProposals = [
@@ -86,7 +68,7 @@ for (const scenario of editableProposals) {
     });
 
     await page.goto("/proposals?proposal_id=proposal-date-001");
-    await page.getByRole("button", { name: "Modificar antes de Aprobar", exact: true }).click();
+    await page.getByRole("button", { name: "Modificar el campo recomendado", exact: true }).click();
     const controls = {
       due_date: page.getByLabel("Nueva fecha límite"),
       priority: page.getByLabel("Nueva prioridad"),
@@ -102,13 +84,13 @@ for (const scenario of editableProposals) {
     else await controls.assignee_ids.fill("gestor-demo, operador-2");
     const reason = "El gestor aprueba el cambio de un solo campo propuesto.";
     await page.getByLabel("Motivo de la decisión").fill(reason);
-    await page.getByRole("button", { name: "Aprobar y Aplicar en Trello", exact: true }).click();
+    await page.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Confirmar modificación y ejecución" });
     await dialog.getByRole("button", { name: "Modificar y ejecutar", exact: true }).click();
 
-    await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
-    await expect(page.getByText(/Verificación: verified/)).toBeVisible();
-    await expect(page.locator(".proposal-value-diff")).toContainText(scenario.originalValue);
+    await expect(page.getByText("Resultado sandbox registrado · no acredita cambios live", { exact: true })).toBeVisible();
+    await expect(page.getByText(/verificación verified/)).toBeVisible();
+    await expect(page.locator(".proposal-single-comparison")).toContainText(scenario.field === "priority" ? "low" : scenario.field === "due_date" ? "2026-02-20" : "gestor-demo, operador-2");
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ csrf: "csrf-fixture" });
     const fieldPayload = scenario.field === "due_date" ? { modified_due_date: "2026-02-20" }
@@ -146,7 +128,7 @@ test("quality request-changes decision sends its required reason to the backend"
   await dialog.getByLabel("Cambios solicitados").fill("Agregar una validación para cadenas vacías.");
   await dialog.getByRole("button", { name: "Enviar solicitud de cambios", exact: true }).click();
   await expect(dialog.locator(".quality-decision-result")).toContainText("Cambios solicitados");
-  await expect(dialog.locator(".quality-decision-result")).toContainText("Local");
+  await expect(dialog.locator(".quality-decision-result")).not.toContainText("Local");
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ body: { decision: "request_changes", reason: "Agregar una validación para cadenas vacías." } });
   expect(requests[0].key).toBeTruthy();
@@ -166,10 +148,10 @@ test("proposal rejection sends the human reason to the execution endpoint", asyn
   });
   await page.goto("/proposals?proposal_id=proposal-date-001");
   await page.getByLabel("Motivo de la decisión").fill("La evidencia del bloqueo no está vigente.");
-  await page.getByRole("button", { name: "Rechazar Propuesta", exact: true }).click();
+  await page.getByRole("button", { name: "Rechazar propuesta", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Confirmar rechazo de propuesta" });
   await dialog.getByRole("button", { name: "Rechazar propuesta", exact: true }).click();
-  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
+  await expect(page.getByText("Rechazo registrado por el backend", { exact: true })).toBeVisible();
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ body: { decision: "reject", reason: "La evidencia del bloqueo no está vigente." } });
   expect(requests[0].key).toBeTruthy();

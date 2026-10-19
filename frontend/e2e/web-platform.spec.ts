@@ -1,12 +1,12 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { summary, project, secondProject, tasks, allTasks, history, runCurrent, runPrevious, runHistory, stageRecords, candidateFinding, findingDetail, quality, policies, executiveSummary, analysisPreparation, analysisJob, comparison, proposalSummary, proposalDetail, reportSummary, reportDetail, auditEvent, unknownAuditEvent, outboxReceipt, weeklySchedule, weeklyWindow, scheduleView, outboxMessage, outboxDetail, schedulePreparation, weeklyCycleJob, projectConfiguration, auditCollection, installApi, managerCredentials } from "./fixtures";
+import { summary, project, secondProject, tasks, allTasks, history, runCurrent, runPrevious, runHistory, stageRecords, candidateFinding, findingDetail, quality, policies, executiveSummary, analysisPreparation, analysisJob, comparison, proposalSummary, proposalDetail, reportSummary, reportDetail, auditEvent, unknownAuditEvent, outboxReceipt, weeklySchedule, weeklyWindow, scheduleView, outboxMessage, outboxDetail, schedulePreparation, weeklyCycleJob, projectConfiguration, auditCollection, installApi, installBrowserNetworkGuard, assertNoBrowserNetworkAttempts, managerCredentials } from "./fixtures";
 
 test.beforeEach(async ({ page }) => {
-  await page.route("**/*", async (route) => {
-    const url = new URL(route.request().url());
-    if (url.origin === "http://127.0.0.1:4173") return route.continue();
-    return route.abort();
-  });
+  await installBrowserNetworkGuard(page);
+});
+
+test.afterEach(async ({ page }) => {
+  assertNoBrowserNetworkAttempts(page);
 });
 
 test("el dashboard enlaza estados y señales desde conteos del backend sin sumar categorías solapadas", async ({ page }) => {
@@ -562,7 +562,7 @@ test("las preferencias de configuración funcionan con teclado y en ancho móvil
   expect(dimensions.width).toBeLessThanOrEqual(dimensions.client);
 });
 
-test("la propuesta usa revisión técnica automática y una sola decisión protegida /execute", async ({ page }) => {
+test("la revisión determinista informa sus límites y la decisión protegida produce un resultado sandbox explícito", async ({ page }) => {
   const technicalReview = {
     review_id: "technical-review-001",
     technical_status: "ready",
@@ -574,22 +574,22 @@ test("la propuesta usa revisión técnica automática y una sola decisión prote
   };
   const observer = await installApi(page, {
     authenticated: true,
-    capabilities: ["operator_session", "governance:proposal_execute"],
+    capabilities: ["operator_session", "governance:proposal_execute", "audit:read"],
     proposalFixture: { ...proposalDetail, technical_review: technicalReview },
   });
   await page.goto("/proposals");
   await expect(page.getByRole("heading", { name: "Propuestas", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "Abrir propuesta proposal-date-001" }).click();
-  await expect(page.getByText("Agente Revisor · Revisión técnica lista", { exact: true })).toBeVisible();
-  await expect(page.getByText(/aprobación humana requerida/)).toBeVisible();
-  await expect(page.getByText("proposal-date-001", { exact: true })).toBeVisible();
-  await expect(page.getByText("capture-current", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Abrir propuesta para Fecha de vencimiento" }).click();
+  await expect(page.getByRole("heading", { name: "Revisión técnica lista", exact: true })).toBeVisible();
+  await expect(page.getByText("Decisión pendiente", { exact: true })).toBeVisible();
+  await expect(page.getByText("No autorizada", { exact: true })).toBeVisible();
+  await expect(page.getByText(/No es una revisión independiente de código ni una evaluación de un parche/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Aprobar para revisión local|Autorizar simulación segura|Simular propuesta autorizada/ })).toHaveCount(0);
   await page.getByLabel("Motivo de la decisión").fill("El cambio se acepta con base en la revisión técnica.");
-  await page.getByRole("button", { name: "Aprobar y Aplicar en Trello", exact: true }).click();
+  await page.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Confirmar aprobación y ejecución" });
   await dialog.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
-  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toBeVisible();
+  await expect(page.getByText("Resultado sandbox registrado · no acredita cambios live", { exact: true })).toBeVisible();
 
   expect(observer.governanceRequests).toHaveLength(1);
   expect(observer.governanceRequests[0].path).toBe("/api/v1/projects/hormigestio/proposals/proposal-date-001/execute");
@@ -605,25 +605,25 @@ test("la propuesta usa revisión técnica automática y una sola decisión prote
 test("la sesión de consulta no ofrece decisiones falsas ni controles de propuesta", async ({ page }) => {
   const observer = await installApi(page, { authenticated: true, capabilities: ["operator_session"] });
   await page.goto("/proposals?proposal_id=proposal-date-001");
-  await expect(page.getByRole("button", { name: "Aprobar y Aplicar en Trello", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Modificar antes de Aprobar", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Rechazar Propuesta", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Aprobar y ejecutar", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Modificar el campo recomendado", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Rechazar propuesta", exact: true })).toHaveCount(0);
   expect(observer.governanceRequests).toHaveLength(0);
 });
 
 test("un rechazo HTTP del servidor se muestra y no activa una decisión local", async ({ page }) => {
   const observer = await installApi(page, {
     authenticated: true,
-    capabilities: ["operator_session", "governance:proposal_execute"],
+    capabilities: ["operator_session", "governance:proposal_execute", "audit:read"],
     proposalExecutionStatus: 403,
   });
   await page.goto("/proposals?proposal_id=proposal-date-001");
   await page.getByLabel("Motivo de la decisión").fill("El servidor rechazó esta ejecución.");
-  await page.getByRole("button", { name: "Aprobar y Aplicar en Trello", exact: true }).click();
+  await page.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Confirmar aprobación y ejecución" });
   await dialog.getByRole("button", { name: "Aprobar y ejecutar", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("La ejecución no está disponible por el servidor.");
-  await expect(page.getByText("Local · Trello sin cambios", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Resultado sandbox registrado · no acredita cambios live", { exact: true })).toHaveCount(0);
   expect(observer.governanceRequests).toHaveLength(1);
   expect(observer.governanceRequests[0].path).toBe("/api/v1/projects/hormigestio/proposals/proposal-date-001/execute");
   expect(observer.governanceRequests.some((item) => /\/review$|dry-run-authorization|\/dry-runs$/.test(item.path))).toBe(false);

@@ -1,5 +1,7 @@
+import { appendFileSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { expect, type Page, type Route } from "@playwright/test";
-import type { ProposalDetail, ProposalSummary } from "../src/api/types";
+import type { ExecuteProposalRequest, ProposalDecisionHistoryEntry, ProposalDetail, ProposalExecutionReceipt, ProposalSummary } from "../src/api/types";
 
 export const managerCredentials = {
   email: "gestor@hormigestion.ec",
@@ -361,10 +363,21 @@ export const proposalSummary: ProposalSummary = {
     recorded_at: "2026-01-12T10:20:00-05:00",
   },
   freshness: "current",
+  review_status: "pending",
+  authorization_status: "not_authorized",
   execution_status: "not_executed",
 };
 
-export const proposalDetail: ProposalDetail = { ...proposalSummary };
+export const proposalDetail: ProposalDetail = {
+  ...proposalSummary,
+  decision_history: [],
+  decision_history_availability: "available",
+  original_proposal_id: null,
+  derived_proposal_ids: [],
+  relationship_availability: "available",
+  latest_receipt: null,
+  receipt_availability: "available",
+};
 
 export const priorityProposalDetail: ProposalDetail = {
   ...proposalDetail,
@@ -552,8 +565,62 @@ export const auditCollection = {
   page_size: 25,
 };
 
+const localBrowserOrigin = "http://127.0.0.1:4173";
+const localBrowserWebSocketOrigin = "ws://127.0.0.1:4173";
+const browserNetworkAttempts = new WeakMap<Page, string[]>();
+
+export async function installBrowserNetworkGuard(page: Page) {
+  const attempts: string[] = [];
+  browserNetworkAttempts.set(page, attempts);
+  const recordAttempt = (transport: string, url: string) => {
+    const entry = `${transport} ${url}`;
+    attempts.push(entry);
+    const logPath = process.env.ISOLATION_NETWORK_LOG;
+    if (logPath) {
+      const scratchRoot = process.env.ISOLATION_SCRATCH_ROOT;
+      const relativeLogPath = scratchRoot ? relative(resolve(scratchRoot), resolve(logPath)) : "";
+      if (!scratchRoot || !relativeLogPath || relativeLogPath === ".." || relativeLogPath.startsWith(`..${sep}`) || isAbsolute(relativeLogPath)) {
+        throw new Error("The browser network log must stay inside the authorized scratch area.");
+      }
+      appendFileSync(resolve(logPath), `${JSON.stringify({ transport, url })}\n`, "utf8");
+    }
+  };
+
+  await page.context().route("**/*", async (route) => {
+    const requestUrl = route.request().url();
+    if (new URL(requestUrl).origin === localBrowserOrigin) return route.continue();
+    recordAttempt("http", requestUrl);
+    return route.abort();
+  });
+  await page.context().routeWebSocket("**/*", async (webSocket) => {
+    if (new URL(webSocket.url()).origin === localBrowserWebSocketOrigin) {
+      webSocket.connectToServer();
+      return;
+    }
+    recordAttempt("websocket", webSocket.url());
+    await webSocket.close({ code: 1008, reason: "External networking is disabled in offline UI tests." });
+  });
+  return attempts;
+}
+
+export function assertNoBrowserNetworkAttempts(page: Page) {
+  expect(browserNetworkAttempts.get(page) ?? []).toEqual([]);
+}
+
 async function json(route: Route, value: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
+}
+
+function proposalSummaryView(proposal: ProposalDetail): ProposalSummary {
+  const summary: ProposalDetail = { ...proposal };
+  delete summary.decision_history;
+  delete summary.decision_history_availability;
+  delete summary.original_proposal_id;
+  delete summary.derived_proposal_ids;
+  delete summary.relationship_availability;
+  delete summary.latest_receipt;
+  delete summary.receipt_availability;
+  return summary;
 }
 
 export async function installApi(page: Page, options: {
@@ -611,9 +678,10 @@ export async function installApi(page: Page, options: {
   let jobPollCount = 0;
   let jobPollRequests = 0;
   let analysisJobListReads = 0;
-  let currentProposal = { ...(options.proposalFixture ?? proposalDetail) };
+  const initialProposal = { ...(options.proposalFixture ?? proposalDetail) };
+  const proposalRecords = new Map<string, ProposalDetail>([[initialProposal.proposal_id, initialProposal]]);
   const currentAuditItems = [...auditCollection.items];
-  const executedProposalKeys = new Set<string>();
+  const executedProposalResponses = new Map<string, unknown>();
   type ReportDecisionItem = { decision_id: string; report_id: string; run_id: string | null; decision: string; reason: string | null; recorded_at: string; actor_id: null; actor_verification: "unknown" };
   let currentReport = { ...reportDetail, decision_history: [] as ReportDecisionItem[] };
   let cyclePrepared = false;
@@ -733,48 +801,142 @@ export async function installApi(page: Page, options: {
 
     if (path.endsWith("/projects/hormigestio/proposals") && request.method() === "GET") {
       const available = options.proposalAvailability ?? "available";
-      await json(route, { availability: available, items: available === "available" ? [currentProposal] : [], total: available === "available" ? 1 : 0, page: 1, page_size: 25 });
+      const items = [...proposalRecords.values()].map(proposalSummaryView);
+      await json(route, { availability: available, items: available === "available" ? items : [], total: available === "available" ? items.length : 0, page: 1, page_size: 25 });
       return;
     }
 
-    if (path.endsWith("/projects/hormigestio/proposals/proposal-date-001") && request.method() === "GET") {
-      await json(route, currentProposal);
+    const proposalDetailMatch = path.match(/^\/api\/v1\/projects\/hormigestio\/proposals\/([^/]+)$/);
+    if (proposalDetailMatch && request.method() === "GET") {
+      const found = proposalRecords.get(decodeURIComponent(proposalDetailMatch[1]));
+      if (!found) {
+        await json(route, { error: { code: "proposal_not_found", message: "Propuesta no encontrada." } }, 404);
+        return;
+      }
+      const canReadLedger = authenticated && sessionCapabilities.includes("audit:read");
+      await json(route, canReadLedger ? found : proposalSummaryView(found));
       return;
     }
 
-    if (path.endsWith("/projects/hormigestio/proposals/proposal-date-001/execute") && request.method() === "POST") {
+    const proposalExecutionMatch = path.match(/^\/api\/v1\/projects\/hormigestio\/proposals\/([^/]+)\/execute$/);
+    if (proposalExecutionMatch && request.method() === "POST") {
       expect(request.headers()["x-csrf-token"]).toBe("csrf-fixture");
-      expect(request.headers()["idempotency-key"]).toBeTruthy();
-      const payload = JSON.parse(request.postData() ?? "{}");
+      const idempotencyKey = request.headers()["idempotency-key"] ?? "";
+      expect(idempotencyKey).toBeTruthy();
+      if (executedProposalResponses.has(idempotencyKey)) {
+        await json(route, executedProposalResponses.get(idempotencyKey));
+        return;
+      }
+      const proposalId = decodeURIComponent(proposalExecutionMatch[1]);
+      const proposal = proposalRecords.get(proposalId);
+      if (!proposal) {
+        await json(route, { error: { code: "proposal_not_found", message: "Propuesta no encontrada." } }, 404);
+        return;
+      }
+      const payload = JSON.parse(request.postData() ?? "{}") as ExecuteProposalRequest;
       if (options.proposalExecutionStatus && options.proposalExecutionStatus !== 200) {
         await json(route, { error: { code: "proposal_execution_unavailable", message: "La ejecución no está disponible por el servidor." } }, options.proposalExecutionStatus);
         return;
       }
-      const status = payload.decision === "reject" ? "DENIED" : "SIMULATED";
+      const modified = payload.decision === "modify_and_execute";
+      const derivedId = modified ? "proposal-derived-001" : proposalId;
+      const defaultStatus = payload.decision === "reject" ? "DENIED" : "SIMULATED";
       const result = options.proposalExecutionBody ?? {
-        proposal_id: "proposal-date-001",
+        proposal_id: derivedId,
         decision: payload.decision,
-        execution: { status, verification_status: payload.decision === "reject" ? "not_required" : "verified" },
+        execution: { status: defaultStatus, verification_status: payload.decision === "reject" ? "not_required" : "verified" },
         execution_mode: "sandbox",
       };
-      const idempotencyKey = request.headers()["idempotency-key"] ?? "";
-      if (!executedProposalKeys.has(idempotencyKey)) {
-        executedProposalKeys.add(idempotencyKey);
-        const reportedStatus = (result as { execution?: { status?: string } }).execution?.status ?? status;
-        const executionStatus: ProposalDetail["execution_status"] = reportedStatus === "SIMULATED" || reportedStatus === "EXECUTED"
-          ? "EXECUTED"
-          : ["ALREADY_APPLIED", "DENIED", "CONFLICT", "FAILED", "unknown"].includes(reportedStatus)
-            ? reportedStatus as ProposalDetail["execution_status"] : "unknown";
-        currentProposal = { ...currentProposal, execution_status: executionStatus };
-        currentAuditItems.push({
-          ...auditEvent,
-          event_id: "proposal-execution-proposal-date-001",
-          event_type: "proposal_execution",
-          resource_type: "proposal",
-          resource_id: "proposal-date-001",
-          summary: `Decisión ${payload.decision} recibida por el backend.`,
+      const resultValue = result as { proposal_id?: string; execution?: { status?: unknown; verification_status?: unknown; reasons?: unknown } ; execution_mode?: unknown };
+      const rawStatus = typeof resultValue.execution?.status === "string" ? resultValue.execution.status.toUpperCase() : "unknown";
+      const executionStatus: ProposalDetail["execution_status"] = rawStatus === "SIMULATED" || rawStatus === "EXECUTED"
+        ? "EXECUTED"
+        : ["ALREADY_APPLIED", "DENIED", "CONFLICT", "FAILED", "unknown"].includes(rawStatus)
+          ? rawStatus as ProposalDetail["execution_status"] : "unknown";
+      const receiptStatus: ProposalExecutionReceipt["status"] = executionStatus === "not_executed" ? "unknown" : executionStatus;
+      const rawVerification = resultValue.execution?.verification_status;
+      const verificationStatus: ProposalExecutionReceipt["verification_status"] = ["verified", "verification_failed", "verification_unsupported", "unknown"].includes(String(rawVerification))
+        ? rawVerification as ProposalExecutionReceipt["verification_status"] : "unknown";
+      const rawMode = resultValue.execution_mode;
+      const executionMode: ProposalExecutionReceipt["execution_mode"] = rawMode === "live" || rawMode === "sandbox" ? rawMode : null;
+      const receiptProposalId = modified ? resultValue.proposal_id ?? derivedId : proposalId;
+      const auditEventId = `proposal-execution-${receiptProposalId}`;
+      const event: ProposalDecisionHistoryEntry = {
+        event_id: `exec-web-${receiptProposalId}`,
+        decision: payload.decision,
+        proposal_id: receiptProposalId,
+        related_proposal_id: modified ? proposalId : null,
+        actor_id: authenticated ? "gestora-e2e-fixture" : null,
+        actor_verification: authenticated ? "verified_local_session" : "unknown",
+        reason: payload.reason,
+        recorded_at: "2026-01-12T10:30:00-05:00",
+        execution_mode: executionMode,
+        execution_status: receiptStatus,
+        verification_status: verificationStatus,
+        reasons: Array.isArray(resultValue.execution?.reasons) ? resultValue.execution.reasons as string[] : [],
+        audit_event_id: auditEventId,
+      };
+      const receipt: ProposalExecutionReceipt = {
+        execution_id: `execution-${receiptProposalId}`,
+        proposal_id: receiptProposalId,
+        original_proposal_id: modified ? proposalId : null,
+        decision: payload.decision,
+        execution_mode: executionMode,
+        status: receiptStatus,
+        verification_status: verificationStatus,
+        reasons: event.reasons,
+        actor_id: event.actor_id,
+        actor_verification: authenticated ? "verified_local_session" : "unknown",
+        reason: payload.reason,
+        recorded_at: event.recorded_at!,
+        audit_event_id: auditEventId,
+      };
+      if (modified) {
+        const modifiedValue = payload.modified_due_date ?? payload.modified_priority ?? payload.modified_assignee_ids ?? proposal.proposed_value;
+        const original = {
+          ...proposal,
+          decision_history: [...(proposal.decision_history ?? []), event],
+          decision_history_availability: "available" as const,
+          derived_proposal_ids: [...new Set([...(proposal.derived_proposal_ids ?? []), receiptProposalId])],
+          relationship_availability: "available" as const,
+        };
+        const derived: ProposalDetail = {
+          ...proposal,
+          proposal_id: receiptProposalId,
+          proposed_value: modifiedValue,
+          proposal_body_sha256: "e".repeat(64),
+          review_status: "pending",
+          authorization_status: "not_authorized",
+          execution_status: executionStatus,
+          decision_history: [event],
+          decision_history_availability: "available",
+          original_proposal_id: proposalId,
+          derived_proposal_ids: [],
+          relationship_availability: "available",
+          latest_receipt: receipt,
+          receipt_availability: "available",
+        };
+        proposalRecords.set(proposalId, original);
+        proposalRecords.set(receiptProposalId, derived);
+      } else {
+        proposalRecords.set(proposalId, {
+          ...proposal,
+          execution_status: executionStatus,
+          decision_history: [...(proposal.decision_history ?? []), event],
+          decision_history_availability: "available",
+          latest_receipt: receipt,
+          receipt_availability: "available",
         });
       }
+      executedProposalResponses.set(idempotencyKey, result);
+      currentAuditItems.push({
+        ...auditEvent,
+        event_id: auditEventId,
+        event_type: "proposal_execution",
+        resource_type: "proposal",
+        resource_id: receiptProposalId,
+        summary: `Decisión ${payload.decision} recibida por el backend.`,
+      });
       await json(route, result);
       return;
     }

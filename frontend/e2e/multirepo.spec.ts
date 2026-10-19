@@ -1,10 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { RepositoryHistoryView, RepositoryResultsCollection } from "../src/api/types";
 import {
+  assertNoBrowserNetworkAttempts,
   backendRepositorySha,
   candidateFinding,
   findingDetail,
   installApi,
+  installBrowserNetworkGuard,
   multiRepoResults,
   project,
   secondProject,
@@ -50,6 +52,7 @@ const findingDetails = new Map([
     suggested_code: "export const safe = true;",
     improvement_summary: "Backend suggestion from the API fixture.",
     decision_status: "pending",
+    verification_status: "confirmed",
   }],
   [frontendFinding.finding_id, { ...findingDetail, ...frontendFinding, claim: "Frontend finding from its own repository." }],
   [previousRunFinding.finding_id, { ...findingDetail, ...previousRunFinding, claim: "Finding from a different run." }],
@@ -118,15 +121,10 @@ async function installFindingApi(page: Page, options: { legacy?: boolean } = {})
         csrf: request.headers()["x-csrf-token"],
         idempotencyKey: request.headers()["idempotency-key"],
       });
-      await route.fulfill({ json: {
-        decision_status: "approved",
-        suggested_code: "export const safe = true;",
-        improvement_summary: "Backend suggestion from the API fixture.",
-        branch_name: "quality/backend-f-1",
-        branch_url: null,
-        commit_sha_applied: null,
-        execution_mode: "sandbox",
-      } });
+      await route.fulfill({ status: 409, json: { error: {
+        code: "revision_independiente_requerida",
+        message: "Aprobación bloqueada: falta revisión independiente del parche exacto.",
+      } } });
       return;
     }
     if (suffix.startsWith("/")) {
@@ -151,14 +149,11 @@ async function installFindingApi(page: Page, options: { legacy?: boolean } = {})
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.route("**/*", async (route) => {
-    const url = new URL(route.request().url());
-    if (url.hostname === "127.0.0.1" && url.port === "4173") {
-      await route.continue();
-      return;
-    }
-    await route.abort();
-  });
+  await installBrowserNetworkGuard(page);
+});
+
+test.afterEach(async ({ page }) => {
+  assertNoBrowserNetworkAttempts(page);
 });
 
 test("project and existing feature views keep repository identity, CI, coverage scope and partial failures separate", async ({ page }) => {
@@ -347,7 +342,7 @@ test("a workflow with a contradictory repository identity is not attributed to t
   await expect(backend).not.toContainText("Métricas para el informe");
 });
 
-test("quality filters bind repository and run, preserve namespaced finding IDs, and retain human decision controls", async ({ page }) => {
+test("quality filters bind repository and run while a confirmed defect cannot approve its patch", async ({ page }) => {
   await installApi(page, { authenticated: true, capabilities: ["audit:read", "quality:decide"], repositoryResultsPayload: multiRepoResults });
   const api = await installFindingApi(page);
   await page.goto("/quality?run_id=run-current");
@@ -364,15 +359,11 @@ test("quality filters bind repository and run, preserve namespaced finding IDs, 
   const detailRead = api.reads.find((read) => read.path.endsWith("backend%3Af-1"));
   expect(detailRead?.path).toContain("backend%3Af-1");
   const approve = dialog.getByRole("button", { name: "Aprobar y crear rama", exact: true });
-  await expect(approve).toBeVisible();
-  await approve.click();
-  await expect(dialog.locator(".quality-decision-result")).toContainText("Aprobada");
-  expect(api.writes).toHaveLength(1);
-  expect(api.writes[0].path).toContain("backend%3Af-1/decision");
-  expect(api.writes[0].csrf).toBe("csrf-fixture");
-  expect(api.writes[0].idempotencyKey).toBeTruthy();
-  expect(api.writes[0].body).not.toHaveProperty("repository_id");
-  expect(api.writes[0].body).not.toHaveProperty("commit_sha");
+  await expect(approve).toBeDisabled();
+  await expect(dialog.getByText("Aprobación bloqueada: falta revisión independiente del parche exacto.", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Rechazar sugerencia", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Solicitar cambios", exact: true })).toBeVisible();
+  expect(api.writes).toHaveLength(0);
 
   await repositoryFilter.selectOption("frontend");
   await expect.poll(() => new URL(page.url()).searchParams.get("repository_id")).toBe("frontend");

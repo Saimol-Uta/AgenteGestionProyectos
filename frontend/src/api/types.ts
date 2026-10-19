@@ -613,6 +613,42 @@ export interface ProposalEvidence {
 }
 
 export type ProposalExecutionStatus = "not_executed" | "EXECUTED" | "ALREADY_APPLIED" | "DENIED" | "CONFLICT" | "FAILED" | "unknown";
+export type ProposalReviewStatus = "pending" | "approved_offline" | "rejected" | "unknown";
+export type ProposalAuthorizationStatus = "not_authorized" | "authorized_dry_run" | "denied" | "revoked" | "unknown";
+export type ProposalDecision = "approve_offline" | "reject" | "authorize_dry_run" | "deny" | "revoke" | "approve_and_execute" | "modify_and_execute" | "unknown";
+export type ProposalExecutionVerificationStatus = "verified" | "verification_failed" | "verification_unsupported" | "unknown";
+
+export interface ProposalDecisionHistoryEntry {
+  event_id: string;
+  decision: ProposalDecision;
+  proposal_id: string;
+  related_proposal_id: string | null;
+  actor_id: string | null;
+  actor_verification: "verified_local_session" | "asserted_offline" | "unknown";
+  reason: string | null;
+  recorded_at: string | null;
+  execution_mode: ExecutionMode | null;
+  execution_status: Exclude<ProposalExecutionStatus, "not_executed"> | null;
+  verification_status: ProposalExecutionVerificationStatus | null;
+  reasons: string[];
+  audit_event_id: string | null;
+}
+
+export interface ProposalExecutionReceipt {
+  execution_id: string;
+  proposal_id: string;
+  original_proposal_id: string | null;
+  decision: "approve_and_execute" | "modify_and_execute" | "reject" | "unknown";
+  execution_mode: ExecutionMode | null;
+  status: Exclude<ProposalExecutionStatus, "not_executed">;
+  verification_status: ProposalExecutionVerificationStatus;
+  reasons: string[];
+  actor_id: string | null;
+  actor_verification: "verified_local_session" | "unknown";
+  reason: string | null;
+  recorded_at: string;
+  audit_event_id: string | null;
+}
 
 export interface ProposalTechnicalReview {
   review_id: string;
@@ -648,10 +684,20 @@ export interface ProposalSummary {
   technical_errors: string[];
   technical_review?: ProposalTechnicalReview | null;
   freshness: "current" | "stale" | "unknown";
+  review_status: ProposalReviewStatus;
+  authorization_status: ProposalAuthorizationStatus;
   execution_status: ProposalExecutionStatus;
 }
 
-export type ProposalDetail = ProposalSummary;
+export interface ProposalDetail extends ProposalSummary {
+  decision_history?: ProposalDecisionHistoryEntry[] | null;
+  decision_history_availability?: "available" | "unknown";
+  original_proposal_id?: string | null;
+  derived_proposal_ids?: string[] | null;
+  relationship_availability?: "available" | "unknown";
+  latest_receipt?: ProposalExecutionReceipt | null;
+  receipt_availability?: "available" | "unknown";
+}
 
 export interface ProposalCollection extends Paginated<ProposalSummary> {
   availability: "available" | "unknown";

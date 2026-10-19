@@ -82,8 +82,20 @@ Ejemplo resumido de detalle autorizado:
 }
 ```
 
+## T4: proyección de decisiones en la UI
+
+La interfaz separa revisión técnica, decisión humana, autorización y ejecución persistida. Los eventos `authorize_dry_run` y `approve_offline` por sí solos no prueban una ejecución terminal; la UI sigue los estados actuales del backend y bloquea ejecución si el estado o el historial requerido es desconocido. Quality no permite aprobar GitHub sin una revisión independiente del parche exacto; rechazo y solicitud de cambios siguen disponibles. Los payloads e idempotencia de las mutaciones no cambian.
+
 ## Verificación aislada
 
-El conjunto enfocado ejecutó 53 pruebas en 4.480 s y terminó con código 0. El preflight confirmó `EXTERNAL_WRITES_ENABLED=false`, ausencia de credenciales/configuración real y cero intentos de red; el guard de procesos hijos quedó activo.
+El runner `/tmp/req08-decision-workflow-t1-isolated/t4/run-spotcheck.sh` copia los 15 archivos de UI/pruebas acotados, verifica sus hashes contra el origen y usa salidas únicas. Las seis selecciones enfocadas de Playwright terminaron con **59 aprobadas, 0 fallidas y 0 omitidas**: propuestas (33), Quality (8), acciones de fase 2 (10), casos T4 de `web-platform` (4), caso de Quality en `multirepo` (1) y candidatos de Quality (3). `npm run typecheck` y `npm run build` pasaron. Vite informó que el `outDir` único está fuera de la raíz y no se vaciará; no fue un fallo.
 
-Estas pruebas no son E2E de React ni de navegador, no prueban escrituras en servicios remotos y no afirman que un mock de Playwright cubra el backend. El tramo React/backend E2E sigue pendiente para T4/T6. No se modificó la colección, Monitoring, Quality, Verification, Report ni otro tramo del pipeline.
+Las pruebas usaron respuestas API mock, `EXTERNAL_WRITES_ENABLED=false`, sin credenciales, backend ni proveedores reales. El preloader Node se cargó en 68 procesos; el guard registró cero intentos externos/no autorizados. Esto verifica la proyección de la UI aislada, no una integración React/backend real ni la escritura en servicios remotos. No representa el cierre completo de REQ-08 ni T4/T6.
+
+### Corrección independiente: `approved_offline`
+
+La UI ahora permite la confirmación explícita `approve_and_execute` desde `approved_offline` únicamente si el historial protegido disponible contiene `approve_offline` vinculado al ID de esa propuesta. Se mantienen todas las comprobaciones existentes de elegibilidad técnica, actualidad, autorización, ejecución no iniciada, relaciones, decisiones terminales, historial desconocido y recibo; la aprobación offline no se presenta como ejecución. El payload y la idempotencia no cambian.
+
+RED: la prueba pública `una aprobación offline conocida permite ejecutar solo tras una nueva confirmación del gestor`, contra el helper previo, terminó con 1 fallo (botón de ejecución ausente), exit 1. GREEN: la regresión positiva y el caso sin evento coincidente pasaron (2/2); la suite `manager-proposals` pasó (35/35). El runner fresco es `/tmp/req08-decision-workflow-t1-isolated/t4/offline-approval-correction/run-offline-approval-spotcheck.sh`. Logs RED: `runs/offline-approval-red-20261019T045522Z-2441433/results/`; GREEN: `runs/offline-approval-spotcheck-20261019T045608Z-2442812/results/`. La copia verificada incluyó 67 archivos de frontend, el guard Node cargó en 16 procesos y no hubo intentos de red inesperados. No se repitieron typecheck/build ni la suite amplia tras esta corrección.
+
+La clasificación independiente de las seis suites completas reportó 100 aprobadas y 6 fallidas, con exactamente las mismas seis fallas en `basefeeffa0`: `multirepo` líneas 159, 186, 325, 382 y 403; `web-platform` caso `unknown-stage` línea 117. Se dejan intactas; los otros diez fallos exploratorios fueron resueltos según esa clasificación. El recheck de este único bloqueo no constituye un resultado full-green.
