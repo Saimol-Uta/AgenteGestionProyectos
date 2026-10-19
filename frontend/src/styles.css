@@ -398,6 +398,27 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .risk-detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .risk-detail-summary { color: var(--text-secondary); font-size: 10px; }
 .risk-detail-basis { margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.risk-proposals { display: flex; flex-direction: column; gap: 5px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.risk-proposals-empty, .risk-proposals-unknown { margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.risk-proposals-diagnostic { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.risk-proposals-diagnostic p { margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.risk-proposal-links { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.risk-proposal-link { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.risk-proposal-link a { color: var(--accent); font-size: 9px; }
+.risk-proposal-field { color: var(--text-secondary); font-size: 9px; }
+.risk-proposal-meta { color: var(--text-muted); font-size: 9px; }
+.risk-panel-note { margin: 10px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.55; }
+.proposal-risk-origin { display: grid; gap: .6rem; margin: 1rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); }
+.proposal-risk-list { display: grid; gap: .7rem; margin: 0; padding: 0; list-style: none; }
+.proposal-risk-item { display: grid; gap: .4rem; padding: .7rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.proposal-risk-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.proposal-risk-meta { margin: 0; color: var(--text-muted); font-size: .8rem; }
+.proposal-risk-links { display: flex; flex-wrap: wrap; gap: 1rem; }
+.proposal-risk-note { margin: 0; color: var(--text-muted); font-size: .8rem; line-height: 1.55; }
+.proposal-list-risk { display: inline-flex; align-items: center; gap: .35rem; }
+.proposal-list-risk-state { color: var(--text-muted); font-size: .75rem; }
+.proposal-list-risk-extra { color: var(--text-muted); font-size: .75rem; }
+
 .task-link-button { padding: 0; color: var(--accent); border: 0; background: transparent; font-size: 9px; text-decoration: underline; cursor: pointer; }
 .proposal-empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 

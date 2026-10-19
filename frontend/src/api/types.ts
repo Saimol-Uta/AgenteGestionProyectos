@@ -14,6 +14,23 @@ export interface Paginated<T> {
 
 export type RiskKind = "blocked" | "overdue" | "due_soon" | "contradictory_state" | "unknown_state";
 
+export type ProposalFreshness = "current" | "stale" | "unknown";
+
+export type RiskProposalTechnicalStatus = "ready" | "blocked" | "unknown";
+
+/** Proposal that a deterministic risk actually motivated, with its decision state. */
+export interface RiskProposalLink {
+  proposal_id: string;
+  task_id: string;
+  capture_id: string;
+  field: ProposalField;
+  review_status: ProposalReviewStatus;
+  authorization_status: ProposalAuthorizationStatus;
+  execution_status: ProposalExecutionStatus;
+  freshness: ProposalFreshness;
+  technical_status: RiskProposalTechnicalStatus;
+}
+
 export interface TaskRisk {
   risk_id: string;
   project_id: string;
@@ -24,7 +41,18 @@ export interface TaskRisk {
   summary: string;
   basis: string;
   source: "deterministic";
+  proposals?: RiskProposalLink[];
 }
+
+/** Reference to the deterministic risk that motivated a proposal. */
+export interface ProposalRiskRef {
+  risk_id: string;
+  kind: RiskKind;
+  task_id: string;
+  capture_id: string;
+  resolved: boolean;
+}
+
 
 export interface TaskPlanSummary {
   project_id: string;
@@ -48,7 +76,22 @@ export interface TaskPlanSummary {
   contradictory_task_ids: string[];
   identified_risks: string[];
   risks?: TaskRisk[];
+  proposals_context?: ProposalsContext | null;
 }
+
+/** Context of the proposals stage that produced the proposals linked to the risks of a capture. */
+export interface ProposalsContext {
+  run_id: string;
+  capture_id: string;
+  diagnostic: ProposalStageDiagnostic;
+}
+
+/** Reading model of the project summary endpoint: the plan summary plus the risk chain. */
+export interface ProjectSummaryView extends TaskPlanSummary {
+  risks: TaskRisk[];
+  proposals_context: ProposalsContext | null;
+}
+
 
 export interface Project {
   id: string;
@@ -133,6 +176,7 @@ export interface TaskDetailResponse extends TaskDetailView {
   evidence?: EvidenceItem[];
   history?: TaskChange[];
   risks?: TaskRisk[];
+  capture_id?: string | null;
 }
 
 export interface CaptureSummary {
@@ -722,10 +766,11 @@ export interface ProposalSummary {
   technical_eligibility: "eligible" | "ineligible" | "unknown";
   technical_errors: string[];
   technical_review?: ProposalTechnicalReview | null;
-  freshness: "current" | "stale" | "unknown";
+  freshness: ProposalFreshness;
   review_status: ProposalReviewStatus;
   authorization_status: ProposalAuthorizationStatus;
   execution_status: ProposalExecutionStatus;
+  risk_refs?: ProposalRiskRef[];
 }
 
 export interface ProposalDetail extends ProposalSummary {

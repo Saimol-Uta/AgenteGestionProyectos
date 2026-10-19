@@ -1,14 +1,21 @@
 import { appendFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { expect, type Page, type Route } from "@playwright/test";
-import type { ExecuteProposalRequest, ProposalDecisionHistoryEntry, ProposalDetail, ProposalExecutionReceipt, ProposalSummary } from "../src/api/types";
+import type {
+  ExecuteProposalRequest,
+  ProjectSummaryView,
+  ProposalDecisionHistoryEntry,
+  ProposalDetail,
+  ProposalExecutionReceipt,
+  ProposalSummary,
+} from "../src/api/types";
 
 export const managerCredentials = {
   email: "gestor@hormigestion.ec",
   password: "HormiGestion2026!",
 } as const;
 
-export const summary = {
+export const summary: ProjectSummaryView = {
   project_id: "hormigestio",
   capture_id: "capture-current",
   captured_at: "2026-01-12T10:00:00-05:00",
@@ -40,6 +47,19 @@ export const summary = {
       summary: "1 tarea(s) vencida(s) no completada(s).",
       basis: "Tareas no completadas cuyo vencimiento es anterior al corte de la captura.",
       source: "deterministic",
+      proposals: [
+        {
+          proposal_id: "proposal-date-001",
+          task_id: "task-1",
+          capture_id: "capture-current",
+          field: "due_date",
+          review_status: "pending",
+          authorization_status: "not_authorized",
+          execution_status: "not_executed",
+          freshness: "current",
+          technical_status: "ready",
+        },
+      ],
     },
     {
       risk_id: "risk-fixture-due-soon",
@@ -51,9 +71,42 @@ export const summary = {
       summary: "1 tarea(s) próxima(s) a vencer en la ventana de 7 días.",
       basis: "Tareas no completadas cuyo vencimiento cae dentro de los 7 días posteriores al corte.",
       source: "deterministic",
+      proposals: [],
     },
   ],
+  proposals_context: {
+    run_id: "run-current",
+    capture_id: "capture-current",
+    diagnostic: {
+      outcome: "no_candidates",
+      offered: 0,
+      selected: 0,
+      saved: 0,
+      technical_ready: 0,
+      technical_blocked: 0,
+      limitation_codes: ["unknown_task"],
+      failure_codes: [],
+      discarded: 0,
+    },
+  },
 };
+
+/** Capture that supports a task detail; the current capture is used when none is requested. */
+export function requestedTaskCapture(url: URL): string {
+  return url.searchParams.get("capture_id") ?? "capture-current";
+}
+
+/** Deterministic risks affecting a task, resolved against the capture that supports the response. */
+export function taskRisksFor(taskId: string, captureId: string) {
+  return summary.risks
+    .filter((risk) => risk.task_ids.includes(taskId))
+    .map((risk) => ({
+      ...risk,
+      capture_id: captureId,
+      proposals: (risk.proposals ?? []).map((proposal) => ({ ...proposal, capture_id: "capture-current" })),
+    }));
+}
+
 
 export const project = {
   id: "hormigestio",
@@ -411,6 +464,15 @@ export const proposalSummary: ProposalSummary = {
   review_status: "pending",
   authorization_status: "not_authorized",
   execution_status: "not_executed",
+  risk_refs: [
+    {
+      risk_id: "risk-fixture-overdue",
+      kind: "overdue",
+      task_id: "task-1",
+      capture_id: "capture-current",
+      resolved: true,
+    },
+  ],
 };
 
 export const proposalDetail: ProposalDetail = {
@@ -739,6 +801,7 @@ export async function installApi(page: Page, options: {
   const reportDecisionRequests: Array<{ path: string; body: string | null; csrfToken: string | null; idempotencyKey: string | null }> = [];
   const weeklyCycleRequests: Array<{ path: string; body: string | null; csrfToken: string | null; idempotencyKey: string | null }> = [];
   const moduleReads: string[] = [];
+  const taskDetailReads: string[] = [];
   const downloadRequests: string[] = [];
   const loginStatus = options.loginStatus ?? 200;
   const sessionCapabilities = options.capabilities ?? [];
@@ -1249,9 +1312,11 @@ export async function installApi(page: Page, options: {
     }
 
     if (path.endsWith("/projects/hormigestio/tasks/task-1")) {
+      taskDetailReads.push(`${path}${url.search}`);
       await json(route, {
         ...tasks[0],
-        risks: [summary.risks[0]],
+        capture_id: requestedTaskCapture(url),
+        risks: taskRisksFor("task-1", requestedTaskCapture(url)),
         evidence: [
           {
             provenance: { id: "evidence-1", source: "trello", project_id: "hormigestio", timestamp: summary.captured_at },
@@ -1278,9 +1343,15 @@ export async function installApi(page: Page, options: {
 
     const taskDetailMatch = path.match(/\/projects\/hormigestio\/tasks\/([^/]+)$/);
     if (taskDetailMatch) {
-      const task = allTasks.find((item) => item.id === taskDetailMatch[1]);
+      const taskId = decodeURIComponent(taskDetailMatch[1]);
+      const task = allTasks.find((item) => item.id === taskId);
       if (task) {
-        await json(route, task);
+        taskDetailReads.push(`${path}${url.search}`);
+        await json(route, {
+          ...task,
+          capture_id: requestedTaskCapture(url),
+          risks: taskRisksFor(taskId, requestedTaskCapture(url)),
+        });
         return;
       }
     }
@@ -1326,6 +1397,7 @@ export async function installApi(page: Page, options: {
     reportDecisionRequests,
     weeklyCycleRequests,
     moduleReads,
+    taskDetailReads,
     downloadRequests,
     get jobPollRequests() { return jobPollRequests; },
     get analysisJobListReads() { return analysisJobListReads; },

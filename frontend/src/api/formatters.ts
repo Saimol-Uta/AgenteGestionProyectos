@@ -2,9 +2,14 @@ import type {
   AnalysisExecutionMode,
   AnalysisPreparation,
   DomainTaskState,
+  ProposalAuthorizationStatus,
+  ProposalExecutionStatus,
+  ProposalFreshness,
+  ProposalReviewStatus,
   ProposalStageDiagnostic,
   ProposalStageOutcome,
   RiskKind,
+  RiskProposalTechnicalStatus,
 } from "./types";
 
 const sourceProviderLabels: Record<string, string> = {
@@ -248,4 +253,58 @@ export function proposalOutcomeExplanation(diagnostic: ProposalStageDiagnostic):
     default:
       return "El resumen persistido no alcanza para probar el motivo; no se atribuye una causa que los datos no sostienen.";
   }
+}
+
+export function proposalStatusTone(value: string | null | undefined): "neutral" | "positive" | "warning" | "danger" | "unknown" {
+  if (value == null || value === "unknown") return "unknown";
+  if (["ready", "eligible", "current"].includes(value)) return "positive";
+  if (["pending", "not_executed", "not_authorized"].includes(value)) return "warning";
+  if (["blocked", "rejected", "denied", "revoked", "DENIED", "CONFLICT", "FAILED", "ineligible", "stale"].includes(value)) return "danger";
+  return "neutral";
+}
+
+export function proposalReviewStatusLabel(status: ProposalReviewStatus | string): string {
+  const labels: Record<string, string> = {
+    pending: "Decisión pendiente",
+    approved_offline: "Aprobación offline registrada",
+    rejected: "Rechazada",
+    unknown: "Desconocida",
+  };
+  return labels[status] ?? "Desconocida";
+}
+
+export function proposalAuthorizationStatusLabel(status: ProposalAuthorizationStatus | string): string {
+  const labels: Record<string, string> = {
+    not_authorized: "No autorizada",
+    authorized_dry_run: "Autorizada para prueba local",
+    denied: "Denegada",
+    revoked: "Revocada",
+    unknown: "Desconocida",
+  };
+  return labels[status] ?? "Desconocida";
+}
+
+export function proposalExecutionStatusLabel(status: ProposalExecutionStatus | string): string {
+  const labels: Record<string, string> = {
+    not_executed: "Sin ejecución registrada",
+    EXECUTED: "Ejecución registrada",
+    ALREADY_APPLIED: "El backend informa que ya estaba aplicado",
+    DENIED: "Denegada por el backend",
+    CONFLICT: "Conflicto informado por el backend",
+    FAILED: "Fallida según el backend",
+    unknown: "Estado de ejecución desconocido",
+  };
+  return labels[status] ?? "Estado de ejecución desconocido";
+}
+
+export function proposalTechnicalStatusLabel(status: RiskProposalTechnicalStatus | string | null | undefined): string {
+  if (status === "ready") return "Revisión técnica lista";
+  if (status === "blocked") return "Revisión técnica bloqueada";
+  return "Revisión técnica desconocida";
+}
+
+export function proposalFreshnessLabel(freshness: ProposalFreshness | string): string {
+  if (freshness === "current") return "Actual";
+  if (freshness === "stale") return "Obsoleta";
+  return "Desconocida";
 }

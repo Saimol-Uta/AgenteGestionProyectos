@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowRight, ChevronLeft, ChevronRight, LockKeyhole } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useExecuteProposalMutation, useProject, useProjects, useProposal, useProposals } from "../../api/queries";
-import { comparisonValue, fieldLabel, formatDate } from "../../api/formatters";
-import type { ExecuteProposalRequest, ExecuteProposalResponse, ProposalDetail, ProposalField } from "../../api/types";
+import {
+  comparisonValue, fieldLabel, formatDate, proposalAuthorizationStatusLabel, proposalFreshnessLabel,
+  proposalReviewStatusLabel, proposalStatusTone, proposalTechnicalStatusLabel, riskKindLabel, riskKindTone,
+} from "../../api/formatters";
+import type { ExecuteProposalRequest, ExecuteProposalResponse, ProposalDetail, ProposalField, ProposalRiskRef } from "../../api/types";
 import { ConfirmActionDialog } from "../../components/ConfirmActionDialog";
 import { ProposalDecisionTrail } from "../../components/ProposalDecisionTrail";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
@@ -17,41 +20,14 @@ const pageSize = 25;
 type DecisionAction = "approve" | "modify" | "reject";
 type ModifiableField = "due_date" | "priority" | "assignee_ids";
 
-function proposalTone(value: string | null | undefined): "neutral" | "positive" | "warning" | "danger" | "unknown" {
-  if (value == null || value === "unknown") return "unknown";
-  if (["ready", "eligible", "current"].includes(value)) return "positive";
-  if (["pending", "not_executed", "not_authorized"].includes(value)) return "warning";
-  if (["blocked", "rejected", "denied", "revoked", "DENIED", "CONFLICT", "FAILED", "ineligible", "stale"].includes(value)) return "danger";
-  return "neutral";
-}
-
 function technicalEligibilityLabel(status: ProposalDetail["technical_eligibility"] | null | undefined) {
   if (status === "eligible") return "Elegible";
   if (status === "ineligible") return "No elegible";
   return "Desconocida";
 }
 
-function reviewLabel(status: ProposalDetail["review_status"]) {
-  const labels: Record<ProposalDetail["review_status"], string> = {
-    pending: "Decisión pendiente", approved_offline: "Aprobación offline registrada",
-    rejected: "Rechazada", unknown: "Desconocida",
-  };
-  return labels[status] ?? "Desconocida";
-}
-
-function authorizationLabel(status: ProposalDetail["authorization_status"]) {
-  const labels: Record<ProposalDetail["authorization_status"], string> = {
-    not_authorized: "No autorizada", authorized_dry_run: "Autorizada para prueba local",
-    denied: "Denegada", revoked: "Revocada", unknown: "Desconocida",
-  };
-  return labels[status] ?? "Desconocida";
-}
-
 function technicalReviewLabel(review: ProposalDetail["technical_review"]) {
-  if (!review) return "Revisión técnica desconocida";
-  if (review.technical_status === "ready") return "Revisión técnica lista";
-  if (review.technical_status === "blocked") return "Revisión técnica bloqueada";
-  return "Revisión técnica desconocida";
+  return proposalTechnicalStatusLabel(review?.technical_status);
 }
 
 function executionProblem(result: ExecuteProposalResponse, expectedDecision: ExecuteProposalRequest["decision"]): string | null {
@@ -96,6 +72,64 @@ function modifiableField(field: ProposalField): field is ModifiableField {
   return field === "due_date" || field === "priority" || field === "assignee_ids";
 }
 
+function openProposalEvidence() {
+  const details = document.getElementById("proposal-technical-details");
+  if (details instanceof HTMLDetailsElement) details.open = true;
+}
+
+/** Compact risk marker shown in the inbox for proposals that carry a deterministic risk reference. */
+function ProposalRiskBadge({ riskRefs }: { riskRefs: ProposalRiskRef[] }) {
+  const first = riskRefs[0];
+  return (
+    <span className="proposal-list-risk">
+      <Pill tone={first.resolved ? riskKindTone(first.kind) : "unknown"}>{riskKindLabel(first.kind)}</Pill>
+      {first.resolved ? null : <span className="proposal-list-risk-state">no verificable</span>}
+      {riskRefs.length > 1 && <span className="proposal-list-risk-extra">+{riskRefs.length - 1}</span>}
+    </span>
+  );
+}
+
+/**
+ * Deterministic risk that motivated the proposal. A proposal never proves that its risk
+ * disappeared, and a reference that cannot be resolved in the current capture is declared
+ * unverifiable instead of valid.
+ */
+function ProposalRiskOrigin({ proposal }: { proposal: ProposalDetail }) {
+  const riskRefs = proposal.risk_refs;
+  return (
+    <section className="proposal-risk-origin" aria-labelledby="proposal-risk-origin-title">
+      <div className="proposal-trail-heading">
+        <div><p className="eyebrow">RIESGO DETERMINISTA</p><h3 id="proposal-risk-origin-title">Riesgo que motivó la acción</h3></div>
+      </div>
+      {riskRefs === undefined ? (
+        <p className="unknown-note">La respuesta del backend no incluye el vínculo de esta propuesta con riesgos deterministas.</p>
+      ) : riskRefs.length === 0 ? (
+        <p className="unknown-note">Esta propuesta no está asociada a un riesgo determinista.</p>
+      ) : (
+        <ul className="proposal-risk-list">
+          {riskRefs.map((riskRef) => (
+            <li key={`${riskRef.risk_id}:${riskRef.task_id}`} className="proposal-risk-item">
+              <div className="proposal-risk-head">
+                <Pill tone={riskRef.resolved ? riskKindTone(riskRef.kind) : "unknown"}>{riskKindLabel(riskRef.kind)}</Pill>
+                <code>{riskRef.risk_id}</code>
+                {riskRef.resolved ? null : <Pill tone="unknown">No verificable en la captura vigente</Pill>}
+              </div>
+              <p className="proposal-risk-meta">Tarea de origen: <code>{riskRef.task_id}</code> · captura {riskRef.capture_id}</p>
+              <div className="proposal-risk-links">
+                <Link className="text-link" to={`/tasks?task=${encodeURIComponent(riskRef.task_id)}&capture_id=${encodeURIComponent(riskRef.capture_id)}`}>Abrir tarea de origen <ArrowRight aria-hidden="true" size={14} /></Link>
+                <a className="text-link" href="#proposal-evidence" onClick={openProposalEvidence}>Ver la evidencia de la propuesta <ArrowRight aria-hidden="true" size={14} /></a>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="proposal-risk-note">
+        Una propuesta aprobada o ejecutada no demuestra que el riesgo haya desaparecido: hace falta evidencia posterior de la captura.
+      </p>
+    </section>
+  );
+}
+
 export function ProposalsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { selectedProjectId } = useWorkspace();
@@ -103,7 +137,7 @@ export function ProposalsPage() {
   const listedProject = projectsQuery.data?.items.find((item) => item.id === selectedProjectId);
   const selectedProjectQuery = useProject(selectedProjectId, Boolean(selectedProjectId && !listedProject));
   const project = listedProject ?? selectedProjectQuery.data ?? (!selectedProjectId ? projectsQuery.data?.items[0] ?? null : null);
-  const proposalId = searchParams.get("proposal_id");
+  const proposalId = searchParams.get("proposal_id") ?? searchParams.get("proposal");
   const page = Math.max(1, Number(searchParams.get("page") ?? 1) || 1);
   const proposalsQuery = useProposals(project?.id ?? null, page, pageSize);
   const detailQuery = useProposal(project?.id ?? null, proposalId);
@@ -304,10 +338,11 @@ export function ProposalsPage() {
                 <Link to={proposalHref(item.proposal_id)} key={item.proposal_id} className={`proposal-list-item${proposalId === item.proposal_id ? " proposal-list-item-active" : ""}`} aria-label={`Abrir propuesta para ${fieldLabel(item.field)}`}>
                   <span className="proposal-list-top">
                     <strong>{fieldLabel(item.field)}</strong>
-                    <Pill tone={proposalTone(item.technical_review?.technical_status ?? item.technical_eligibility)}>
+                    <Pill tone={proposalStatusTone(item.technical_review?.technical_status ?? item.technical_eligibility)}>
                       {item.technical_review ? technicalReviewLabel(item.technical_review) : technicalEligibilityLabel(item.technical_eligibility)}
                     </Pill>
                   </span>
+                  {item.risk_refs && item.risk_refs.length > 0 && <ProposalRiskBadge riskRefs={item.risk_refs} />}
                   <span className="proposal-list-meta">Propuesta sobre una tarea · vigencia {item.freshness === "current" ? "actual" : item.freshness === "stale" ? "obsoleta" : "desconocida"}</span>
                 </Link>
               ))}
@@ -331,6 +366,8 @@ export function ProposalsPage() {
                   <div><p className="eyebrow">PROPUESTA DEL SISTEMA</p><h2 id="proposal-detail-title">{fieldLabel(proposal.field)}</h2></div>
                   <Link className="text-link" to={`/tasks?q=${encodeURIComponent(proposal.task_id)}&capture_id=${encodeURIComponent(proposal.capture_id)}`}>Abrir tarea <ArrowRight aria-hidden="true" size={14} /></Link>
                 </div>
+
+                <ProposalRiskOrigin proposal={proposal} />
 
                 <div className="proposal-manager-card">
                   <section className="proposal-business-step" aria-labelledby="proposal-problem-title">
@@ -362,8 +399,8 @@ export function ProposalsPage() {
                     <p className="eyebrow">4 · CONDICIONES TÉCNICAS</p>
                     <h3 id="proposal-conditions-title">Elegibilidad y vigencia</h3>
                     <div className="proposal-condition-strip">
-                      <div><span>Elegibilidad</span><Pill tone={proposalTone(proposal.technical_eligibility)}>{technicalEligibilityLabel(proposal.technical_eligibility)}</Pill></div>
-                      <div><span>Vigencia</span><Pill tone={proposalTone(proposal.freshness)}>{proposal.freshness === "current" ? "Actual" : proposal.freshness === "stale" ? "Obsoleta" : "Desconocida"}</Pill></div>
+                      <div><span>Elegibilidad</span><Pill tone={proposalStatusTone(proposal.technical_eligibility)}>{technicalEligibilityLabel(proposal.technical_eligibility)}</Pill></div>
+                      <div><span>Vigencia</span><Pill tone={proposalStatusTone(proposal.freshness)}>{proposalFreshnessLabel(proposal.freshness)}</Pill></div>
                     </div>
                     <p>Ser elegible solo indica que supera las comprobaciones técnicas informadas; no significa que esté aprobada o autorizada.</p>
                   </section>
@@ -372,8 +409,8 @@ export function ProposalsPage() {
                     <p className="eyebrow">5 · DECISIÓN DE LA GESTORA</p>
                     <h3 id="proposal-manager-decision-title">Decisión y autorización informadas</h3>
                     <div className="proposal-condition-strip">
-                      <div><span>Decisión humana</span><Pill tone={proposalTone(proposal.review_status)}>{reviewLabel(proposal.review_status)}</Pill></div>
-                      <div><span>Autorización</span><Pill tone={proposalTone(proposal.authorization_status)}>{authorizationLabel(proposal.authorization_status)}</Pill></div>
+                      <div><span>Decisión humana</span><Pill tone={proposalStatusTone(proposal.review_status)}>{proposalReviewStatusLabel(proposal.review_status)}</Pill></div>
+                      <div><span>Autorización</span><Pill tone={proposalStatusTone(proposal.authorization_status)}>{proposalAuthorizationStatusLabel(proposal.authorization_status)}</Pill></div>
                     </div>
                     <p>La decisión requiere sesión y permiso del servidor. El estado de autorización se muestra tal como lo informa el backend.</p>
                     {canDecide && executionBlockReason && <p className="unknown-note" role="status">{executionBlockReason}</p>}
@@ -408,19 +445,19 @@ export function ProposalsPage() {
 
                   <ProposalDecisionTrail proposal={proposal} proposalHref={proposalHref} />
 
-                  <details className="proposal-technical-details">
+                  <details className="proposal-technical-details" id="proposal-technical-details">
                     <summary>Ver evidencia y datos técnicos de la propuesta</summary>
                     <section className="detail-section">
                       <h3>Revisión técnica determinista</h3>
                       {proposal.technical_review ? <>
-                        <Pill tone={proposalTone(proposal.technical_review.technical_status)}>{technicalReviewLabel(proposal.technical_review)}</Pill>
+                        <Pill tone={proposalStatusTone(proposal.technical_review.technical_status)}>{technicalReviewLabel(proposal.technical_review)}</Pill>
                         {technicalErrors === null && <p className="unknown-note">La lista de condiciones técnicas es desconocida.</p>}
                         {technicalErrors && technicalErrors.length > 0 && <div className="inline-warning"><strong>Condiciones informadas:</strong><ul>{technicalErrors.map((error) => <li key={error}>{error}</li>)}</ul></div>}
                         <p>Simulación técnica: {dryRun?.status ?? "desconocida"}{Array.isArray(dryRun?.reasons) && dryRun.reasons.length ? ` · ${dryRun.reasons.join(" · ")}` : ""}.</p>
                         <p>Registrada: {formatDate(proposal.technical_review.recorded_at, true)}</p>
                       </> : <p className="unknown-note">El detalle de la revisión no está disponible.</p>}
                     </section>
-                    <section className="detail-section">
+                    <section className="detail-section" id="proposal-evidence">
                       <h3>Evidencia asociada</h3>
                       <p>Se muestra solo bajo demanda; la interfaz no lee artefactos fuera de la respuesta del backend.</p>
                       {proposal.evidence.length ? <ul className="evidence-list">{proposal.evidence.map((evidence) => <li key={evidence.evidence_id}><span className="evidence-source">{evidence.category}</span><strong>{evidence.summary}</strong><code>{evidence.evidence_id}</code></li>)}</ul> : <p className="unknown-note">No hay evidencia asociada en la respuesta.</p>}

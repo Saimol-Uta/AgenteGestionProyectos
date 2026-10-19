@@ -5,11 +5,15 @@ import {
   AlertTriangle, ArrowDown, ArrowUp, CalendarClock, ChevronLeft, ChevronRight,
   CircleHelp, Clock3, ExternalLink, Filter, ListFilter, Search, ShieldAlert, X,
 } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { queryKeys, useCaptureHistory, useProject, useProjects } from "../../api/queries";
-import { comparisonValue, fieldLabel, formatDate, riskKindLabel, riskKindTone, taskStateLabel, taskStateTone } from "../../api/formatters";
-import type { DomainTaskState, TaskChange, TaskDetailResponse, TaskQuery } from "../../api/types";
+import {
+  comparisonValue, fieldLabel, formatDate, proposalAuthorizationStatusLabel, proposalExecutionStatusLabel,
+  proposalFreshnessLabel, proposalReviewStatusLabel, proposalStatusTone, proposalTechnicalStatusLabel,
+  riskKindLabel, riskKindTone, taskStateLabel, taskStateTone,
+} from "../../api/formatters";
+import type { DomainTaskState, TaskChange, TaskDetailResponse, TaskQuery, TaskRisk } from "../../api/types";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
 
@@ -212,8 +216,57 @@ function TaskDetailDialog({
   );
 }
 
+/**
+ * Proposals that a deterministic risk actually motivated. A linked proposal is never presented
+ * as proof that the risk disappeared: the risk stays vigente until a later capture proves otherwise.
+ */
+function RiskProposalLinks({ risk, captureId }: { risk: TaskRisk; captureId: string | null }) {
+  const proposals = risk.proposals;
+
+  if (proposals === undefined) {
+    return (
+      <div className="risk-proposals">
+        <p className="risk-proposals-unknown">La respuesta del backend no informa si este riesgo tiene propuestas vinculadas.</p>
+      </div>
+    );
+  }
+
+  if (proposals.length === 0) {
+    return (
+      <div className="risk-proposals">
+        <p className="risk-proposals-empty">No hay una propuesta vinculada a este riesgo</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="risk-proposals">
+      <p className="risk-item-tasks">Propuestas vinculadas ({proposals.length}):</p>
+      <ul className="risk-proposal-links">
+        {proposals.map((proposal) => {
+          const historical = Boolean(captureId && proposal.capture_id && proposal.capture_id !== captureId);
+          return (
+            <li key={proposal.proposal_id} className="risk-proposal-link">
+              <Link to={`/proposals?proposal_id=${encodeURIComponent(proposal.proposal_id)}`}>{proposal.proposal_id}</Link>
+              <span className="risk-proposal-field">{fieldLabel(proposal.field)}</span>
+              <Pill tone={proposalStatusTone(proposal.review_status)}>{proposalReviewStatusLabel(proposal.review_status)}</Pill>
+              <Pill tone={proposalStatusTone(proposal.execution_status)}>{proposalExecutionStatusLabel(proposal.execution_status)}</Pill>
+              <Pill tone={proposalStatusTone(proposal.technical_status)}>{proposalTechnicalStatusLabel(proposal.technical_status)}</Pill>
+              <span className="risk-proposal-meta">
+                Vigencia {proposalFreshnessLabel(proposal.freshness).toLocaleLowerCase("es-EC")} · {proposalAuthorizationStatusLabel(proposal.authorization_status)}
+              </span>
+              {historical && <Pill tone="unknown">Histórica</Pill>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function RiskSection({ task, onSelectTask }: { task: TaskDetailResponse; onSelectTask: (taskId: string) => void }) {
   const risks = task.risks ?? [];
+  const captureId = task.capture_id ?? null;
   return (
     <section className="detail-section">
       <div className="detail-section-heading">
@@ -246,9 +299,15 @@ function RiskSection({ task, onSelectTask }: { task: TaskDetailResponse; onSelec
                   ))}
                 </p>
               )}
+              <RiskProposalLinks risk={risk} captureId={captureId} />
             </li>
           ))}
         </ul>
+      )}
+      {risks.length > 0 && (
+        <p className="risk-panel-note">
+          Una propuesta aprobada o ejecutada no demuestra que el riesgo haya desaparecido: hace falta evidencia posterior de la captura.
+        </p>
       )}
     </section>
   );
@@ -419,6 +478,7 @@ export function TasksPage() {
   });
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const deepLinkedTaskId = searchParams.get("task") ?? "";
+  const deepLinkedCaptureId = searchParams.get("capture_id") ?? "";
   const openTaskId = selectedTaskId ?? (deepLinkedTaskId || null);
   const search = searchParams.get("q") ?? "";
   const state = queryState(searchParams.get("state")) ?? "";
@@ -565,11 +625,11 @@ export function TasksPage() {
       <TaskDetailDialog
         projectId={project.id}
         taskId={openTaskId}
-        captureId={project.summary?.capture_id}
+        captureId={deepLinkedCaptureId || project.summary?.capture_id}
         onSelectTask={setSelectedTaskId}
         onClose={() => {
           setSelectedTaskId(null);
-          if (deepLinkedTaskId) updateFilters({ task: null }, false);
+          if (deepLinkedTaskId || deepLinkedCaptureId) updateFilters({ task: null, capture_id: null }, false);
         }}
       />
     </section>
