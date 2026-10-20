@@ -104,3 +104,41 @@ class BranchExecutionResult(BaseModel):
     branch_name: str = Field(min_length=1)
     branch_url: str = Field(min_length=1)
     commit_sha_applied: str = Field(min_length=1)
+
+
+class PullRequestExecutionResult(BaseModel):
+    """Observable result of one controlled pull request publication.
+
+    A sandbox publication is always explicitly simulated: it carries the
+    ``simulated`` state and a ``sandbox://`` URL, so it can never be read as a
+    real pull request.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    execution_mode: Literal["live", "sandbox"]
+    pull_request_number: int = Field(ge=1)
+    pull_request_url: str = Field(min_length=1, max_length=512)
+    state: Literal["open", "simulated"]
+    repository: str = Field(min_length=1)
+    base_branch: str = Field(min_length=1)
+    head_branch: str = Field(min_length=1)
+    head_commit_sha: str = Field(min_length=1)
+    recovered: bool = False
+
+    @model_validator(mode="after")
+    def validate_publication(self) -> "PullRequestExecutionResult":
+        if not _REPOSITORY_RE.fullmatch(self.repository):
+            raise ValueError("Pull request repository must be a full owner/repository name.")
+        if not _COMMIT_SHA_RE.fullmatch(self.head_commit_sha):
+            raise ValueError("Pull request head commit must be a full 40- or 64-character SHA.")
+        for value, label in ((self.base_branch, "base"), (self.head_branch, "head")):
+            if (not value or len(value) > 240 or any(character.isspace() for character in value)
+                    or value.startswith("/") or value.endswith(".") or ".." in value):
+                raise ValueError(f"Pull request {label} branch is invalid.")
+        if self.execution_mode == "sandbox":
+            if self.state != "simulated" or not self.pull_request_url.startswith("sandbox://"):
+                raise ValueError("A sandbox pull request must be explicitly simulated.")
+        elif self.state != "open" or not self.pull_request_url.startswith("https://"):
+            raise ValueError("A live pull request must be open and carry an https URL.")
+        return self

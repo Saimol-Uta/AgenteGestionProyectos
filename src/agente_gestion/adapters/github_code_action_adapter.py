@@ -1,4 +1,4 @@
-"""Safe GitHub branch writes with an explicit local sandbox fallback."""
+"""Safe GitHub branch and pull request writes with an explicit local sandbox fallback."""
 
 import base64
 import hashlib
@@ -12,7 +12,12 @@ from urllib.parse import quote
 import requests
 
 from agente_gestion.domain.code import validate_source_syntax
-from agente_gestion.domain.code_action import BranchExecutionResult, CodeSourceSnapshot, FindingActionOrigin
+from agente_gestion.domain.code_action import (
+    BranchExecutionResult,
+    CodeSourceSnapshot,
+    FindingActionOrigin,
+    PullRequestExecutionResult,
+)
 from agente_gestion.ports.code_action_port import CodeActionPort
 
 
@@ -20,6 +25,14 @@ _REPOSITORY = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
 _BRANCH_FORBIDDEN = re.compile(r"[\x00-\x20~^:?*\\\[]")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MAX_TEXT_BYTES = 5 * 1024 * 1024
+_FINDING_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?::{1,2}[A-Za-z0-9][A-Za-z0-9._-]*)*")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_PROTECTED_PULL_REQUEST_BASE = "develop"
+_PROTECTED_HEAD_BRANCHES = frozenset({"main", "master", "develop"})
+_PULL_REQUEST_MANIFEST_DIRECTORY = ".pull_requests"
+_SANDBOX_NUMBER_BASE = 1000
+_SANDBOX_NUMBER_RANGE = 9000
 
 
 def _same_repository(left: str | None, right: str | None) -> bool:
@@ -33,6 +46,25 @@ class CodeActionError(RuntimeError):
         self.code = code
         self.status_code = status_code
         super().__init__(message)
+
+
+def _validate_finding_id(finding_id: str) -> str:
+    if (not isinstance(finding_id, str) or len(finding_id) > 128
+            or not _FINDING_ID.fullmatch(finding_id)):
+        raise CodeActionError("hallazgo_invalido", "El identificador del hallazgo no es válido.", 422)
+    return finding_id
+
+
+def _validate_actor(actor: str) -> str:
+    if not isinstance(actor, str) or not actor.strip() or _CONTROL.search(actor):
+        raise CodeActionError("actor_invalido", "El actor de la decisión no es válido.", 422)
+    return actor
+
+
+def _validate_patch_sha256(patch_sha256: str) -> str:
+    if not isinstance(patch_sha256, str) or not _SHA256.fullmatch(patch_sha256):
+        raise CodeActionError("parche_invalido", "El hash del parche revisado no es válido.", 422)
+    return patch_sha256
 
 
 class _RequestsGitHubClient:
@@ -255,7 +287,7 @@ class GitHubCodeActionAdapter(CodeActionPort):
     def _github_path(repo: str, path: str) -> str:
         return "/".join(quote(part, safe="") for part in path.split("/"))
 
-    def _github_request(self, method: str, path: str, body=None):
+    def _github_request(self, method: str, path: str, body=None, *, allow_list: bool = False):
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -269,7 +301,9 @@ class GitHubCodeActionAdapter(CodeActionPort):
             raise CodeActionError(
                 "github_no_disponible", "GitHub no respondió; no se confirmó ninguna rama remota.", 503,
             ) from None
-        if not isinstance(status, int) or not isinstance(payload, dict):
+        if not isinstance(status, int):
+            raise CodeActionError("respuesta_github_invalida", "GitHub devolvió una respuesta no válida.", 502)
+        if not isinstance(payload, dict) and not (allow_list and isinstance(payload, list)):
             raise CodeActionError("respuesta_github_invalida", "GitHub devolvió una respuesta no válida.", 502)
         return status, payload
 
@@ -369,11 +403,8 @@ class GitHubCodeActionAdapter(CodeActionPort):
         if target_branch == base_branch:
             raise CodeActionError("rama_destino_invalida", "La rama destino debe ser distinta de la rama base.", 422)
         file_path = self._validate_file_path(file_path)
-        if (not isinstance(finding_id, str) or len(finding_id) > 128
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?::{1,2}[A-Za-z0-9][A-Za-z0-9._-]*)*", finding_id)):
-            raise CodeActionError("hallazgo_invalido", "El identificador del hallazgo no es válido.", 422)
-        if not isinstance(actor, str) or not actor.strip() or _CONTROL.search(actor):
-            raise CodeActionError("actor_invalido", "El actor de la decisión no es válido.", 422)
+        finding_id = _validate_finding_id(finding_id)
+        actor = _validate_actor(actor)
         original_excerpt = self._validate_text(original_excerpt, "original_excerpt")
         suggested_code = self._validate_text(suggested_code, "suggested_code")
         if self.origin is not None and (
@@ -414,4 +445,365 @@ class GitHubCodeActionAdapter(CodeActionPort):
             execution_mode="sandbox", branch_name=target_branch,
             branch_url=f"sandbox://branches/{quote(target_branch, safe='/')}",
             commit_sha_applied=commit_sha,
+        )
+
+    # ------------------------------------------------------- pull request publication
+
+    def create_pull_request(
+        self,
+        *,
+        repo: str,
+        base_branch: str,
+        branch_result: BranchExecutionResult,
+        finding_id: str,
+        actor: str,
+        patch_sha256: str,
+    ) -> PullRequestExecutionResult:
+        """Publish one pull request for an existing branch, or recover it without duplicating it.
+
+        The protected base is always ``develop`` and the head branch can never be a
+        protected branch or the base itself. A sandbox branch is published as an
+        explicitly simulated pull request; a live branch requires the existing live
+        gate (``external_writes_enabled`` plus a real project mode and token).
+        """
+        repo = self._validate_repository(repo)
+        if self.repository is not None and not _same_repository(repo, self.repository):
+            raise CodeActionError(
+                "fuente_no_verificable", "El repositorio solicitado no coincide con el destino configurado.", 409,
+            )
+        base_branch = self._validate_branch(base_branch)
+        if base_branch != _PROTECTED_PULL_REQUEST_BASE:
+            raise CodeActionError(
+                "rama_base_no_protegida",
+                "El pull request debe abrirse contra la rama base protegida develop.",
+                422,
+            )
+        if not isinstance(branch_result, BranchExecutionResult):
+            raise CodeActionError("resultado_de_rama_invalido", "El resultado de la rama no es válido.", 422)
+        head_branch = self._validate_branch(branch_result.branch_name)
+        if head_branch in _PROTECTED_HEAD_BRANCHES or head_branch == base_branch:
+            raise CodeActionError(
+                "rama_cabecera_invalida",
+                "La rama de cabecera no puede ser una rama protegida ni la rama base.",
+                422,
+            )
+        head_commit = branch_result.commit_sha_applied
+        if not isinstance(head_commit, str) or not _COMMIT_SHA.fullmatch(head_commit):
+            raise CodeActionError("commit_invalido", "El commit de la rama no es válido.", 422)
+        finding_id = _validate_finding_id(finding_id)
+        actor = _validate_actor(actor)
+        patch_sha256 = _validate_patch_sha256(patch_sha256)
+
+        identity = {
+            "base_branch": base_branch,
+            "finding_id": finding_id,
+            "head_branch": head_branch,
+            "head_commit_sha": head_commit,
+            "patch_sha256": patch_sha256,
+            "repository": repo,
+        }
+        if branch_result.execution_mode == "live":
+            if not self._live_ready(repo):
+                raise CodeActionError(
+                    "publicacion_no_habilitada",
+                    "La publicación real está deshabilitada; no se abrió ningún pull request.",
+                    503,
+                )
+            return self._live_pull_request(
+                repo, base_branch, head_branch, head_commit, finding_id, actor, patch_sha256,
+            )
+        return self._sandbox_pull_request(identity)
+
+    def _sandbox_pull_request(self, identity: dict[str, str]) -> PullRequestExecutionResult:
+        """Simulate one pull request and persist a durable, identity-bound manifest."""
+        root = self._sandbox_root()
+        directory = self._sandbox_manifest_directory(root)
+        identity_digest = hashlib.sha256(json.dumps(
+            identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8")).hexdigest()
+        manifest_path = directory / f"{identity_digest}.json"
+        stored = self._read_sandbox_manifest(manifest_path, root)
+        if stored is not None:
+            return self._replayed_pull_request(stored, identity)
+        self._refuse_duplicated_publication(directory, root, identity)
+        number = _SANDBOX_NUMBER_BASE + int(identity_digest[:8], 16) % _SANDBOX_NUMBER_RANGE
+        result = PullRequestExecutionResult(
+            execution_mode="sandbox",
+            pull_request_number=number,
+            pull_request_url=f"sandbox://pulls/{quote(identity['repository'], safe='/')}/{number}",
+            state="simulated",
+            repository=identity["repository"],
+            base_branch=identity["base_branch"],
+            head_branch=identity["head_branch"],
+            head_commit_sha=identity["head_commit_sha"],
+            recovered=False,
+        )
+        if not self._write_sandbox_manifest(manifest_path, root, {
+            "identity": identity, "result": result.model_dump(mode="json"),
+        }):
+            stored = self._read_sandbox_manifest(manifest_path, root)
+            if stored is None:
+                raise CodeActionError(
+                    "sandbox_no_disponible", "No se pudo confirmar el manifiesto sandbox.", 503,
+                )
+            return self._replayed_pull_request(stored, identity)
+        return result
+
+    def _sandbox_manifest_directory(self, root: Path) -> Path:
+        directory = root / _PULL_REQUEST_MANIFEST_DIRECTORY
+        try:
+            directory.mkdir(exist_ok=True)
+        except OSError:
+            raise CodeActionError("sandbox_no_disponible", "No se pudo preparar el destino sandbox.", 503) from None
+        if directory.is_symlink() or not directory.resolve().is_relative_to(root):
+            raise CodeActionError("ruta_sandbox_insegura", "La ruta sandbox sale del directorio permitido.", 409)
+        return directory
+
+    @staticmethod
+    def _read_sandbox_manifest(path: Path, root: Path) -> dict | None:
+        if path.is_symlink() or not path.resolve(strict=False).is_relative_to(root):
+            raise CodeActionError("ruta_sandbox_insegura", "La ruta sandbox sale del directorio permitido.", 409)
+        if not path.exists():
+            return None
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            raise CodeActionError(
+                "destino_sandbox_conflictivo", "El manifiesto sandbox existente no se puede leer.", 409,
+            ) from None
+        try:
+            stored = json.loads(raw)
+        except (ValueError, TypeError):
+            raise CodeActionError(
+                "destino_sandbox_conflictivo", "El manifiesto sandbox existente no es válido.", 409,
+            ) from None
+        if not isinstance(stored, dict):
+            raise CodeActionError(
+                "destino_sandbox_conflictivo", "El manifiesto sandbox existente no es válido.", 409,
+            )
+        return stored
+
+    @staticmethod
+    def _write_sandbox_manifest(path: Path, root: Path, payload: dict) -> bool:
+        """Write the manifest once; report False when it already existed."""
+        if path.is_symlink() or not path.resolve(strict=False).is_relative_to(root):
+            raise CodeActionError("ruta_sandbox_insegura", "La ruta sandbox sale del directorio permitido.", 409)
+        content = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError:
+            return False
+        except OSError:
+            raise CodeActionError("sandbox_no_disponible", "No se pudo escribir el manifiesto sandbox.", 503) from None
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                stream.write(content)
+                stream.flush()
+        except OSError:
+            raise CodeActionError("sandbox_no_disponible", "No se pudo escribir el manifiesto sandbox.", 503) from None
+        return True
+
+    @staticmethod
+    def _replayed_pull_request(stored: dict, identity: dict) -> PullRequestExecutionResult:
+        if stored.get("identity") != identity:
+            raise CodeActionError(
+                "destino_sandbox_conflictivo", "El manifiesto sandbox pertenece a otra publicación.", 409,
+            )
+        payload = stored.get("result")
+        if not isinstance(payload, dict):
+            raise CodeActionError(
+                "destino_sandbox_conflictivo", "El manifiesto sandbox no contiene un resultado válido.", 409,
+            )
+        try:
+            result = PullRequestExecutionResult.model_validate(payload)
+        except ValueError:
+            raise CodeActionError(
+                "destino_sandbox_conflictivo", "El manifiesto sandbox no contiene un resultado válido.", 409,
+            ) from None
+        return result.model_copy(update={"recovered": True})
+
+    def _refuse_duplicated_publication(self, directory: Path, root: Path, identity: dict) -> None:
+        """Refuse a second publication for the same branch under a different identity."""
+        for candidate in sorted(directory.glob("*.json")):
+            stored = self._read_sandbox_manifest(candidate, root)
+            if stored is None:
+                continue
+            other = stored.get("identity")
+            if not isinstance(other, dict):
+                continue
+            if (other.get("repository") == identity["repository"]
+                    and other.get("base_branch") == identity["base_branch"]
+                    and other.get("head_branch") == identity["head_branch"]
+                    and other != identity):
+                raise CodeActionError(
+                    "pull_request_duplicada",
+                    "Ya existe un pull request para esa rama con otra revisión; no se duplicó la publicación.",
+                    409,
+                )
+
+    def _live_pull_request(
+        self, repo: str, base_branch: str, head_branch: str, head_commit: str,
+        finding_id: str, actor: str, patch_sha256: str,
+    ) -> PullRequestExecutionResult:
+        owner, name = self._validate_repository(repo).split("/", 1)
+        encoded_repo = f"{quote(owner, safe='')}/{quote(name, safe='')}"
+        status, repository_info = self._github_request("GET", f"/repos/{encoded_repo}")
+        if status in {401, 403, 404}:
+            raise CodeActionError(
+                "permiso_github_insuficiente",
+                "GitHub no habilitó la escritura de pull requests en este repositorio.",
+                403,
+            )
+        if status != 200:
+            raise CodeActionError(
+                "github_no_disponible", "No se pudo confirmar el permiso de escritura de GitHub.", 503,
+            )
+        permissions = repository_info.get("permissions")
+        if not isinstance(permissions, dict) or permissions.get("push") is not True:
+            raise CodeActionError(
+                "permiso_github_insuficiente",
+                "El token no tiene permiso de escritura en este repositorio.",
+                403,
+            )
+        self._validate_head_commit(encoded_repo, head_branch, head_commit)
+        recovered = self._find_existing_pull_request(
+            repo, encoded_repo, owner, base_branch, head_branch, head_commit,
+        )
+        if recovered is not None:
+            return recovered
+        body = {
+            "title": f"Reviewed corrective change for {finding_id}",
+            "head": head_branch,
+            "base": base_branch,
+            "body": (
+                f"Finding: {finding_id}\n"
+                f"Base branch: {base_branch}\n"
+                f"Head branch: {head_branch}\n"
+                f"Head commit: {head_commit}\n"
+                f"Reviewed patch SHA-256: {patch_sha256}\n"
+                f"Requested by: {actor}\n"
+            ),
+        }
+        try:
+            status, payload = self._github_request("POST", f"/repos/{encoded_repo}/pulls", body)
+        except CodeActionError as exc:
+            if exc.code == "github_no_disponible":
+                raise CodeActionError(
+                    "pull_request_no_confirmado",
+                    "No se pudo confirmar si GitHub creó el pull request; no se repetirá la publicación a ciegas.",
+                    503,
+                ) from None
+            raise
+        if status >= 500:
+            raise CodeActionError(
+                "pull_request_no_confirmado",
+                "GitHub no respondió de forma concluyente; no se repetirá la publicación a ciegas.",
+                503,
+            )
+        if status not in {200, 201}:
+            raise CodeActionError("pull_request_no_creado", "GitHub no creó el pull request.", 409)
+        return self._pull_request_result(
+            payload, repo, base_branch, head_branch, head_commit, recovered=False,
+        )
+
+    def _validate_head_commit(self, encoded_repo: str, head_branch: str, head_commit: str) -> None:
+        ref_path = quote(head_branch, safe="/")
+        status, ref = self._github_request("GET", f"/repos/{encoded_repo}/git/ref/heads/{ref_path}")
+        if status == 404:
+            raise CodeActionError(
+                "rama_cabecera_no_disponible", "La rama de cabecera no existe en GitHub.", 409,
+            )
+        if status != 200 or not isinstance(ref.get("object"), dict) or not ref["object"].get("sha"):
+            raise CodeActionError(
+                "github_no_disponible", "No se pudo leer la rama de cabecera en GitHub.", 503,
+            )
+        if str(ref["object"]["sha"]) != head_commit:
+            raise CodeActionError(
+                "pull_request_cabeza_inconsistente",
+                "La rama de cabecera ya no apunta al commit revisado; no se creó ningún pull request.",
+                409,
+            )
+
+    def _find_existing_pull_request(
+        self, repo: str, encoded_repo: str, owner: str, base_branch: str,
+        head_branch: str, head_commit: str,
+    ) -> PullRequestExecutionResult | None:
+        """Look up the pull request of this exact head, base and repository before creating one."""
+        query = (
+            f"state=all&head={quote(f'{owner}:{head_branch}', safe='')}"
+            f"&base={quote(base_branch, safe='')}&per_page=100"
+        )
+        status, payload = self._github_request(
+            "GET", f"/repos/{encoded_repo}/pulls?{query}", allow_list=True,
+        )
+        if status != 200:
+            raise CodeActionError(
+                "github_no_disponible",
+                "No se pudo consultar el estado de los pull requests; no se creó ninguno.",
+                503,
+            )
+        matches = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            head = item.get("head")
+            base = item.get("base")
+            if not isinstance(head, dict) or not isinstance(base, dict):
+                continue
+            if head.get("ref") != head_branch or base.get("ref") != base_branch:
+                continue
+            head_repository = head.get("repo")
+            if not isinstance(head_repository, dict):
+                continue
+            if not _same_repository(head_repository.get("full_name"), repo):
+                continue
+            matches.append(item)
+        if not matches:
+            return None
+        bound = [item for item in matches if (item.get("head") or {}).get("sha") == head_commit]
+        if not bound:
+            raise CodeActionError(
+                "pull_request_cabeza_inconsistente",
+                "Ya existe un pull request para esa rama con otro commit; no se creó otro.",
+                409,
+            )
+        item = bound[0]
+        if item.get("state") != "open":
+            raise CodeActionError(
+                "pull_request_no_creado",
+                "El pull request existente ya no está abierto; no se creó otro.",
+                409,
+            )
+        return self._pull_request_result(
+            item, repo, base_branch, head_branch, head_commit, recovered=True,
+        )
+
+    @staticmethod
+    def _pull_request_result(
+        payload: dict, repo: str, base_branch: str, head_branch: str, head_commit: str, *,
+        recovered: bool,
+    ) -> PullRequestExecutionResult:
+        number = payload.get("number")
+        url = payload.get("html_url")
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            raise CodeActionError(
+                "respuesta_github_invalida", "GitHub no devolvió un número de pull request válido.", 502,
+            )
+        if (not isinstance(url, str) or not url.startswith("https://") or len(url) > 512
+                or _CONTROL.search(url) or any(character.isspace() for character in url)):
+            raise CodeActionError(
+                "respuesta_github_invalida", "GitHub no devolvió una URL de pull request válida.", 502,
+            )
+        head = payload.get("head")
+        if isinstance(head, dict) and head.get("sha") and head["sha"] != head_commit:
+            raise CodeActionError(
+                "pull_request_cabeza_inconsistente",
+                "El pull request apunta a otro commit; no se confirmó la publicación.",
+                409,
+            )
+        return PullRequestExecutionResult(
+            execution_mode="live", pull_request_number=number, pull_request_url=url,
+            state="open", repository=repo, base_branch=base_branch, head_branch=head_branch,
+            head_commit_sha=head_commit, recovered=recovered,
         )
