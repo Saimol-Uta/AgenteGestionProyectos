@@ -20,7 +20,7 @@ from agente_gestion.domain.patch_review import (
 from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.llm import GenerationRequest
 from agente_gestion.ports.llm import LLMProviderPort
-from agente_gestion.agents.context import ContextBuilder
+from agente_gestion.agents.context import ContextBuilder, estimate_tokens_from_data
 from agente_gestion.application.generation import StageInvocationCoordinator
 from agente_gestion.application.validation import SemanticValidator
 
@@ -168,6 +168,18 @@ class VerifierAgent:
         self.coordinator = coordinator or StageInvocationCoordinator()
         self.timeout_seconds = timeout_seconds
 
+    def _input_budget(self, instructions: str, schema: dict, capabilities: Any, output_tokens: int) -> int:
+        """Reserve the provider envelope without overriding an explicit local cap."""
+        budget = self.context_builder.calculate_safe_input_budget(
+            context_window=capabilities.context_tokens,
+            max_output_tokens=output_tokens,
+            overhead_tokens=(estimate_tokens_from_data(instructions)
+                             + estimate_tokens_from_data(schema) + 512),
+        )
+        if getattr(self.context_builder, "_explicit_default", False):
+            budget = min(budget, self.context_builder.default_budget_tokens)
+        return budget
+
     def review_patch(
         self,
         *,
@@ -199,12 +211,16 @@ class VerifierAgent:
             "- Usa 'insufficient' cuando la evidencia visible no permite juzgar la correccion "
             "con certeza.\n"
         )
+        capabilities = self.provider.get_capabilities()
+        output_tokens = min(max_output_tokens or 1024, capabilities.max_output_tokens)
         context = self.context_builder.build_patch_review_context(
             project_id, finding, patch, patched_region,
             evidence_ids=sorted(set(evidence_ids or [])),
+            budget_tokens=self._input_budget(
+                instructions, PatchReviewOutputSchema.model_json_schema(), capabilities, output_tokens,
+            ),
+            strict_budget=True,
         )
-        capabilities = self.provider.get_capabilities()
-        output_tokens = min(max_output_tokens or 1024, capabilities.max_output_tokens)
         evidences_payload = self.context_builder.runtime_payload(
             context, instructions, PatchReviewOutputSchema.model_json_schema(), output_tokens,
             capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
@@ -326,12 +342,15 @@ class VerifierAgent:
                 "- Verifica solo los hallazgos y evidencias de este repositorio; no cruces identidades.\n"
             )
 
+        capabilities = self.provider.get_capabilities()
+        output_tokens = min(max_output_tokens or 1024, capabilities.max_output_tokens)
         context = self.context_builder.build_verifier_context(
             project_id, verifiable_findings, snippets, rules or [], sorted(valid_ev_ids), strict_budget=True,
             repository_scope=repository_scope,
+            budget_tokens=self._input_budget(
+                instructions, VerifierOutputSchema.model_json_schema(), capabilities, output_tokens,
+            ),
         )
-        capabilities = self.provider.get_capabilities()
-        output_tokens = min(max_output_tokens or 1024, capabilities.max_output_tokens)
         evidences_payload = self.context_builder.runtime_payload(
             context, instructions, VerifierOutputSchema.model_json_schema(), output_tokens,
             capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
