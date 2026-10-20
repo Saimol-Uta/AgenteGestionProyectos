@@ -125,6 +125,30 @@ class MonitoringProposalsTests(unittest.TestCase):
                 DomainProposalRuleSet.model_validate(dict(project_id="P", rules=[dict(
                     self.rules["rules"][0], **patch)]))
 
+    def test_a_rule_on_a_field_the_bounded_context_does_not_carry_is_still_offered(self):
+        """The candidate set is the same the orchestrator persists.
+
+        The bounded context only carries the cards the model reads, so a rule
+        on a field it does not carry used to disappear from the offer while the
+        orchestrator still computed it: the correction was impossible to select.
+        """
+        self.task.observed_fields.append("assignee_ids")
+        self.task.assignee_ids = ["member-1"]
+        self.rules["rules"][0].update(
+            field="assignee_ids",
+            allowed_values=[["member-1", "member-2"]],
+        )
+        self.evidence.provenance.payload.update(
+            assignee_ids=["member-1"], observed_fields=["assignee_ids"],
+        )
+        draft = self.run_agent()
+        self.assertEqual(draft.proposal_limitations, [])
+        self.assertEqual(len(draft.requested_changes), 1)
+        self.assertEqual(draft.requested_changes[0].field, "assignee_ids")
+        self.assertEqual(
+            draft.requested_changes[0].proposed_value, ["member-1", "member-2"],
+        )
+
     def test_missing_visible_fields_and_budget(self):
         for field, value in [("start_date", None), ("priority", "high"),
                              ("assignee_ids", []), ("assignee_ids", None), ("due_date", None)]:
@@ -132,8 +156,11 @@ class MonitoringProposalsTests(unittest.TestCase):
             self.task.observed_fields.append(field)
             self.rules["rules"][0].update(field=field, allowed_values=[value])
             draft = self.run_agent(selection=[])
+            # The candidate is computed with the same rows the orchestrator uses
+            # to persist it, so an unobserved field is now refused by the
+            # evidence that does not carry it, and not by the context.
             self.assertEqual(draft.requested_changes, [])
-            self.assertIn("field_not_visible", draft.proposal_limitations)
+            self.assertIn("evidence_mismatch", draft.proposal_limitations)
         self.setUp()
         self.rules["rules"][0]["rationale"] = "reason " * 10000
         draft = self.run_agent(builder=ContextBuilder(), selection=[])

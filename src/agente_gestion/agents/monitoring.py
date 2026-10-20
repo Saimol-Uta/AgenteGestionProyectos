@@ -114,8 +114,14 @@ class ProjectMonitoringAgent:
             request_fields={"role": "elaborador", "model": self.model, "schema_name": "monitoring_draft_v1"},
         )
 
-        choices, limitations = monitoring_choices(project_id, tasks, evidences_payload["tasks"],
-                                                 proposal_rules, task_evidence, proposal_risks)
+        # The candidates are computed with the same rows the orchestrator uses
+        # when it persists them, so the agent can never offer a correction the
+        # pipeline would discard, nor hide one it would accept. The bounded
+        # context only carries the cards the model needs to read.
+        choices, limitations = monitoring_choices(
+            project_id, tasks, [task.model_dump(mode="json") for task in tasks],
+            proposal_rules, task_evidence, proposal_risks,
+        )
         schema = MonitoringDraftSchema.model_json_schema()
         if choices:
             optional_context = context.model_copy(deep=True)

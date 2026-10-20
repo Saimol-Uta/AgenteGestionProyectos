@@ -179,7 +179,9 @@ def _build_app(run_root: Path):
     from agente_gestion.api.settings import ApiSettings, ProjectConfig
     from tests.test_g1_proposal_rules_api import SelectingFakeProvider
 
-    rules_path = _write_demo_rules(run_root)
+    # An explicit rules file lets the same isolated environment prove another
+    # corrective action without changing the harness defaults.
+    rules_path = os.environ.get("G1_DEMO_RULES_PATH") or _write_demo_rules(run_root)
     config_path = _write_demo_config(run_root, rules_path)
 
     settings = ApiSettings(
