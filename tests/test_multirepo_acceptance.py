@@ -258,9 +258,11 @@ class CountingFakeProvider(FakeProvider):
     def __init__(self):
         super().__init__()
         self.roles = []
+        self.schemas = []
 
     def generate(self, request):
         self.roles.append(request.role)
+        self.schemas.append(request.schema_name)
         return super().generate(request)
 
 
@@ -481,7 +483,10 @@ class MultiRepoAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual(len([role for role in self.provider.roles if "elaborador" in role]), 1)
         self.assertEqual(len([role for role in self.provider.roles if "revisor" in role]), 2)
-        self.assertEqual(len([role for role in self.provider.roles if "verificador" in role]), 2)
+        # Each repository independently verifies the defect and its exact patch.
+        self.assertEqual(self.provider.schemas.count("verifier_output_v1"), 2)
+        self.assertEqual(self.provider.schemas.count("patch_review_output_v1"), 2)
+        self.assertEqual(len([role for role in self.provider.roles if "verificador" in role]), 4)
         self.assertEqual(len([role for role in self.provider.roles if "aprobador" in role]), 1)
         self.assertEqual(len(self.transport.binary_calls), 2)
         self.assertEqual({call["repository"] for call in self.transport.binary_calls}, {

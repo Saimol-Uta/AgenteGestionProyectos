@@ -68,8 +68,9 @@ class ProposalExecutionLedgerRecord:
 class FindingDecisionStorageError(RuntimeError):
     """Stable storage-level reason for a rejected or conflicting decision request."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, detail: str | None = None):
         self.code = code
+        self.detail = detail
         super().__init__(code)
 
 
@@ -458,8 +459,18 @@ class SQLiteStorageAdapter(StoragePort):
                     event_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
                     UNIQUE(project_id, run_id, finding_id, idempotency_key)
                 )""")
+                request_columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(finding_decision_requests)")
+                }
+                for column in ("lease_owner", "lease_expires_at"):
+                    if column not in request_columns:
+                        conn.execute(
+                            f"ALTER TABLE finding_decision_requests ADD COLUMN {column} TEXT",
+                        )
                 conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_decisions_one_active
                     ON finding_decision_requests(project_id, run_id, finding_id)
                     WHERE state='processing'""")
@@ -1919,12 +1930,31 @@ class SQLiteStorageAdapter(StoragePort):
         finally:
             conn.close()
 
+    @staticmethod
+    def _lease_expired(row: dict[str, Any], recorded_at: str) -> bool:
+        """Whether the attempt that holds the request released its lease.
+
+        A request without a lease never expired: an attempt that was reserved
+        before the lease existed is always treated as active.
+        """
+        expires_at = row.get("lease_expires_at")
+        if not expires_at:
+            return False
+        return str(expires_at) <= str(recorded_at)
+
     def reserve_finding_decision(
         self, *, project_id: str, run_id: str, finding_id: str, idempotency_key: str,
         request_id: str, event_id: str, request_sha256: str, request_json: str,
         decision: str, actor_id: str, recorded_at: str,
+        lease_owner: str | None = None, lease_expires_at: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        """Persist an idempotency receipt before any branch-side effect."""
+        """Persist an idempotency receipt before any branch-side effect.
+
+        A request that is still processing holds a bounded lease. The same
+        request may take that lease over once it expired, so an attempt that
+        died with the process can be recovered; a request that still holds its
+        lease is never stolen.
+        """
         conn = self._get_connection()
         try:
             with conn:
@@ -1939,16 +1969,50 @@ class SQLiteStorageAdapter(StoragePort):
                     if row["request_sha256"] != request_sha256:
                         raise FindingDecisionStorageError("idempotency_conflict")
                     if row["state"] == "processing":
-                        raise FindingDecisionStorageError("decision_in_progress")
+                        if not self._lease_expired(row, recorded_at):
+                            raise FindingDecisionStorageError(
+                                "decision_in_progress", row.get("lease_expires_at"),
+                            )
+                        claimed = conn.execute(
+                            "UPDATE finding_decision_requests SET lease_owner=?, lease_expires_at=?,"
+                            " updated_at=? WHERE request_id=? AND state='processing'",
+                            (lease_owner, lease_expires_at, recorded_at, row["request_id"]),
+                        )
+                        if claimed.rowcount != 1:
+                            raise FindingDecisionStorageError("decision_in_progress")
+                        row["lease_owner"] = lease_owner
+                        row["lease_expires_at"] = lease_expires_at
+                        row["updated_at"] = recorded_at
+                        return "resume", row
                     return "replay", row
 
                 active = conn.execute(
-                    "SELECT 1 FROM finding_decision_requests WHERE project_id=? AND run_id=? "
+                    "SELECT * FROM finding_decision_requests WHERE project_id=? AND run_id=? "
                     "AND finding_id=? AND state='processing'",
                     (project_id, run_id, finding_id),
                 ).fetchone()
                 if active is not None:
-                    raise FindingDecisionStorageError("decision_in_progress")
+                    active_row = dict(active)
+                    if self._lease_expired(active_row, recorded_at):
+                        if active_row.get("decision") == "approve":
+                            # An abandoned approval owns a branch checkpoint: it
+                            # can only be recovered with its own key.
+                            raise FindingDecisionStorageError(
+                                "decision_abandoned", active_row.get("idempotency_key"),
+                            )
+                        conn.execute(
+                            "UPDATE finding_decision_requests SET state='failed',"
+                            " error_code='decision_abandoned', error_message=?, updated_at=?"
+                            " WHERE request_id=? AND state='processing'",
+                            (
+                                "El intento anterior quedó abandonado antes de registrar la decisión.",
+                                recorded_at, active_row["request_id"],
+                            ),
+                        )
+                    else:
+                        raise FindingDecisionStorageError(
+                            "decision_in_progress", active_row.get("lease_expires_at"),
+                        )
                 approved = conn.execute(
                     "SELECT 1 FROM finding_decision_requests WHERE project_id=? AND run_id=? "
                     "AND finding_id=? AND decision='approve'",
@@ -1966,10 +2030,12 @@ class SQLiteStorageAdapter(StoragePort):
                 conn.execute(
                     "INSERT INTO finding_decision_requests "
                     "(request_id, project_id, run_id, finding_id, idempotency_key, request_sha256, "
-                    "request_json, decision, actor_id, state, event_id, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?)",
+                    "request_json, decision, actor_id, state, event_id, created_at, updated_at, "
+                    "lease_owner, lease_expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)",
                     (request_id, project_id, run_id, finding_id, idempotency_key, request_sha256,
-                     request_json, decision, actor_id, event_id, recorded_at, recorded_at),
+                     request_json, decision, actor_id, event_id, recorded_at, recorded_at,
+                     lease_owner, lease_expires_at),
                 )
                 return "reserved", {"request_id": request_id, "event_id": event_id}
         except sqlite3.IntegrityError as exc:

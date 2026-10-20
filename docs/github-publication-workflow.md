@@ -137,7 +137,53 @@ immutable decision ledger keeps exactly one human decision.
 A different idempotency key cannot start a second publication: the approval is
 already recorded, so the reservation is refused.
 
-## 8. Audit
+## 8. The abandoned attempt and its lease
+
+A process can die between the branch checkpoint and the pull request. The
+request stays `processing` and the ledger keeps the checkpoint, so the attempt
+is recoverable — but only by the **same** request.
+
+Every attempt holds a bounded lease (`DECISION_LEASE_SECONDS`, 60 seconds by
+default) that is written with the reservation:
+
+| Situation | Answer |
+|-----------|--------|
+| The same key arrives while the lease is alive | `409 decision_en_curso`, with the instant the lease expires |
+| The same key arrives after the lease expired | the attempt is resumed: the checkpoint is reused and only the pull request is published |
+| Another key arrives while the lease is alive | `409 decision_en_curso` |
+| Another key arrives after the lease expired | `409 decision_abandonada`: the abandoned approval owns a branch, so only its own key can recover it |
+
+The lease is what keeps an active attempt from being stolen: the recovery is
+never immediate and never unconditional, it waits for the lease to expire. The
+refusal says when that is, so the interface can explain the wait instead of
+guessing.
+
+A resumed attempt revalidates everything before it publishes: the current
+source, the current review (an unfavorable or superseded review fails closed),
+the actor and the request hash. The branch and the commit are the ones the
+checkpoint recorded, so nothing is created twice; the human decision is taken
+once and the immutable ledger keeps a single row.
+
+## 9. The multirepo path reviews the correction too
+
+The independent review of the exact patch is part of the chain that unlocks an
+approval, so the repository-scoped path produces it as well: every finding
+that a repository stage verified is reviewed by the same independent verifier
+with the complete, immutable source of its own repository. A file captured
+from another repository never becomes a patch base, and a finding whose source
+is not complete has no identifiable patch and therefore no review — the
+approval stays blocked, which is the honest answer.
+
+## 10. The interface keeps the idempotency key
+
+A retry after a reload or in another tab is the same request, so the
+interface keeps the idempotency key of the approval in narrowly scoped browser
+storage. The scope is the actor, the project, the repository, the run, the
+finding and the digest of the edited correction; the correction itself never
+travels in clear, and no token or session secret is stored. A browser that
+refuses the storage keeps working with the key in memory.
+
+## 11. Audit
 
 | Event | Permission | Decision |
 |-------|------------|----------|
@@ -150,7 +196,7 @@ a decision is never recorded without the fate of its publication. The
 publication event identifier is `audit-<event>-publication-<attempt>`, so every
 attempt of the same request is distinguishable and never collides.
 
-## 9. Known limits
+## 12. Known limits
 
 - The service trusts the adapter for the existence of the branch; it never
   re-reads the sandbox tree or the remote branch.
@@ -159,3 +205,7 @@ attempt of the same request is distinguishable and never collides.
   fixed.
 - The ledger holds one publication per finding. A second corrective cycle for
   the same finding needs a new run.
+- The lease is not renewed while the attempt works. An attempt that outlives
+  the lease can be taken over by its own key; the publication stays unique
+  because the adapter recovers an existing pull request instead of opening a
+  second one.

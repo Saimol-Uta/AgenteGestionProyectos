@@ -2,7 +2,8 @@
 
 import hashlib
 import json
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agente_gestion.adapters.storage.sqlite import (
@@ -43,6 +44,11 @@ APPROVAL_REVIEW_REQUIRED_MESSAGE = (
     "independiente favorable y vigente, vinculada al parche exacto que se aplicaría. "
     "Un defecto confirmado, una sintaxis válida o unas pruebas aprobadas no la sustituyen."
 )
+
+# The bounded time an attempt keeps its request reserved. A retry of the very
+# same request recovers the abandoned attempt only after this lease expired;
+# before that the attempt is still considered alive and is never stolen.
+DECISION_LEASE_SECONDS = 60
 
 
 class FindingDecisionError(RuntimeError):
@@ -118,6 +124,7 @@ class FindingDecisionService:
         errors = {
             "idempotency_conflict": (409, "idempotencia_conflictiva", "La clave de idempotencia ya se usó con una solicitud distinta."),
             "decision_in_progress": (409, "decision_en_curso", "Ya existe una decisión concurrente para este hallazgo."),
+            "decision_abandoned": (409, "decision_abandonada", "El intento anterior de este hallazgo quedó abandonado."),
             "approval_already_recorded": (409, "aprobacion_ya_registrada", "Este hallazgo ya tiene una aprobación registrada."),
             "finding_already_approved": (409, "hallazgo_ya_aprobado", "Este hallazgo ya fue aprobado."),
             "decision_conflict": (409, "decision_conflictiva", "La decisión entra en conflicto con una solicitud anterior."),
@@ -127,6 +134,16 @@ class FindingDecisionService:
         status, code, message = errors.get(
             exc.code, (503, "decision_no_disponible", "No se pudo registrar la decisión de forma segura."),
         )
+        if exc.code == "decision_in_progress" and exc.detail:
+            message = (
+                "Ya existe una decisión concurrente para este hallazgo; su intento conserva el "
+                f"arrendamiento hasta {exc.detail}. Reintenta cuando venza."
+            )
+        if exc.code == "decision_abandoned" and exc.detail:
+            message = (
+                "El intento anterior de este hallazgo quedó abandonado y conserva su rama: "
+                f"reintenta con la misma clave de idempotencia ({exc.detail}) para recuperarla."
+            )
         return FindingDecisionError(status, code, message)
 
     @staticmethod
@@ -689,6 +706,32 @@ class FindingDecisionService:
         )
         return outcome, audit
 
+    def _resumed_branch(
+        self, *, project_id: str, run_id: str, finding_id: str,
+    ) -> BranchExecutionResult | None:
+        """The branch of an abandoned attempt, when its checkpoint survived.
+
+        The checkpoint is the only evidence that the branch and its commit
+        already exist. Without it the branch is created again, and the same
+        idempotency key always yields the same branch and the same commit.
+        """
+        checkpoint = latest_finding_publication(
+            self.storage, project_id=project_id, run_id=run_id, finding_id=finding_id,
+        )
+        if checkpoint is None or not checkpoint.get("branch_url"):
+            return None
+        if not checkpoint.get("commit_sha_applied"):
+            return None
+        try:
+            return BranchExecutionResult(
+                execution_mode=checkpoint["execution_mode"],
+                branch_name=checkpoint["branch_name"],
+                branch_url=checkpoint["branch_url"],
+                commit_sha_applied=checkpoint["commit_sha_applied"],
+            )
+        except (KeyError, ValueError):
+            return None
+
     def _recover_publication(
         self, *, result: dict[str, object], existing: dict[str, Any], project_id: str,
         run_id: str, finding_id: str, origin: FindingActionOrigin | None,
@@ -873,6 +916,13 @@ class FindingDecisionService:
         request_id, event_id = self._ids(project_id, run_id, finding_id, idempotency_key)
         legacy_request_id = self._legacy_request_id(project_id, run_id, finding_id, idempotency_key)
         now = datetime.now(timezone.utc).isoformat()
+        # The attempt holds a bounded lease while it works. An attempt that
+        # died with the process can be recovered once that lease expired, and
+        # a request that still holds its lease is never stolen.
+        lease_owner = f"{actor_id}:{uuid.uuid4().hex[:12]}"
+        lease_expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=DECISION_LEASE_SECONDS)
+        ).isoformat()
 
         if decision == "approve" and not effective_code.strip():
             raise FindingDecisionError(409, "codigo_sugerido_requerido", "El hallazgo no contiene código sugerido para aprobar.")
@@ -916,6 +966,7 @@ class FindingDecisionService:
                 idempotency_key=idempotency_key, request_id=request_id, event_id=event_id,
                 request_sha256=request_sha256, request_json=request_json, decision=decision,
                 actor_id=actor_id, recorded_at=now,
+                lease_owner=lease_owner, lease_expires_at=lease_expires_at,
             )
         except FindingDecisionStorageError as exc:
             if exc.code != "idempotency_conflict":
@@ -926,10 +977,11 @@ class FindingDecisionService:
                     idempotency_key=idempotency_key, request_id=legacy_request_id, event_id=event_id,
                     request_sha256=legacy_request_sha256, request_json=legacy_request_json,
                     decision=decision, actor_id=actor_id, recorded_at=now,
+                    lease_owner=lease_owner, lease_expires_at=lease_expires_at,
                 )
             except FindingDecisionStorageError as legacy_exc:
                 raise self._storage_error(legacy_exc) from None
-            if reservation != "replay":
+            if reservation not in {"replay", "resume"}:
                 raise FindingDecisionError(
                     409, "idempotencia_conflictiva",
                     "La clave de idempotencia ya se usó con una solicitud distinta.",
@@ -969,6 +1021,14 @@ class FindingDecisionService:
             result["reused"] = True
             return result
 
+        resumed = reservation == "resume"
+        if resumed:
+            # The previous attempt of this exact request died with its lease
+            # expired. The same request continues: the branch checkpoint is
+            # reused and the human decision is not taken again.
+            request_id = existing["request_id"]
+            event_id = existing["event_id"]
+
         branch_result: BranchExecutionResult | None = None
         publication: PublicationOutcome | None = None
         publication_audit: SecurityAuditEntry | None = None
@@ -979,16 +1039,21 @@ class FindingDecisionService:
                         409, "fuente_no_verificable",
                         "No se conoce un repositorio configurado y fijado para el hallazgo.",
                     )
-                branch_result = self.code_action.create_verification_branch(
-                    repo=origin.repository,
-                    base_branch=origin.base_branch,
-                    target_branch=selected_branch,
-                    file_path=candidate.file_path,
-                    original_excerpt=original_excerpt,
-                    suggested_code=effective_code,
-                    finding_id=finding_id,
-                    actor=actor_id,
-                )
+                if resumed:
+                    branch_result = self._resumed_branch(
+                        project_id=project_id, run_id=run_id, finding_id=finding_id,
+                    )
+                if branch_result is None:
+                    branch_result = self.code_action.create_verification_branch(
+                        repo=origin.repository,
+                        base_branch=origin.base_branch,
+                        target_branch=selected_branch,
+                        file_path=candidate.file_path,
+                        original_excerpt=original_excerpt,
+                        suggested_code=effective_code,
+                        finding_id=finding_id,
+                        actor=actor_id,
+                    )
                 if branch_result.execution_mode not in {"live", "sandbox"}:
                     raise FindingDecisionError(503, "resultado_de_rama_invalido", "El adaptador no confirmó el modo de ejecución.")
                 publication, publication_audit = self._publish_approved_branch(
@@ -1002,7 +1067,7 @@ class FindingDecisionService:
                 "approve": "approved", "reject": "rejected", "request_changes": "changes_requested",
             }[decision]
             result: dict[str, object] = {
-                "reused": False,
+                "reused": resumed,
                 "audit_event_id": f"audit-{event_id}",
                 "decision_status": decision_status,
                 "branch_name": branch_result.branch_name if branch_result else None,

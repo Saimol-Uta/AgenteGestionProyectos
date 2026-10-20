@@ -175,3 +175,53 @@ test("una publicación parcial ofrece reintento con la misma clave de idempotenc
   expect(api.findingDecisionRequests[1].idempotencyKey)
     .toBe(api.findingDecisionRequests[0].idempotencyKey);
 });
+
+test("una recarga conserva la clave de idempotencia y el reintento no es una segunda aprobación", async ({ page }) => {
+  const api = await installApi(page, {
+    authenticated: true,
+    capabilities: ["quality:decide"],
+    findingDetailPayload: detailWithChain,
+    decisionPublicationInDetail: true,
+    decisionPayload: {
+      reused: false,
+      audit_event_id: "audit-finding-g4-0003",
+      decision_status: "approved",
+      branch_name: "quality/finding-candidate-g4",
+      branch_url: "sandbox://branches/quality/finding-candidate-g4",
+      commit_sha_applied: "d".repeat(64),
+      suggested_code: "const token = readToken().trim();",
+      improvement_summary: "Normaliza el valor de entrada antes de usarlo.",
+      execution_mode: "sandbox",
+      publication_status: "partial",
+      publication_error_code: "pull_request_no_confirmado",
+      publication_error_message: "No se pudo confirmar la creación del pull request.",
+      pull_request_number: null,
+      pull_request_url: null,
+      pull_request_state: null,
+      pull_request_simulated: null,
+      patch_review_id: patchReview.review_id,
+      patch_sha256: patchReview.patch_sha256,
+    },
+  });
+
+  await openFinding(page);
+  await page.getByRole("button", { name: "Aprobar y crear rama" }).click();
+  await expect(page.getByRole("region", { name: "Publicación del pull request" })
+    .getByText("Publicación parcial")).toBeVisible();
+  await expect.poll(() => api.findingDecisionRequests.length).toBe(1);
+  const firstKey = api.findingDecisionRequests[0].idempotencyKey;
+  expect(firstKey).toBeTruthy();
+
+  // The manager reloads the page: the component is new, the browser is not.
+  await page.reload();
+  await openFinding(page);
+
+  const publication = page.getByRole("region", { name: "Publicación del pull request" });
+  await expect(publication.getByText("Publicación parcial")).toBeVisible();
+  await publication.getByRole("button", { name: "Reintentar la publicación" }).click();
+
+  await expect.poll(() => api.findingDecisionRequests.length).toBe(2);
+  expect(api.findingDecisionRequests[1].idempotencyKey).toBe(firstKey);
+  // The replay is the same request: the body is identical.
+  expect(api.findingDecisionRequests[1].body).toBe(api.findingDecisionRequests[0].body);
+});

@@ -144,6 +144,77 @@ function EligibilityBlock({ eligibility }: { eligibility: ApprovalEligibilityVie
   );
 }
 
+/**
+ * The idempotency key of an approval survives a reload and another tab, so the
+ * retry of an interrupted publication is the very same request and never a
+ * second human approval.
+ *
+ * The scope is narrow: the actor, the project, the repository, the run, the
+ * finding and the edited correction. The correction never travels in clear:
+ * only its digest is part of the scope, and the stored value is the
+ * idempotency key alone. No token, no session secret and no code are stored.
+ */
+const APPROVAL_STORAGE_PREFIX = "g3:approval:";
+
+function digestIdentity(value: string): string {
+  // FNV-1a and djb2 together: a stable digest that only scopes the stored
+  // key. It is never sent anywhere and it never carries the correction.
+  let fnv = 0x811c9dc5;
+  let djb = 5381;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    fnv ^= code;
+    fnv = Math.imul(fnv, 0x01000193) >>> 0;
+    djb = (Math.imul(djb, 33) + code) >>> 0;
+  }
+  return `${fnv.toString(16).padStart(8, "0")}${djb.toString(16).padStart(8, "0")}`;
+}
+
+function approvalScopeKey(
+  actor: string | null | undefined,
+  projectId: string,
+  repositoryId: string | null,
+  runId: string,
+  findingId: string,
+  editedCode: string | null,
+): string {
+  return [
+    APPROVAL_STORAGE_PREFIX,
+    actor || "sesion-sin-actor",
+    projectId,
+    repositoryId || "sin-repositorio",
+    runId,
+    findingId,
+    digestIdentity(editedCode ?? ""),
+  ].join("|");
+}
+
+function readStoredApprovalKey(scopeKey: string): string | null {
+  try {
+    const stored = window.localStorage.getItem(scopeKey);
+    return stored && stored.trim() ? stored : null;
+  } catch {
+    // The browser refuses the storage: the retry keeps working in memory.
+    return null;
+  }
+}
+
+function writeStoredApprovalKey(scopeKey: string, key: string): void {
+  try {
+    window.localStorage.setItem(scopeKey, key);
+  } catch {
+    // The storage is unavailable: the request still carries the key.
+  }
+}
+
+function clearStoredApprovalKey(scopeKey: string): void {
+  try {
+    window.localStorage.removeItem(scopeKey);
+  } catch {
+    // The storage is unavailable: nothing was stored to remove.
+  }
+}
+
 /** The publication receipt, or the partial failure that has to be retried. */
 function PublicationBlock({
   publication,
@@ -260,6 +331,16 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
     projectId, repositoryId, detail.run_id, detail.finding_id,
     codeEdited ? editedCode : null,
   ]);
+  // The browser scope of the idempotency key. It is narrow on purpose: the
+  // actor, the project, the repository, the run, the finding and the digest
+  // of the edited correction.
+  const approvalScope = useMemo(
+    () => approvalScopeKey(
+      session?.actor, projectId, repositoryId, detail.run_id, detail.finding_id,
+      codeEdited ? editedCode : null,
+    ),
+    [session?.actor, projectId, repositoryId, detail.run_id, detail.finding_id, codeEdited, editedCode],
+  );
 
   useEffect(() => {
     if (!codeEdited || !canDecide || !session?.csrf_token) {
@@ -295,7 +376,14 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
       ? { decision: "approve" as const, suggested_code_override: editedCode ?? undefined }
       : { decision: "approve" as const };
     if (approveKey.current === null || approveKey.current.identity !== approvalIdentity) {
-      approveKey.current = { identity: approvalIdentity, key: crypto.randomUUID() };
+      // The key of an approval survives a reload and another tab: the retry of
+      // an interrupted publication is the same request, never a new approval.
+      const stored = readStoredApprovalKey(approvalScope);
+      const key = stored ?? crypto.randomUUID();
+      if (!stored) {
+        writeStoredApprovalKey(approvalScope, key);
+      }
+      approveKey.current = { identity: approvalIdentity, key };
     }
     const idempotencyKey = approveKey.current.key;
     submitting.current = true;
@@ -310,6 +398,10 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
         repositoryId,
       });
       setBackendDecision(response);
+      if (response.publication_status === "published") {
+        // The publication is confirmed: the request will never be replayed.
+        clearStoredApprovalKey(approvalScope);
+      }
       notify(`Decisión del backend: ${response.decision_status}.`, "success");
     } catch (error) {
       notify(error instanceof Error ? error.message : "No se pudo registrar la decisión del hallazgo.", "error");

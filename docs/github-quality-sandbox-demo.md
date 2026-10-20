@@ -71,13 +71,33 @@ review of another patch is never presented as a review of the edit.
 | `partial` | The branch and the commit exist, the pull request failed | The error code and message, plus **Reintentar la publicación** |
 
 The retry reuses the **same idempotency key**: it recovers the publication
-instead of asking for a second human approval.
+instead of asking for a second human approval. The key survives a reload and
+another tab: it is kept in narrowly scoped browser storage (the actor, the
+project, the repository, the run, the finding and the digest of the edited
+correction), never in clear for the correction and never together with a token
+or a session secret. A browser that refuses the storage keeps the key in
+memory.
 
 A sandbox pull request carries a `sandbox://` address and the state
 `simulated`. The interface renders it as plain text, never as a clickable
 link, so it can never be read as a real pull request.
 
-## 7. Integrated sandbox proof
+## 7. When the attempt was abandoned
+
+If the process died between the branch and the pull request, the backend keeps
+the attempt reserved with a bounded lease (60 seconds). The interface reports
+what the backend answers:
+
+| Answer | Meaning | What the manager does |
+|--------|---------|------------------------|
+| `decision_en_curso` | the previous attempt still holds its lease; the message says until when | wait for that instant and retry with the same key |
+| `decision_abandonada` | the previous attempt expired and owns a branch | retry with the **same** idempotency key; the branch and its commit are reused |
+| `revision_independiente_requerida` | the review of the correction is missing, unfavorable or no longer covers the patch | the approval is blocked again, exactly as before |
+
+The retry never becomes a second approval: the human decision, the branch and
+the commit are taken once.
+
+## 8. Integrated sandbox proof
 
 The integrated demonstration runs the real React application against the real
 FastAPI application, the real SQLite storage and the real GitHub sandbox
@@ -109,7 +129,7 @@ missing or partial publication:
 | Ledger | `finding_publications` with stage `published` and one attempt |
 | Audit | `web:finding_publication`, decision `granted`, with the pull request number |
 
-## 8. Checklist
+## 9. Checklist
 
 - [ ] The detail exposes the review, the eligibility and the publication.
 - [ ] The approval is enabled only when the backend says the action is eligible.
@@ -117,4 +137,6 @@ missing or partial publication:
 - [ ] An edited correction is evaluated again by the backend.
 - [ ] A simulated pull request is marked as simulated and is not clickable.
 - [ ] A partial publication offers a retry with the same idempotency key.
+- [ ] The retry after a reload keeps the same key and is not a second approval.
+- [ ] An abandoned attempt is only recovered by its own key, after its lease.
 - [ ] No external write, no real Gemini, no push and no merge.

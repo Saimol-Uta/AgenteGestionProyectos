@@ -727,6 +727,26 @@ class ProjectOrchestrator:
                 self.sqlite.save_findings(run_id, candidate_findings, escalation_decisions)
             if verifications:
                 self.sqlite.save_verifications(run_id, verifications)
+            # The correction of every verified finding is reviewed
+            # independently of the defect it answers, exactly as in the legacy
+            # path. Without this review the approval chain of a
+            # repository-scoped finding stays unreachable: a confirmed defect
+            # is never a review of the correction.
+            verified_ids = {item.finding_id for item in verifications}
+            verified_findings = [
+                finding
+                for group in (
+                    confirmed_findings, rejected_findings,
+                    insufficient_findings, pending_findings,
+                )
+                for finding in group
+                if finding.id in verified_ids
+            ]
+            self._review_verified_patches(
+                run_id=run_id, proj_id=proj_id, snapshot=snapshot,
+                findings=verified_findings, provider=self.verificador_provider,
+                coordinator=coordinator, config=self.config,
+            )
 
         # ================= STAGE 4: Policy Evaluation & Report (Aprobador) =================
         stg4_start = time.time()
@@ -949,6 +969,42 @@ class ProjectOrchestrator:
                 logging.getLogger(__name__).warning("manager_notification_failed run_id=%s", run_id)
         return run
 
+    @staticmethod
+    def _captured_sources(snapshot: Any) -> list[Any]:
+        """Every captured file of the snapshot, legacy and repository scoped."""
+        snippets = list(getattr(snapshot, "code_diffs", []) or [])
+        for result in getattr(snapshot, "repository_results", []) or []:
+            snippets.extend(getattr(result, "code_diffs", []) or [])
+        return snippets
+
+    @staticmethod
+    def _same_repository(snippet: Any, finding: Any) -> bool:
+        """Whether a captured file belongs to the repository of the finding.
+
+        A repository-scoped finding only accepts the source of its own
+        repository: a file captured elsewhere never becomes its patch base.
+        """
+        def identity_of(item: Any):
+            identity = getattr(item, "repository_identity", None)
+            if identity is None:
+                provenance = getattr(item, "provenance", None)
+                identity = getattr(provenance, "repository_identity", None) if provenance else None
+            return identity
+
+        finding_identity = identity_of(finding)
+        snippet_identity = identity_of(snippet)
+        if finding_identity is None and snippet_identity is None:
+            # Legacy single-repository capture: the commit and the file path
+            # already identify the source.
+            return True
+        if finding_identity is None or snippet_identity is None:
+            return False
+        return (
+            finding_identity.id == snippet_identity.id
+            and finding_identity.owner.casefold() == snippet_identity.owner.casefold()
+            and finding_identity.repo.casefold() == snippet_identity.repo.casefold()
+        )
+
     def _review_patches(
         self, *, run_id: str, proj_id: str, snapshot: Any,
         findings: list[Any], verifier_agent: Any,
@@ -957,6 +1013,7 @@ class ProjectOrchestrator:
         from agente_gestion.domain.code_action import CodeSourceSnapshot
 
         service = PatchReviewService(self.sqlite, verifier_agent)
+        sources = self._captured_sources(snapshot)
         reviews: list[Any] = []
         for finding in findings:
             suggested = getattr(finding, "suggested_code", "") or ""
@@ -966,11 +1023,12 @@ class ProjectOrchestrator:
             commit_sha = (getattr(finding, "commit_sha", "") or "").lower()
             file_path = getattr(finding, "file_path", "") or ""
             complete = [
-                snippet for snippet in snapshot.code_diffs
+                snippet for snippet in sources
                 if snippet.evidence_scope == "full_file" and snippet.is_complete
                 and not snippet.truncated
                 and (snippet.commit_sha or "").lower() == commit_sha
                 and snippet.file_path == file_path
+                and self._same_repository(snippet, finding)
             ]
             if len(complete) != 1:
                 continue
@@ -997,6 +1055,41 @@ class ProjectOrchestrator:
                 # review, and the approval stays blocked.
                 continue
         return reviews
+
+    def _review_verified_patches(
+        self, *, run_id: str, proj_id: str, snapshot: Any, findings: list[Any],
+        provider: Any, coordinator: Any, config: Any,
+    ) -> list[Any]:
+        """Review the corrections of the findings a repository stage verified.
+
+        The independent verifier that judged the defect also judges its
+        correction, exactly as in the legacy path: without this review the
+        approval chain of a repository-scoped finding is unreachable, because
+        a confirmed defect is never a review of the correction.
+        """
+        if not findings or provider is None:
+            return []
+        simulated = bool(
+            getattr(provider, "is_simulated", False) or getattr(config, "is_simulated", False)
+        )
+        if not simulated:
+            if not getattr(config, "allow_remote_ai", False):
+                return []
+            if not getattr(provider, "api_key", None):
+                return []
+        budget = getattr(coordinator, "budget_tracker", None)
+        if budget is not None and not budget.can_call():
+            return []
+        agent = VerifierAgent(
+            provider=provider,
+            model=getattr(provider, "model", "gemini-2.5-flash"),
+            coordinator=coordinator,
+            timeout_seconds=getattr(config, "verifier_timeout_seconds", 120.0),
+        )
+        return self._review_patches(
+            run_id=run_id, proj_id=proj_id, snapshot=snapshot,
+            findings=findings, verifier_agent=agent,
+        )
 
     def _persist_proposals(self, run, draft, rules, capture, evidence, limitations, risks=None):
         """Catalogue recommendations only; pure fact checks do not prove chronology."""

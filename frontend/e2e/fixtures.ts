@@ -842,6 +842,7 @@ export async function installApi(page: Page, options: {
   approvalEligibilityStatus?: number;
   decisionPayload?: unknown;
   decisionStatus?: number;
+  decisionPublicationInDetail?: boolean;
 } = {}) {
   let authenticated = options.authenticated ?? false;
 
@@ -880,6 +881,7 @@ export async function installApi(page: Page, options: {
     idempotencyKey: string | null;
   }> = [];
   const findingApprovalRequests: Array<{ path: string; body: string | null; csrfToken: string | null }> = [];
+  let lastDecisionPayload: Record<string, unknown> | null = null;
   const loginStatus = options.loginStatus ?? 200;
   const sessionCapabilities = options.capabilities ?? [];
 
@@ -1361,7 +1363,7 @@ export async function installApi(page: Page, options: {
         await json(route, { error: { code: "decision_refused", message: "El backend rechazó la decisión." } }, options.decisionStatus);
         return;
       }
-      await json(route, options.decisionPayload ?? {
+      const decisionPayload = options.decisionPayload ?? {
         reused: false,
         audit_event_id: "audit-finding-g4-0001",
         decision_status: "approved",
@@ -1380,12 +1382,41 @@ export async function installApi(page: Page, options: {
         pull_request_simulated: true,
         patch_review_id: patchReview.review_id,
         patch_sha256: patchReview.patch_sha256,
-      });
+      };
+      lastDecisionPayload = decisionPayload as Record<string, unknown>;
+      await json(route, decisionPayload);
       return;
     }
 
     if (path.endsWith("/runs/run-current/findings/finding-candidate")) {
-      await json(route, options.findingDetailPayload ?? findingDetail);
+      const detailPayload = (options.findingDetailPayload ?? findingDetail) as Record<string, unknown>;
+      if (options.decisionPublicationInDetail && lastDecisionPayload) {
+        // The detail reports the publication of the last decision, so a
+        // reload shows the same partial publication the manager saw, with the
+        // decision that was already recorded.
+        await json(route, {
+          ...detailPayload,
+          decision_status: lastDecisionPayload.decision_status ?? detailPayload.decision_status,
+          branch_name: lastDecisionPayload.branch_name ?? detailPayload.branch_name,
+          branch_url: lastDecisionPayload.branch_url ?? detailPayload.branch_url,
+          commit_sha_applied:
+            lastDecisionPayload.commit_sha_applied ?? detailPayload.commit_sha_applied,
+          execution_mode: lastDecisionPayload.execution_mode ?? detailPayload.execution_mode,
+          publication: {
+            publication_status: lastDecisionPayload.publication_status ?? "not_requested",
+            publication_error_code: lastDecisionPayload.publication_error_code ?? null,
+            publication_error_message: lastDecisionPayload.publication_error_message ?? null,
+            pull_request_number: lastDecisionPayload.pull_request_number ?? null,
+            pull_request_url: lastDecisionPayload.pull_request_url ?? null,
+            pull_request_state: lastDecisionPayload.pull_request_state ?? null,
+            pull_request_simulated: lastDecisionPayload.pull_request_simulated ?? null,
+            patch_review_id: lastDecisionPayload.patch_review_id ?? null,
+            patch_sha256: lastDecisionPayload.patch_sha256 ?? null,
+          },
+        });
+        return;
+      }
+      await json(route, detailPayload);
       return;
     }
 

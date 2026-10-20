@@ -440,12 +440,23 @@ class MultiRepoOrchestrationTests(unittest.TestCase):
         self.assertIsNone(report.ci_result)
         quality_requests = [request for request in self.provider.requests if request.role == "revisor"]
         verifier_requests = [request for request in self.provider.requests if request.role == "verificador"]
+        # The independent verifier judges the defect and, separately, the
+        # correction that answers it: one call of each kind per repository.
+        verification_requests = [
+            request for request in verifier_requests
+            if request.schema_name != "patch_review_output_v1"
+        ]
+        review_requests = [
+            request for request in verifier_requests
+            if request.schema_name == "patch_review_output_v1"
+        ]
         self.assertEqual(len(quality_requests), 2)
-        self.assertEqual(len(verifier_requests), 2)
+        self.assertEqual(len(verification_requests), 2)
+        self.assertEqual(len(review_requests), 2)
         for request in quality_requests:
             self.assertEqual(request.max_generation_tokens, 768)
         self.assertEqual(sum(request.max_generation_tokens for request in quality_requests), 1536)
-        self.assertEqual(sum(request.max_generation_tokens for request in verifier_requests), 1024)
+        self.assertEqual(sum(request.max_generation_tokens for request in verification_requests), 1024)
         report_request = next(request for request in self.provider.requests if request.role == "aprobador")
         self.assertNotIn("repository_results", report_request.evidences)
         self.assertIsNone(report_request.evidences.get("ci_result"))
@@ -460,13 +471,22 @@ class MultiRepoOrchestrationTests(unittest.TestCase):
             self.assertEqual(
                 scope["ci_result"]["repository_identity"]["id"], repo_id,
             )
-        for request in verifier_requests:
+        for request in verification_requests:
             scope = request.evidences["repository_scope"]
             repo_id = scope["identity"]["id"]
             finding = request.evidences["findings"][0]
             self.assertTrue(finding["id"].startswith(f"{repo_id}::{expected[repo_id]}::"))
             self.assertEqual(finding["repository_identity"]["id"], repo_id)
             self.assertEqual(request.evidences["code_snippets"][0]["commit_sha"], expected[repo_id])
+        for request in review_requests:
+            # The correction is judged with its own repository, commit and file.
+            patch = request.evidences["patch"]
+            repo_id = "backend" if patch["repository"] == "Josu-F1/hormigestion-backend" else "frontend"
+            self.assertEqual(patch["commit_sha"], expected[repo_id])
+            self.assertEqual(patch["file_path"], "src/shared.py")
+            self.assertEqual(
+                request.evidences["finding"]["commit_sha"], expected[repo_id],
+            )
         self.assertIsNone(by_id["frontend"].ci_result.metrics_artifact.metrics.test_suites)
         self.assertEqual(by_id["frontend"].ci_result.metrics_artifact.metrics.e2e_status, "not_implemented")
 
