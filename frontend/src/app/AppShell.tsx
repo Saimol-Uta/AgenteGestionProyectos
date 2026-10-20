@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useProject, useProjects, useSystemHealth } from "../api/queries";
-import { useWorkspace } from "./WorkspaceContext";
+import { preferredProjectId, useWorkspace } from "./WorkspaceContext";
 import { useSession } from "../features/auth/SessionProvider";
 import { LoginDialog } from "../features/auth/LoginDialog";
 import { useTheme } from "../features/theme/ThemeProvider";
@@ -281,7 +281,9 @@ export function AppShell() {
 
   useEffect(() => {
     if (projects.length && !selectedProjectId) {
-      setSelectedProjectId(projects[0].id);
+      // The list holds only the projects this session may access, so the
+      // preferred one is selected only when the manager is allowed to see it.
+      setSelectedProjectId(preferredProjectId(projects));
     }
   }, [projects, selectedProjectId, setSelectedProjectId]);
 
