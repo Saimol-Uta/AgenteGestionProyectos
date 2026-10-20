@@ -53,8 +53,8 @@ test("controlled G1 validation over an isolated copy of the real HORMIGESTION da
 
   // 1. Analysis prepared and confirmed from the browser.
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
-  await expect(page.getByRole("heading", { name: "Revisión de configuración y fuentes" })).toBeVisible();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
+  await expect(page.getByRole("heading", { name: "Qué se va a revisar" })).toBeVisible();
   await expect(page.getByText("Reglas de propuestas cargadas")).toBeVisible();
 
   const confirmed = page.waitForResponse(

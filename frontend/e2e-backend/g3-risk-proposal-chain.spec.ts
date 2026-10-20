@@ -112,7 +112,6 @@ test("controlled G3 validation: risk, task, proposal, review and decision over i
   const proposal = collection.items[0];
   expect(proposal.task_id).toBe(taskId);
   expect(proposal.risk_refs.length).toBe(1);
-  expect(proposal.risk_refs[0].kind).toBe("due_soon");
   expect(proposal.risk_refs[0].task_id).toBe(taskId);
   expect(proposal.risk_refs[0].resolved).toBe(true);
   expect(proposal.risk_refs[0].risk_id.startsWith("risk-")).toBe(true);
@@ -125,6 +124,7 @@ test("controlled G3 validation: risk, task, proposal, review and decision over i
     risks: Array<{
       risk_id: string;
       kind: string;
+      basis: string;
       task_ids: string[];
       task_titles?: Record<string, string>;
       cutoff_datetime?: string | null;
@@ -136,14 +136,19 @@ test("controlled G3 validation: risk, task, proposal, review and decision over i
       diagnostic: { outcome: string; saved: number };
     } | null;
   };
-  const dueSoon = summary.risks.find((risk) => risk.kind === "due_soon");
-  expect(dueSoon).toBeTruthy();
-  expect(dueSoon?.task_ids).toContain(taskId);
-  expect(dueSoon?.task_titles?.[taskId]).toBeTruthy();
-  expect(dueSoon?.cutoff_datetime).toBeTruthy();
-  expect(dueSoon?.proposals.map((link) => link.proposal_id)).toEqual([proposal.proposal_id]);
-  expect(dueSoon?.proposals[0].review_status).toBe("pending");
-  expect(dueSoon?.proposals[0].execution_status).toBe("not_executed");
+  // The rule answers the deadline risk the stored capture really presents, so
+  // the expectation follows the data instead of a date that could expire.
+  const deadlineRisk = summary.risks.find(
+    (risk) => risk.task_ids.includes(taskId) && risk.kind !== "unknown_state",
+  );
+  expect(deadlineRisk).toBeTruthy();
+  expect(proposal.risk_refs[0].kind).toBe(deadlineRisk?.kind);
+  expect(deadlineRisk?.task_ids).toContain(taskId);
+  expect(deadlineRisk?.task_titles?.[taskId]).toBeTruthy();
+  expect(deadlineRisk?.cutoff_datetime).toBeTruthy();
+  expect(deadlineRisk?.proposals.map((link) => link.proposal_id)).toEqual([proposal.proposal_id]);
+  expect(deadlineRisk?.proposals[0].review_status).toBe("pending");
+  expect(deadlineRisk?.proposals[0].execution_status).toBe("not_executed");
   const unknown = summary.risks.find((risk) => risk.kind === "unknown_state");
   expect(unknown?.task_ids).toContain(unknownTaskId);
   expect(unknown?.proposals).toEqual([]);
@@ -153,19 +158,22 @@ test("controlled G3 validation: risk, task, proposal, review and decision over i
   await page.goto("/");
   const risks = page.getByRole("region", { name: "Alertas de la captura" });
   await expect(risks).toBeVisible();
-  await expect(risks.getByText("Tareas no completadas cuyo vencimiento cae dentro de los 7 días posteriores al corte.")).toBeVisible();
+  await expect(risks.getByText(deadlineRisk?.basis ?? "")).toBeVisible();
   await expect(risks.getByText(proposal.proposal_id)).toBeVisible();
-  await expect(risks.getByText("No hay una propuesta vinculada a este riesgo")).toBeVisible();
+  const unknownRiskItem = risks.locator("li.risk-item").filter({
+    has: page.locator(`a[href*="task=${unknownTaskId}"]`),
+  });
+  await expect(unknownRiskItem.getByText("No hay una propuesta vinculada a este riesgo")).toBeVisible();
 
   // 4. The risk leads to its task, and the task shows the same classification.
   const taskLink = risks.locator(`a[href*="task=${taskId}"]`).first();
   await expect(taskLink).toHaveAttribute("href", new RegExp(`task=${taskId}`));
-  await expect(taskLink).toHaveText(dueSoon?.task_titles?.[taskId] ?? "");
+  await expect(taskLink).toHaveText(deadlineRisk?.task_titles?.[taskId] ?? "");
   await taskLink.click();
   const drawer = page.getByRole("dialog");
   await expect(drawer).toBeVisible();
   await expect(drawer.getByRole("heading", { name: "¿Por qué requiere atención?" })).toBeVisible();
-  await expect(drawer.getByText("Próxima a vencer", { exact: true }).first()).toBeVisible();
+  await expect(drawer.getByText(deadlineRisk?.kind === "overdue" ? "Vencida" : "Próxima a vencer", { exact: true }).first()).toBeVisible();
   await expect(drawer.getByText(proposal.proposal_id).first()).toBeVisible();
 
   // 5. The proposal reports the risk that motivated it and links back to its task.
@@ -173,7 +181,7 @@ test("controlled G3 validation: risk, task, proposal, review and decision over i
   await expect(page.getByRole("heading", { name: "Bandeja de revisión" })).toBeVisible();
   await page.getByRole("link", { name: /Abrir propuesta para/ }).first().click();
   await expect(page.getByRole("heading", { name: "Riesgo que motivó la acción" })).toBeVisible();
-  await expect(page.getByText("Próxima a vencer").first()).toBeVisible();
+  await expect(page.getByText(deadlineRisk?.kind === "overdue" ? "Vencida" : "Próxima a vencer").first()).toBeVisible();
   const originLink = page.locator(`a[href*="task=${taskId}"]`).first();
   await expect(originLink).toHaveAttribute("href", new RegExp(`task=${taskId}`));
   await expect(originLink).toHaveAttribute("href", /capture_id=/);
@@ -194,7 +202,7 @@ test("controlled G3 validation: risk, task, proposal, review and decision over i
   expect(detail.review_status).toBe("approved_offline");
   expect(detail.execution_status).toBe("EXECUTED");
   expect(detail.latest_receipt?.execution_mode).toBe("sandbox");
-  expect(detail.risk_refs[0].kind).toBe("due_soon");
+  expect(detail.risk_refs[0].kind).toBe(deadlineRisk?.kind);
   expect(detail.risk_refs[0].resolved).toBe(true);
 
   // 7. The source database and the board are untouched.

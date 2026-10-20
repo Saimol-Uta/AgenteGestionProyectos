@@ -38,10 +38,10 @@ test("a web analysis publishes the owner rules as a reviewable proposal", async 
   await login(context);
 
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
 
   await expect(
-    page.getByRole("heading", { name: "Revisión de configuración y fuentes" }),
+    page.getByRole("heading", { name: "Qué se va a revisar" }),
   ).toBeVisible();
   await expect(page.getByText("Reglas de propuestas cargadas")).toBeVisible();
   await expect(

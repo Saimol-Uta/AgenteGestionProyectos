@@ -40,8 +40,35 @@ BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = 4175
 TEST_OPERATOR_TOKEN = "g3-demo-operator-token-never-use-in-production"
 DEMO_RULE_ID = "demo-g3-riesgo-proxima-vencimiento"
-DEMO_RISK_KIND = "due_soon"
 DEMO_MARKER = "DEMOSTRACION G3 - CASO DE PRUEBA, NO ES UNA CORRECCION OPERATIVA"
+DEMO_DUE_SOON_DAYS = 7
+
+
+def _demo_risk_kind() -> str:
+    """The risk type the real capture actually presents for the demonstration task.
+
+    The demonstration rule answers a deterministic risk of the stored capture.
+    A task whose deadline passed moves from `due_soon` to `overdue`, so the
+    rule follows the persisted data instead of a date that expired; the product
+    decides the classification, this harness only reads it.
+    """
+    from agente_gestion.domain.snapshot import WeeklySnapshot
+    from agente_gestion.domain.tasks import calculate_task_metrics
+
+    with _read_only_connection() as connection:
+        row = _latest_capture(connection)
+        # The harness connection returns plain tuples: capture_id, project_id,
+        # cutoff_datetime, captured_at, data_json, content_hash.
+        payload = json.loads(row[4])
+    snapshot = WeeklySnapshot.model_validate(payload)
+    metrics = calculate_task_metrics(
+        snapshot.tasks, snapshot.cutoff_datetime, "America/Guayaquil", DEMO_DUE_SOON_DAYS,
+    )
+    if DEMO_TASK_ID in metrics.overdue_card_ids:
+        return "overdue"
+    if DEMO_TASK_ID in metrics.due_soon_card_ids:
+        return "due_soon"
+    raise RuntimeError("The demonstration task has no deadline risk in the stored capture.")
 
 
 def _preflight() -> tuple[Path, Path]:
@@ -71,6 +98,7 @@ def _assert_owned_port_available() -> None:
 
 def _write_demo_rules(run_root: Path) -> str:
     """Write the demonstration rules file, now declaring the risk type it answers."""
+    risk_kind = _demo_risk_kind()
     path = run_root / "monitoring-rules-DEMO-g3.json"
     path.write_text(json.dumps({
         "project_id": PROJECT_ID,
@@ -80,11 +108,11 @@ def _write_demo_rules(run_root: Path) -> str:
                 "task_ids": [DEMO_TASK_ID],
                 "field": "due_date",
                 "allowed_values": [DEMO_PROPOSED_DUE],
-                "risk_kind": DEMO_RISK_KIND,
+                "risk_kind": risk_kind,
                 "rationale": (
                     f"[{DEMO_MARKER}] La tarjeta {DEMO_TASK_ID} sigue en curso con fecha limite "
                     f"{DEMO_CURRENT_DUE}. La regla declara el tipo de riesgo "
-                    f"'{DEMO_RISK_KIND}' y solo existe para verificar el vinculo riesgo, tarea y "
+                    f"'{risk_kind}' y solo existe para verificar el vinculo riesgo, tarea y "
                     "propuesta con datos reales; no afirma que la prorroga sea la correccion "
                     "operativa correcta."
                 ),
@@ -185,7 +213,7 @@ def _build_app(run_root: Path):
         "demo_db": str(run_root / "demo-agente.db"),
         "demo_rule_id": DEMO_RULE_ID,
         "demo_task_id": DEMO_TASK_ID,
-        "demo_risk_kind": DEMO_RISK_KIND,
+        "demo_risk_kind": _demo_risk_kind(),
         "demo_current_due": DEMO_CURRENT_DUE,
         "demo_proposed_due": DEMO_PROPOSED_DUE,
         "demo_marker": DEMO_MARKER,
