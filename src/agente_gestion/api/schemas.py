@@ -275,6 +275,22 @@ class SystemHealth(ApiModel):
     external_writes_enabled: bool = False
 
 
+class AttentionNotice(ApiModel):
+    """One verified reason why a run is not a clean success.
+
+    Every notice is read from a persisted record: the run record, a stage
+    record or the persisted proposals diagnostic. The code states what kind of
+    fact it is so an interface never has to infer a cause, and the message
+    carries the recorded text so no conclusion is invented downstream.
+    """
+    reason_code: str
+    kind: Literal["failure", "attention", "limitation", "unknown"]
+    scope: Literal["run", "stage", "repository"]
+    stage_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    repository_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    message: str
+
+
 class RunSummary(ApiModel):
     run_id: str
     project_id: str
@@ -288,6 +304,7 @@ class RunSummary(ApiModel):
     duration_seconds: float | None = None
     is_simulated: bool | None = None
     report_id: str | None = None
+    attention: list[AttentionNotice] = Field(default_factory=list)
 
 
 class RunDetail(RunSummary):

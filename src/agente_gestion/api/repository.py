@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import re
 import sqlite3
-from typing import Iterator
+from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -37,6 +37,7 @@ from agente_gestion.domain.tasks import TaskState, normalize_datetime_to_tz
 from agente_gestion.api.proposal_diagnostics import proposal_stage_diagnostic
 from agente_gestion.api.schemas import (
     CIRunView,
+    AttentionNotice,
     CaptureHistoryView,
     CaptureProgressPoint,
     CodeExcerpt,
@@ -1074,7 +1075,9 @@ class SQLiteQueryRepository:
             raise DataIntegrityError("Stored run project identifier is unsafe")
         return record
 
-    def _run_summary(self, row: dict[str, object]) -> RunSummary:
+    def _run_summary(
+        self, row: dict[str, object], attention: list[AttentionNotice] | None = None,
+    ) -> RunSummary:
         run_id = safe_identifier(row.get("run_id"))
         project_id = safe_identifier(row.get("project_id"))
         snapshot_id = safe_identifier(row.get("snapshot_id"))
@@ -1105,17 +1108,216 @@ class SQLiteQueryRepository:
             duration_seconds=self._safe_duration(row.get("duration_seconds")),
             is_simulated=is_simulated,
             report_id=report_id,
+            attention=list(attention or []),
         )
+
+    def _stage_rows_for_runs(
+        self, run_ids: list[str],
+    ) -> dict[str, dict[str, dict[str, object]]]:
+        """Stage records of several runs, read with a single query."""
+        if not run_ids:
+            return {}
+        with self._connect() as connection:
+            if connection is None or "stage_results" not in self._tables(connection):
+                return {}
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(stage_results)")}
+            if not {"run_id", "stage_name", "status"}.issubset(columns):
+                return {}
+            placeholders = ",".join("?" for _ in run_ids)
+            rows = connection.execute(
+                f"SELECT * FROM stage_results WHERE run_id IN ({placeholders})",
+                tuple(run_ids),
+            ).fetchall()
+        grouped: dict[str, dict[str, dict[str, object]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["run_id"]), {})[str(row["stage_name"])] = dict(row)
+        return grouped
+
+    def _run_attention(
+        self, rows: list[dict[str, object]],
+    ) -> dict[str, list[AttentionNotice]]:
+        """Verified reasons why each run is not a clean success.
+
+        The projection only reads persisted records: the run row, the stage
+        rows (including the per-repository scopes the stage list does not
+        expose) and the persisted proposals diagnostic. When a stage reports
+        ``needs_attention`` and per-repository records exist, the specific
+        repository reason is reported instead of the aggregate one.
+        """
+        run_ids = [run_id for run_id in (safe_identifier(row.get("run_id")) for row in rows) if run_id]
+        stages_by_run = self._stage_rows_for_runs(run_ids)
+        secrets = self._configured_secrets()
+
+        def recorded(raw: object, fallback: str) -> str:
+            if isinstance(raw, str) and raw.strip():
+                cleaned = sanitize_text(raw, secrets_to_redact=secrets, limit=600)
+                if cleaned and cleaned.strip():
+                    return cleaned.strip()
+            return fallback
+
+        notices_by_run: dict[str, list[AttentionNotice]] = {}
+        for row in rows:
+            run_id = safe_identifier(row.get("run_id"))
+            if run_id is None:
+                continue
+            stages = stages_by_run.get(run_id, {})
+            attention: list[AttentionNotice] = []
+            limitations: list[AttentionNotice] = []
+            unknown: list[AttentionNotice] = []
+            stage_failures: list[AttentionNotice] = []
+            scoped: dict[str, list[dict[str, object]]] = {}
+            for name, record in stages.items():
+                base, separator, repository_id = name.partition(":")
+                if separator and repository_id:
+                    scoped.setdefault(base, []).append(record)
+            for name in self._RUN_STAGES:
+                record = stages.get(name)
+                if record is None:
+                    unknown.append(AttentionNotice(
+                        reason_code="stage_not_recorded",
+                        kind="unknown",
+                        scope="stage",
+                        stage_name=name,
+                        message="La etapa no dejó registro persistido; su resultado se desconoce.",
+                    ))
+                    continue
+                stage_status = str(record.get("status") or "")
+                summary = record.get("output_summary")
+                if name == "proposals" and stage_status == "skipped":
+                    diagnostic = proposal_stage_diagnostic(summary)
+                    if diagnostic.outcome == "not_configured":
+                        limitations.append(AttentionNotice(
+                            reason_code="proposal_rules_not_configured",
+                            kind="limitation",
+                            scope="stage",
+                            stage_name=name,
+                            message=(
+                                "Las reglas de propuestas del propietario no están configuradas; "
+                                "el análisis continuó sin publicar propuestas."
+                            ),
+                        ))
+                    elif diagnostic.outcome == "rules_invalid":
+                        limitations.append(AttentionNotice(
+                            reason_code="proposal_rules_invalid",
+                            kind="limitation",
+                            scope="stage",
+                            stage_name=name,
+                            message=(
+                                "Las reglas de propuestas del propietario no superaron la validación; "
+                                "el análisis continuó sin publicar propuestas."
+                            ),
+                        ))
+                    continue
+                if stage_status == "needs_attention":
+                    repository_notices = self._repository_attention(name, scoped.get(name, []), recorded)
+                    attention.extend(repository_notices or [AttentionNotice(
+                        reason_code="stage_needs_attention",
+                        kind="attention",
+                        scope="stage",
+                        stage_name=name,
+                        message=recorded(
+                            summary,
+                            "La etapa quedó registrada como «requiere atención» sin un resumen persistido.",
+                        ),
+                    )])
+                elif stage_status == "failed":
+                    stage_failures.append(AttentionNotice(
+                        reason_code="stage_failed",
+                        kind="failure",
+                        scope="stage",
+                        stage_name=name,
+                        message=recorded(
+                            record.get("error_message") or summary,
+                            "La etapa quedó registrada como fallida sin un motivo persistido.",
+                        ),
+                    ))
+            failures: list[AttentionNotice] = []
+            if str(row.get("status") or "") == "failed":
+                run_message = recorded(
+                    row.get("error_message"),
+                    "La ejecución quedó registrada como fallida y no dejó un motivo persistido.",
+                )
+                same_stage = next(
+                    (notice for notice in stage_failures if notice.message == run_message), None,
+                )
+                if same_stage is not None:
+                    # The stage already carries the reason; attribute it once.
+                    failures.append(AttentionNotice(
+                        reason_code="run_failed",
+                        kind="failure",
+                        scope="run",
+                        stage_name=same_stage.stage_name,
+                        repository_id=same_stage.repository_id,
+                        message=run_message,
+                    ))
+                    stage_failures = [
+                        notice for notice in stage_failures if notice is not same_stage
+                    ]
+                else:
+                    failures.append(AttentionNotice(
+                        reason_code="run_failed",
+                        kind="failure",
+                        scope="run",
+                        message=run_message,
+                    ))
+            notices_by_run[run_id] = [
+                *failures, *stage_failures, *attention, *limitations, *unknown,
+            ]
+        return notices_by_run
+
+    def _repository_attention(
+        self, stage_name: str, records: list[dict[str, object]], recorded: Any,
+    ) -> list[AttentionNotice]:
+        """Per-repository reasons of one stage, when the repository records exist."""
+        notices: list[AttentionNotice] = []
+        for record in records:
+            repository_id = safe_identifier(str(record.get("stage_name") or "").partition(":")[2])
+            if repository_id is None:
+                continue
+            status = str(record.get("status") or "")
+            if status == "needs_attention":
+                notices.append(AttentionNotice(
+                    reason_code="repository_needs_attention",
+                    kind="attention",
+                    scope="repository",
+                    stage_name=stage_name,
+                    repository_id=repository_id,
+                    message=recorded(
+                        record.get("output_summary"),
+                        "El resultado de la etapa en este repositorio quedó como «requiere atención» "
+                        "sin un resumen persistido.",
+                    ),
+                ))
+            elif status == "failed":
+                notices.append(AttentionNotice(
+                    reason_code="repository_stage_failed",
+                    kind="failure",
+                    scope="repository",
+                    stage_name=stage_name,
+                    repository_id=repository_id,
+                    message=recorded(
+                        record.get("error_message") or record.get("output_summary"),
+                        "El resultado de la etapa en este repositorio quedó como fallido "
+                        "sin un motivo persistido.",
+                    ),
+                ))
+        return notices
 
     def runs(self, project_id: str, page: int, page_size: int) -> tuple[list[RunSummary], int]:
         rows = self._run_rows(project_id)
         total = len(rows)
         start = (page - 1) * page_size
-        return [self._run_summary(row) for row in rows[start:start + page_size]], total
+        selected = rows[start:start + page_size]
+        attention = self._run_attention(selected)
+        return [
+            self._run_summary(row, attention.get(safe_identifier(row.get("run_id")) or "", []))
+            for row in selected
+        ], total
 
     def run_detail(self, run_id: str) -> RunDetail:
         row = self._run_row(run_id)
-        summary = self._run_summary(row)
+        attention = self._run_attention([row]).get(run_id, [])
+        summary = self._run_summary(row, attention)
         raw_error = row.get("error_message")
         error_code = None
         if raw_error:
