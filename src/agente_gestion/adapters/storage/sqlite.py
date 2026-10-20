@@ -1982,8 +1982,14 @@ class SQLiteStorageAdapter(StoragePort):
         suggested_code: str, improvement_summary: str, branch_name: str | None,
         branch_url: str | None, commit_sha_applied: str | None,
         audit_entry: SecurityAuditEntry, recorded_at: str,
+        publication_audit_entry: SecurityAuditEntry | None = None,
     ) -> None:
-        """Commit normalized metadata, immutable decision, audit, and replay receipt together."""
+        """Commit normalized metadata, immutable decision, audit, and replay receipt together.
+
+        The optional publication audit belongs to the same transaction: the
+        decision and the publication that it authorized are never half
+        recorded.
+        """
         conn = self._get_connection()
         try:
             with conn:
@@ -2012,11 +2018,49 @@ class SQLiteStorageAdapter(StoragePort):
                      result_json, recorded_at),
                 )
                 self._insert_security_audit_event(conn, audit_entry)
+                if publication_audit_entry is not None:
+                    self._insert_security_audit_event(conn, publication_audit_entry)
                 conn.execute(
                     "UPDATE finding_decision_requests SET state='completed', result_json=?, updated_at=? "
                     "WHERE request_id=? AND state='processing'",
                     (result_json, recorded_at, request_id),
                 )
+        finally:
+            conn.close()
+
+    def update_finding_decision_receipt(
+        self, *, request_id: str, result_json: str, updated_at: str,
+    ) -> None:
+        """Refresh the replay receipt of a completed decision.
+
+        The decision ledger is append-only and keeps the receipt of the
+        decision as it was taken. Only the replayable request receipt is
+        refreshed, and only for a decision that already completed: a new human
+        decision is never created here.
+        """
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                request = conn.execute(
+                    "SELECT state FROM finding_decision_requests WHERE request_id=?", (request_id,),
+                ).fetchone()
+                if request is None or request["state"] != "completed":
+                    raise FindingDecisionStorageError("decision_receipt_unavailable")
+                conn.execute(
+                    "UPDATE finding_decision_requests SET result_json=?, updated_at=? WHERE request_id=?",
+                    (result_json, updated_at, request_id),
+                )
+        finally:
+            conn.close()
+
+    def append_security_audit_event(self, audit_entry: SecurityAuditEntry) -> None:
+        """Append one audit event to the immutable security log."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._insert_security_audit_event(conn, audit_entry)
         finally:
             conn.close()
 

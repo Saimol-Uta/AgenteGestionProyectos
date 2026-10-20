@@ -3,6 +3,7 @@
 import hashlib
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 from agente_gestion.adapters.storage.sqlite import (
     FindingDecisionStorageError,
@@ -19,6 +20,18 @@ from agente_gestion.application.patch_review import (
     confirmed_defect_verification,
     evaluate_approval_eligibility,
     match_patch_review,
+)
+from agente_gestion.application.finding_publication import (
+    PUBLICATION_BASE_BRANCH,
+    PUBLICATION_NOT_REQUESTED,
+    PUBLICATION_PARTIAL,
+    PublicationError,
+    PublicationOutcome,
+    latest_finding_publication,
+    mark_publication_partial,
+    mark_publication_published,
+    publish_pull_request,
+    record_branch_checkpoint,
 )
 from agente_gestion.domain.security_rbac import SecurityAuditEntry, hash_token_fingerprint
 from agente_gestion.ports.code_action_port import CodeActionPort
@@ -75,6 +88,29 @@ class FindingDecisionService:
         return (
             f" Review {review.review_id} sha256:{review.patch_sha256}"
             f" run:{review.run_id} origin:{review.commit_sha}"
+        )
+
+    @staticmethod
+    def _publication_audit_id(event_id: str, attempts: int) -> str:
+        """One deterministic audit identifier per publication attempt."""
+        return f"audit-{event_id}-publication-{attempts}"
+
+    @staticmethod
+    def _publication_audit_entry(
+        *, event_id: str, project_id: str, finding_id: str, actor_id: str,
+        session_cookie: str | None, reason: str, granted: bool,
+    ) -> SecurityAuditEntry:
+        """The audit record of one publication attempt."""
+        return SecurityAuditEntry(
+            event_id=event_id,
+            project_id=project_id,
+            actor_id=actor_id,
+            role="project_manager_session",
+            permission_checked="web:finding_publication",
+            resource_id=finding_id,
+            decision="granted" if granted else "denied",
+            reason=reason,
+            token_fingerprint=hash_token_fingerprint(session_cookie or ""),
         )
 
     @staticmethod
@@ -587,6 +623,176 @@ class FindingDecisionService:
             ),
         }
 
+    def _publish_approved_branch(
+        self, *, project_id: str, run_id: str, finding_id: str, request_id: str,
+        event_id: str, actor_id: str, idempotency_key: str, origin: FindingActionOrigin,
+        branch_result: BranchExecutionResult, eligibility: ApprovalEligibility,
+        session_cookie: str | None,
+    ) -> tuple[PublicationOutcome, SecurityAuditEntry]:
+        """Persist the branch checkpoint, publish one pull request and audit it.
+
+        The checkpoint of the branch and of the review that authorized it is
+        written before the publication side effect, so an interrupted
+        publication can be recovered without creating a second branch.
+        """
+        repository = origin.repository
+        patch_sha256 = eligibility.patch_sha256 or ""
+        checkpoint = record_branch_checkpoint(
+            self.storage,
+            project_id=project_id, run_id=run_id, finding_id=finding_id,
+            request_id=request_id, event_id=event_id, actor_id=actor_id,
+            idempotency_key=idempotency_key, repository=repository,
+            base_branch=PUBLICATION_BASE_BRANCH, head_branch=branch_result.branch_name,
+            head_commit_sha=branch_result.commit_sha_applied,
+            branch_url=branch_result.branch_url,
+            branch_execution_mode=branch_result.execution_mode,
+            patch_sha256=patch_sha256, patch_review_id=eligibility.review_id,
+        )
+        publication_id = checkpoint["publication_id"]
+        try:
+            outcome = publish_pull_request(
+                code_action=self.code_action, repository=repository,
+                branch_result=branch_result, finding_id=finding_id, actor=actor_id,
+                patch_sha256=patch_sha256,
+            )
+        except PublicationError as exc:
+            partial = mark_publication_partial(
+                self.storage, publication_id=publication_id, error_code=exc.code,
+                error_message=exc.message,
+            )
+            audit = self._publication_audit_entry(
+                event_id=self._publication_audit_id(event_id, partial["attempts"]),
+                project_id=project_id, finding_id=finding_id, actor_id=actor_id,
+                session_cookie=session_cookie,
+                reason=f"Pull request publication refused with code {exc.code}. {exc.message}",
+                granted=False,
+            )
+            return PublicationOutcome(
+                status=PUBLICATION_PARTIAL, error_code=exc.code, error_message=exc.message,
+            ), audit
+        published = mark_publication_published(
+            self.storage, publication_id=publication_id,
+            pull_request_number=outcome.pull_request_number or 0,
+            pull_request_url=outcome.pull_request_url or "",
+            pull_request_state=outcome.pull_request_state or "",
+            pull_request_simulated=bool(outcome.pull_request_simulated),
+        )
+        audit = self._publication_audit_entry(
+            event_id=self._publication_audit_id(event_id, published["attempts"]),
+            project_id=project_id, finding_id=finding_id, actor_id=actor_id,
+            session_cookie=session_cookie,
+            reason=(
+                f"Pull request {outcome.pull_request_number} published against"
+                f" {PUBLICATION_BASE_BRANCH} in {branch_result.execution_mode} mode."
+            ),
+            granted=True,
+        )
+        return outcome, audit
+
+    def _recover_publication(
+        self, *, result: dict[str, object], existing: dict[str, Any], project_id: str,
+        run_id: str, finding_id: str, origin: FindingActionOrigin | None,
+        eligibility: ApprovalEligibility | None, actor_id: str, session_cookie: str | None,
+    ) -> dict[str, object]:
+        """Recover one interrupted publication without a second human decision.
+
+        The authorization is revalidated against the current source and the
+        current review before anything is published, and the persisted branch
+        checkpoint is reused as it is: no branch is created again and no second
+        decision is recorded.
+        """
+        if eligibility is None or not eligibility.authorized:
+            raise FindingDecisionError(
+                409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
+            )
+        checkpoint = latest_finding_publication(
+            self.storage, project_id=project_id, run_id=run_id, finding_id=finding_id,
+        )
+        if checkpoint is None or not checkpoint["branch_url"]:
+            raise FindingDecisionError(
+                503, "publicacion_no_disponible",
+                "No hay un punto de control durable de la rama publicada.",
+            )
+        if (origin is None or not origin.repository
+                or checkpoint["repository"].casefold() != origin.repository.casefold()
+                or checkpoint["patch_sha256"] != eligibility.patch_sha256
+                or checkpoint["patch_review_id"] != eligibility.review_id):
+            raise FindingDecisionError(
+                409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
+            )
+        try:
+            branch_result = BranchExecutionResult(
+                execution_mode=checkpoint["execution_mode"],
+                branch_name=checkpoint["branch_name"],
+                branch_url=checkpoint["branch_url"],
+                commit_sha_applied=checkpoint["commit_sha_applied"],
+            )
+        except ValueError:
+            raise FindingDecisionError(
+                503, "publicacion_no_disponible",
+                "El punto de control durable de la rama publicada no es utilizable.",
+            ) from None
+        publication_id = checkpoint["publication_id"]
+        event_id = existing["event_id"]
+        try:
+            outcome = publish_pull_request(
+                code_action=self.code_action, repository=checkpoint["repository"],
+                branch_result=branch_result, finding_id=finding_id, actor=actor_id,
+                patch_sha256=checkpoint["patch_sha256"],
+            )
+        except PublicationError as exc:
+            partial = mark_publication_partial(
+                self.storage, publication_id=publication_id, error_code=exc.code,
+                error_message=exc.message,
+            )
+            self.storage.append_security_audit_event(self._publication_audit_entry(
+                event_id=self._publication_audit_id(event_id, partial["attempts"]),
+                project_id=project_id, finding_id=finding_id, actor_id=actor_id,
+                session_cookie=session_cookie,
+                reason=f"Pull request publication refused with code {exc.code}. {exc.message}",
+                granted=False,
+            ))
+            result.update(PublicationOutcome(
+                status=PUBLICATION_PARTIAL, error_code=exc.code, error_message=exc.message,
+            ).result_fields())
+            self._refresh_receipt(existing, result)
+            return result
+        published = mark_publication_published(
+            self.storage, publication_id=publication_id,
+            pull_request_number=outcome.pull_request_number or 0,
+            pull_request_url=outcome.pull_request_url or "",
+            pull_request_state=outcome.pull_request_state or "",
+            pull_request_simulated=bool(outcome.pull_request_simulated),
+        )
+        self.storage.append_security_audit_event(self._publication_audit_entry(
+            event_id=self._publication_audit_id(event_id, published["attempts"]),
+            project_id=project_id, finding_id=finding_id, actor_id=actor_id,
+            session_cookie=session_cookie,
+            reason=(
+                f"Pull request {outcome.pull_request_number} recovered against"
+                f" {PUBLICATION_BASE_BRANCH} in {branch_result.execution_mode} mode."
+            ),
+            granted=True,
+        ))
+        result.update(outcome.result_fields())
+        self._refresh_receipt(existing, result)
+        return result
+
+    def _refresh_receipt(self, existing: dict[str, Any], result: dict[str, object]) -> None:
+        """Refresh the replay receipt of a completed decision, without a new one."""
+        try:
+            self.storage.update_finding_decision_receipt(
+                request_id=existing["request_id"],
+                result_json=json.dumps(
+                    result, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                ),
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except FindingDecisionStorageError:
+            # The immutable decision and the durable publication ledger remain
+            # the authority; only the replayable receipt could not be refreshed.
+            pass
+
     def decide(
         self,
         *,
@@ -749,10 +955,23 @@ class FindingDecisionService:
                 result = json.loads(existing["result_json"])
             except (ValueError, TypeError):
                 raise FindingDecisionError(503, "recibo_invalido", "El recibo durable de la decisión no es válido.") from None
+            if (existing.get("decision") == "approve"
+                    and result.get("publication_status") == PUBLICATION_PARTIAL):
+                # The publication was interrupted. The authorization is
+                # revalidated above and the persisted branch checkpoint is
+                # reused: only the pull request is recovered, never the
+                # branch, the commit or the human decision.
+                result = self._recover_publication(
+                    result=result, existing=existing, project_id=project_id, run_id=run_id,
+                    finding_id=finding_id, origin=origin, eligibility=eligibility,
+                    actor_id=actor_id, session_cookie=session_cookie,
+                )
             result["reused"] = True
             return result
 
         branch_result: BranchExecutionResult | None = None
+        publication: PublicationOutcome | None = None
+        publication_audit: SecurityAuditEntry | None = None
         try:
             if decision == "approve":
                 if origin is None or not origin.configured_for_code_action or not origin.repository:
@@ -772,6 +991,13 @@ class FindingDecisionService:
                 )
                 if branch_result.execution_mode not in {"live", "sandbox"}:
                     raise FindingDecisionError(503, "resultado_de_rama_invalido", "El adaptador no confirmó el modo de ejecución.")
+                publication, publication_audit = self._publish_approved_branch(
+                    project_id=project_id, run_id=run_id, finding_id=finding_id,
+                    request_id=request_id, event_id=event_id, actor_id=actor_id,
+                    idempotency_key=idempotency_key, origin=origin,
+                    branch_result=branch_result, eligibility=eligibility,
+                    session_cookie=session_cookie,
+                )
             decision_status = {
                 "approve": "approved", "reject": "rejected", "request_changes": "changes_requested",
             }[decision]
@@ -785,7 +1011,21 @@ class FindingDecisionService:
                 "suggested_code": effective_code,
                 "improvement_summary": candidate.improvement_summary,
                 "execution_mode": branch_result.execution_mode if branch_result else "sandbox",
+                "publication_status": PUBLICATION_NOT_REQUESTED,
+                "publication_error_code": None,
+                "publication_error_message": None,
+                "pull_request_number": None,
+                "pull_request_url": None,
+                "pull_request_state": None,
+                "pull_request_simulated": None,
+                "patch_review_id": None,
+                "patch_sha256": None,
             }
+            if publication is not None:
+                result.update(publication.result_fields())
+            if decision == "approve" and eligibility is not None:
+                result["patch_review_id"] = eligibility.review_id
+                result["patch_sha256"] = eligibility.patch_sha256
             if origin is not None and origin.repository is not None and origin.commit_sha is not None:
                 owner, repository_name = origin.repository.split("/", 1)
                 if origin.repository_identity is not None:
@@ -815,6 +1055,7 @@ class FindingDecisionService:
                 branch_url=branch_result.branch_url if branch_result else None,
                 commit_sha_applied=branch_result.commit_sha_applied if branch_result else None,
                 audit_entry=audit, recorded_at=recorded_at,
+                publication_audit_entry=publication_audit,
             )
             return result
         except FindingDecisionError as exc:

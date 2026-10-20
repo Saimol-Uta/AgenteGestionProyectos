@@ -597,9 +597,12 @@ class OrchestratorTestCase(unittest.TestCase):
         run = orchestrator.execute(snapshot=snapshot)
 
         self.assertEqual(run.stages["verifier"].status, StageStatus.completed)
-        self.assertEqual(len(cloud_provider.captured_requests), 1)
+        # The verifier agent answers twice since the corrective patch review was
+        # added: once for the defect and once for the reviewed correction.
+        self.assertEqual(len(cloud_provider.captured_requests), 2)
         # VerifierAgent must have used configured model "gemini-1.5-pro-custom"
-        self.assertEqual(cloud_provider.captured_requests[0].model, "gemini-1.5-pro-custom")
+        for request in cloud_provider.captured_requests:
+            self.assertEqual(request.model, "gemini-1.5-pro-custom")
 
         report = self.sqlite.get_latest_report("test-proj")
         self.assertIsNotNone(report)
@@ -800,9 +803,12 @@ class OrchestratorTestCase(unittest.TestCase):
         self.assertEqual(len(revisor.captured_requests), 1)
         self.assertEqual(revisor.captured_requests[0].timeout_seconds, 45.0)
 
-        # Verifier request received independent verifier_timeout_seconds (88.0)
-        self.assertEqual(len(verificador.captured_requests), 1)
-        self.assertEqual(verificador.captured_requests[0].timeout_seconds, 88.0)
+        # Verifier request received independent verifier_timeout_seconds (88.0).
+        # The verifier answers twice since the corrective patch review was
+        # added, and every request carries the configured budget.
+        self.assertEqual(len(verificador.captured_requests), 2)
+        for request in verificador.captured_requests:
+            self.assertEqual(request.timeout_seconds, 88.0)
 
 
     def test_large_diffs_do_not_enter_monitoring_and_snapshot_scope_is_preserved(self):

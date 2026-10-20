@@ -391,7 +391,11 @@ class Phase2QualityTests(unittest.TestCase):
             client.close()
 
     def test_direct_approval_requires_corrective_review_even_for_confirmed_defects(self):
-        from agente_gestion.application.finding_decisions import FindingDecisionError, FindingDecisionService
+        from agente_gestion.application.finding_decisions import (
+            APPROVAL_REVIEW_REQUIRED_MESSAGE,
+            FindingDecisionError,
+            FindingDecisionService,
+        )
         from agente_gestion.api.repository import SQLiteQueryRepository
         from agente_gestion.domain.code_action import BranchExecutionResult
 
@@ -428,11 +432,7 @@ class Phase2QualityTests(unittest.TestCase):
                 )
             self.assertEqual((caught.exception.status_code, caught.exception.code),
                              (409, "revision_independiente_requerida"))
-            self.assertEqual(
-                caught.exception.message,
-                "No se puede aprobar ni ejecutar esta corrección de GitHub: requiere una "
-                "revisión independiente vinculada al parche exacto y ese mecanismo aún no está disponible.",
-            )
+            self.assertEqual(caught.exception.message, APPROVAL_REVIEW_REQUIRED_MESSAGE)
             self.assertEqual(port.calls, [])
             self.assertEqual(storage.get_report(REPORT_ID).model_dump_json(), before_report)
             self.assertEqual(storage.get_findings(RUN_ID)[0]["decision_status"], "pending")
