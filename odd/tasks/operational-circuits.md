@@ -56,9 +56,9 @@ Restricciones vigentes: `EXTERNAL_WRITES_ENABLED=false`; sin llamadas LLM reales
 - T5c [S26-S28] complete locally; route=inline; commits `8d8dc1c` (preflight), `8988a4c` (verifier budget), `9b70430` (React identity). RED->GREEN 48 backend tests and18 browser tests plus typecheck. Actual captured source reaches deterministic verifier with8212 estimated tokens, no truncation/network; explicit4096/small-model caps still refuse. Real run remains frozen; validating the fix with Gemini is pending new consent.
 - T5d [S27-S28] complete diagnostic; browser screenshots/reload/persistence and final real-versus-simulated report in `docs/hormigestion-real-diagnostic.md`. Closing94 backend tests plus4 retained independent safety probes passed. Independent verifier PASS (provider/factory agreement, context/identity preservation, refusal data hashes, browser18 and offline actual-source replay). No real eligible actions; no positive sandbox correction was fabricated.
 
-- T6 [S29] complete; route=inline; read label-ID mapping reuses action adapter, API/engine propagation and source identity; observed RED then GREEN. Commit: pending local commit. Risk: item 3 (shared source/config consumers).
-- T7 [S30] complete; route=inline; selected metadata, whole objective/scope sections within 600 characters, honest omissions, existing explicit-dependency parser. Commit: pending local commit. Risk: item 3 (shared context).
-- T8 [S31] complete locally; route=inline; inactive cards cannot enter active Monitoring rows or corrective choices, raw metrics preserved. Commit: pending local commit. Risk: item 3 (shared projection). Independent verification PASS; real corrective rules/actions still require exact human authorization. Local-only delivery, no PR planning.
+- T6 [S29] complete; route=inline; read label-ID mapping reuses action adapter, API/engine propagation and source identity; observed RED then GREEN. Commit: a0f4bad. Risk: item 3 (shared source/config consumers).
+- T7 [S30] complete; route=inline; selected metadata, whole objective/scope sections within 600 characters, honest omissions, existing explicit-dependency parser. Commit: a0f4bad. Risk: item 3 (shared context).
+- T8 [S31] complete locally; route=inline; inactive cards cannot enter active Monitoring rows or corrective choices, raw metrics preserved. Commit: a0f4bad. Risk: item 3 (shared projection). Independent verification PASS; real corrective rules/actions still require exact human authorization. Local-only delivery, no PR planning.
 
 ## Log
 
