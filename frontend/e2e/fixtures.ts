@@ -223,6 +223,7 @@ export const runCurrent = {
   duration_seconds: 120.5,
   is_simulated: false,
   report_id: "report-current",
+  attention: [],
 };
 
 export const runPrevious = {
@@ -234,6 +235,16 @@ export const runPrevious = {
   snapshot_id: "capture-previous",
   duration_seconds: 77.25,
   report_id: null,
+  attention: [
+    {
+      reason_code: "repository_needs_attention",
+      kind: "attention",
+      scope: "repository",
+      stage_name: "quality",
+      repository_id: "backend",
+      message: "Repository source or model output was incomplete; retained only identity-matched findings.",
+    },
+  ],
 };
 
 export const runHistory = {
@@ -1062,6 +1073,11 @@ export async function installApi(page: Page, options: {
     if (path.endsWith("/projects/hormigestio/reports") && request.method() === "GET") {
       const available = options.reportAvailability ?? "available";
       await json(route, { availability: available, items: available === "available" ? [currentReport] : [], total: available === "available" ? 1 : 0, page: Number(url.searchParams.get("page") ?? 1), page_size: 25 });
+      return;
+    }
+
+    if (path.endsWith("/projects/hormigestio/reports/report-current") && request.method() === "GET") {
+      await json(route, { ...reportDetail, report_id: "report-current", run_id: "run-current" });
       return;
     }
 

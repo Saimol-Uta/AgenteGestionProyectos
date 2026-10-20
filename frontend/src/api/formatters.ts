@@ -1,6 +1,8 @@
 import type {
   AnalysisExecutionMode,
   AnalysisPreparation,
+  AttentionKind,
+  AttentionNotice,
   DomainTaskState,
   ProposalAuthorizationStatus,
   ProposalExecutionStatus,
@@ -111,6 +113,72 @@ export function runStatusLabel(status: string): string {
     unknown: "Desconocida",
   };
   return labels[status] ?? `Estado del dominio: ${status}`;
+}
+
+/**
+ * Plain-language reason of a verified attention notice.
+ *
+ * The notice carries a stable code and the recorded text; this label only
+ * names the kind of fact, so the interface never invents a cause.
+ */
+export function attentionReasonLabel(notice: AttentionNotice): string {
+  const stage = notice.stage_name ? stageNameLabel(notice.stage_name) : null;
+  const repository = notice.repository_id ?? null;
+  switch (notice.reason_code) {
+    case "run_failed":
+      return "El análisis falló";
+    case "stage_failed":
+      return stage ? `Falló la etapa «${stage}»` : "Falló una etapa del análisis";
+    case "stage_needs_attention":
+      return stage ? `La etapa «${stage}» quedó incompleta` : "Una etapa quedó incompleta";
+    case "repository_needs_attention":
+      return repository
+        ? `El repositorio ${repository} quedó incompleto${stage ? ` en «${stage}»` : ""}`
+        : "Un repositorio quedó incompleto";
+    case "repository_stage_failed":
+      return repository
+        ? `Falló «${stage ?? "una etapa"}» en el repositorio ${repository}`
+        : "Falló una etapa en un repositorio";
+    case "proposal_rules_not_configured":
+      return "Las reglas de propuestas no están configuradas";
+    case "proposal_rules_invalid":
+      return "Las reglas de propuestas no superaron la validación";
+    case "stage_not_recorded":
+      return stage ? `La etapa «${stage}» no dejó registro` : "Una etapa no dejó registro";
+    default:
+      return "El análisis registró un motivo que requiere revisión";
+  }
+}
+
+export function attentionKindLabel(kind: AttentionKind): string {
+  const labels: Record<AttentionKind, string> = {
+    failure: "Fallo",
+    attention: "Requiere atención",
+    limitation: "Limitación",
+    unknown: "Información desconocida",
+  };
+  return labels[kind] ?? "Motivo registrado";
+}
+
+/**
+ * Description of one preflight check.
+ *
+ * Every code the backend can emit has its own description; an unknown code is
+ * shown with the code itself instead of a generic label.
+ */
+export function preflightCheckLabel(code: string): string {
+  const labels: Record<string, string> = {
+    configuration_unavailable: "Configuración efectiva del análisis",
+    repository_collection_configuration: "Recopilación de los repositorios del proyecto",
+    policy_configuration: "Reglas de calidad del proyecto",
+    source_mode: "Modo de fuentes del proyecto",
+    sandbox_source: "Fuentes locales de prueba",
+    fixture_source: "Fuentes de prueba del proyecto",
+    effective_configuration: "Configuración efectiva del análisis",
+    source_configured: "Fuentes del proyecto",
+    local_state: "Estado local del análisis",
+  };
+  return labels[code] ?? `Comprobación de disponibilidad (${code})`;
 }
 
 export function stageStatusLabel(status: string): string {

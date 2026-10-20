@@ -52,6 +52,7 @@ test("el detalle de la tarea declara la ausencia cuando no hay riesgo determinis
 test("el detalle de la ejecución explica por qué no hubo propuestas y conserva los códigos técnicos", async ({ page }) => {
   await installApi(page);
   await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
 
   await expect(page.getByRole("heading", { name: "Propuestas generadas" })).toBeVisible();
   await expect(page.getByText("No se encontraron candidatos válidos", { exact: true })).toBeVisible();

@@ -217,6 +217,20 @@ export type RunStatus =
   | "cancelled"
   | "unknown";
 
+export type AttentionKind = "failure" | "attention" | "limitation" | "unknown";
+
+export type AttentionScope = "run" | "stage" | "repository";
+
+/** One verified reason why a run is not a clean success, read from persisted records. */
+export interface AttentionNotice {
+  reason_code: string;
+  kind: AttentionKind;
+  scope: AttentionScope;
+  stage_name?: string;
+  repository_id?: string;
+  message: string;
+}
+
 export interface RunSummary {
   run_id: string;
   project_id: string;
@@ -227,6 +241,7 @@ export interface RunSummary {
   duration_seconds: number | null;
   is_simulated: boolean | null;
   report_id: string | null;
+  attention: AttentionNotice[];
 }
 
 export interface RunDetail extends RunSummary {

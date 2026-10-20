@@ -34,6 +34,218 @@
   gap: 14px;
 }
 
+.run-technical-id {
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.run-attention-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-attention-list > li {
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.run-attention-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-attention-heading strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.run-attention-message {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.run-outcome-clean,
+.run-outcome-decision {
+  margin: 12px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.run-found-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.run-found-card {
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.run-found-card h3 {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.run-found-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-found-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.run-found-list > li strong {
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.run-found-empty,
+.run-found-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.run-found-note {
+  margin-bottom: 8px;
+}
+
+.run-found-warning {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  border: 1px solid color-mix(in srgb, var(--warning) 36%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning-soft) 35%, var(--surface));
+  font-size: 11px;
+}
+
+.run-recommendation-recommendation {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.run-recommendation-label {
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.run-recommendation-recommendation strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.run-recommendation-recommendation p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.run-recommendation-panel h3,
+.run-next-steps-panel h3 {
+  margin: 14px 0 7px;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.run-recommendation-actions {
+  margin-top: 4px;
+}
+
+.run-next-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-next-steps-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.run-next-steps-list > li > span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.run-technical-panel > summary {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.run-technical-panel[open] > summary {
+  margin-bottom: 4px;
+}
+
+.run-technical-panel > .caption {
+  display: block;
+  margin: 0 0 6px;
+}
+
+.run-technical-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.run-technical-section h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
 .run-kpi-card {
   display: flex;
   flex-direction: column;
@@ -194,3 +406,4 @@
     grid-template-columns: 1fr;
   }
 }
+

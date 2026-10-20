@@ -216,6 +216,7 @@ test("visualiza candidatos confirmados, pendientes y la advertencia de código n
   });
 
   await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
 
   // 1. Verificar presencia de ambos repositorios
   const backendCard = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
@@ -252,6 +253,7 @@ test("visualiza hallazgos rechazados e insuficientes sin acreditar parche ni dis
   });
 
   await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
   const backendCard = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backendCard).toBeVisible();
 
@@ -276,6 +278,7 @@ test("soporta datos históricos sin campos nuevos y estados sin candidatos de fo
   });
 
   await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
   const backendCard = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backendCard).toBeVisible();
   await expect(backendCard).toContainText("src/legacy.ts");
@@ -290,6 +293,7 @@ test("soporta datos históricos sin campos nuevos y estados sin candidatos de fo
   });
 
   await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
   const backendEmpty = page.getByRole("article", { name: "Josu-F1/hormigestion-backend" });
   await expect(backendEmpty).toBeVisible();
   await expect(backendEmpty.locator(".repository-finding-card")).toHaveCount(0);

@@ -44,7 +44,7 @@ test("los centros de análisis y calidad conservan el layout móvil sin desborda
   await installApi(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/analysis?run_id=run-current");
-  await expect(page.getByRole("heading", { name: "Ejecución run-current" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Análisis del / })).toBeVisible();
   let overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBe(false);
 
@@ -106,10 +106,11 @@ test("el centro de IA consulta el historial sin iniciar trabajos al abrirlo", as
   await page.goto("/analysis");
 
   await expect(page.getByRole("heading", { name: "Centro de análisis de IA" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Historial de análisis", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Análisis realizados", exact: true })).toBeVisible();
   await expect(page.getByText("run-current", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Preparar análisis" })).toBeDisabled();
-  await expect(page.getByRole("heading", { name: "Historial de análisis protegido" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Nuevo análisis" })).toBeDisabled();
+  await expect(page.getByText("run-current", { exact: true })).toBeVisible();
+  await expect(page.getByText("Sin motivos registrados", { exact: true })).toBeVisible();
   expect(analysisWrites).toHaveLength(0);
   expect(apiObserver.analysisJobListReads).toBe(0);
 });
@@ -117,6 +118,7 @@ test("el centro de IA consulta el historial sin iniciar trabajos al abrirlo", as
 test("una etapa desconocida no se presenta como omitida y una omisión requiere registro explícito", async ({ page }) => {
   await installApi(page);
   await page.goto("/analysis?run_id=run-current");
+  await page.getByText("Información técnica del análisis").click();
 
   const pipeline = page.getByRole("region", { name: "Etapas del pipeline" });
   const card = (name: string) => pipeline.getByRole("article").filter({
@@ -144,6 +146,7 @@ test("pipeline stage states follow recorded public records", async ({ page }) =>
     } });
   });
   await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
   const pipeline = page.getByRole("region", { name: "Etapas del pipeline" });
   const card = (name: string) => pipeline.getByRole("article").filter({
     has: page.getByRole("heading", { name, exact: true }),
@@ -180,10 +183,10 @@ test("la preparación y la confirmación son pasos protegidos independientes con
   });
   const { analysisWrites } = apiObserver;
   await page.goto("/analysis");
-  await expect(page.getByRole("button", { name: "Preparar análisis" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Nuevo análisis" })).toBeEnabled();
   expect(analysisWrites).toHaveLength(0);
 
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
   await expect(page.getByText("La revisión no contacta servicios en la nube.", { exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /uso de servicios en la nube/i })).not.toBeChecked();
   const confirmButton = page.getByRole("button", { name: "Confirmar análisis" });
@@ -238,13 +241,14 @@ test("la falta de una clave de IA permite confirmar el análisis mixto sin omiti
   });
   const { analysisWrites } = apiObserver;
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
 
   await expect(page.getByText("Modo de ejecución: Mixto", { exact: true })).toBeVisible();
   await expect(page.getByText(fallbackReason, { exact: true })).toBeVisible();
   const preparationFacts = page.locator(".preparation-facts");
-  await expect(preparationFacts.getByText("Fuentes del proyecto", { exact: true })).toBeVisible();
+  await expect(preparationFacts.getByText("Fuentes que se consultarán", { exact: true })).toBeVisible();
   await expect(preparationFacts.getByText("Trello", { exact: true })).toBeVisible();
+  await page.getByText("Detalles técnicos del preflight").click();
   await expect(page.locator(".remote-preflight").getByText("Recopilación de fuentes: Trello", { exact: true })).toBeVisible();
   await expect(page.getByText(/not_applicable/)).toHaveCount(0);
   await expect(page.getByText("Gemini · gemini-2.5-flash")).toBeVisible();
@@ -279,7 +283,7 @@ test("una preparación genuinamente no elegible nunca habilita la confirmación"
     preparePayload: { eligible: false, ready: false, execution_mode: "sandbox" },
   });
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
 
   await expect(page.getByRole("button", { name: "Confirmar análisis" })).toBeDisabled();
   await expect(page.getByText(/La revisión aún no cumple las condiciones/)).toBeVisible();
@@ -290,7 +294,7 @@ test("la interfaz no inicia trabajo si la sesión carece de la capacidad de prep
   const { analysisWrites } = await installApi(page, { authenticated: true, capabilities: ["operator_session"] });
   await page.goto("/analysis");
 
-  await expect(page.getByRole("button", { name: "Preparar análisis" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Nuevo análisis" })).toBeDisabled();
   await expect(page.getByText(/no tiene permiso para revisar un nuevo análisis/)).toBeVisible();
   expect(analysisWrites).toHaveLength(0);
 });
@@ -298,7 +302,7 @@ test("la interfaz no inicia trabajo si la sesión carece de la capacidad de prep
 test("la capacidad de preparación no sustituye la capacidad de confirmación", async ({ page }) => {
   const { analysisWrites } = await installApi(page, { authenticated: true, capabilities: ["analysis:prepare"] });
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
   await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
 
   await expect(page.getByRole("button", { name: "Confirmar análisis" })).toBeDisabled();
@@ -313,7 +317,7 @@ test("un rechazo de autorización del servidor se muestra y no crea un trabajo",
     prepareStatus: 403,
   });
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
 
   await expect(page.getByRole("heading", { name: "No se pudo preparar el análisis" })).toBeVisible();
   await expect(page.getByText("La preparación no está autorizada por el servidor.", { exact: true })).toBeVisible();
@@ -328,7 +332,7 @@ test("un reintento de confirmación conserva la misma clave de idempotencia", as
     confirmStatuses: [503, 202],
   });
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
   await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
   await expect(page.getByRole("heading", { name: "No se pudo confirmar el análisis" })).toBeVisible();
@@ -350,13 +354,15 @@ test("el polling de trabajos se detiene en el estado terminal fallido", async ({
     jobPollStatuses: ["failed"],
   });
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
   await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
   await expect(page.getByText("Trabajo de análisis: fallido", { exact: true })).toBeVisible();
   await expect(page.getByText("El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.", { exact: true })).toBeVisible();
-  await page.waitForTimeout(350);
-  expect(apiObserver.jobPollRequests).toBe(1);
+  // El polling se detiene: el contador deja de crecer en el estado terminal.
+  const settled = apiObserver.jobPollRequests;
+  await page.waitForTimeout(1200);
+  expect(apiObserver.jobPollRequests).toBe(settled);
 });
 
 test("el polling de trabajos se detiene en el estado terminal interrumpido", async ({ page }) => {
@@ -366,13 +372,15 @@ test("el polling de trabajos se detiene en el estado terminal interrumpido", asy
     jobPollStatuses: ["interrupted"],
   });
   await page.goto("/analysis");
-  await page.getByRole("button", { name: "Preparar análisis" }).click();
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
   await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
   await expect(page.getByText("Trabajo de análisis: interrumpido", { exact: true })).toBeVisible();
   await expect(page.getByText("El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.", { exact: true })).toBeVisible();
-  await page.waitForTimeout(350);
-  expect(apiObserver.jobPollRequests).toBe(1);
+  // El polling se detiene: el contador deja de crecer en el estado terminal.
+  const settled = apiObserver.jobPollRequests;
+  await page.waitForTimeout(1200);
+  expect(apiObserver.jobPollRequests).toBe(settled);
 });
 
 test("conecta dashboard, filtros URL y comparación basada en capturas", async ({ page }) => {

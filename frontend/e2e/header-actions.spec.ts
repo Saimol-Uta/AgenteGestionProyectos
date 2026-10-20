@@ -49,11 +49,11 @@ test("header actions replace the repeated workflow card and remain reachable on 
         await expect(page.getByRole("heading", { name: "Centro de análisis de IA" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toHaveCount(0);
         await expect(page.getByRole("heading", { name: "Resumen consolidado del proyecto" })).toHaveCount(0);
-        await expect(page.getByRole("heading", { name: "Preparar un análisis" })).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Historial de análisis" })).toBeVisible();
-        await expect(page.getByRole("link", { name: "Abrir ejecución run-current" })).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Trabajos recientes" })).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Sin trabajos asíncronos" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Analizar HORMIGESTION" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Análisis realizados" })).toBeVisible();
+        await expect(page.getByRole("link", { name: /Abrir el análisis del/ }).first()).toHaveAttribute("href", "/analysis/run-current");
+        await expect(page.getByRole("heading", { name: "Trabajos recientes" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Nuevo análisis" })).toBeVisible();
       }
 
       if (path === "/" || path === "/analysis") {
@@ -194,8 +194,9 @@ test("header actions replace the repeated workflow card and remain reachable on 
         }
       }
       if (path === "/analysis") {
-        await page.getByRole("link", { name: "Abrir ejecución run-current", exact: true }).click();
+        await page.locator('a[href="/analysis/run-current"]').first().click();
         await expect(page).toHaveURL(/\/analysis\/run-current$/);
+        await page.getByText("Información técnica del análisis").click();
         await expect(page.getByRole("heading", { name: "Repositorios del proyecto" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Resumen consolidado del proyecto" })).toBeVisible();
       }
