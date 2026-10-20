@@ -45,7 +45,8 @@ DEFAULT_MAX_PAGES = 30
 DEFAULT_MAX_REQUESTS = 32
 DEFAULT_MAX_TEXT_LENGTH = 65536
 DEFAULT_MAX_LINES = 5000
-DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024  # 10 MiB aggregate
+DEFAULT_MAX_TOTAL_BYTES = 10 * 1024 * 1024  # 10 MiB aggregate for patches and metadata
+DEFAULT_MAX_FULL_FILE_BYTES = 16 * 1024 * 1024  # 16 MiB aggregate for complete-file reads
 DEFAULT_MAX_FULL_FILES = 8
 MAX_FULL_FILE_BYTES = 5 * 1024 * 1024
 MAX_CACHE_ENTRIES = 20
@@ -109,6 +110,12 @@ def _full_file_priority_key(entry: dict[str, Any]) -> tuple[int, str]:
     if is_media:
         return (4, filename)
     return (2, filename)
+
+
+def _is_binary_source(entry: dict[str, Any]) -> bool:
+    """True when the file is a binary asset that a code review cannot use."""
+    filename = (entry.get("filename") or "").lower()
+    return any(filename.endswith(extension) for extension in MEDIA_BINARY_EXTENSIONS)
 
 
 def _validate_safe_string(val: Any) -> str:
@@ -178,6 +185,7 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         max_text_length: int = DEFAULT_MAX_TEXT_LENGTH,
         max_lines: int = DEFAULT_MAX_LINES,
         max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+        max_full_file_bytes: int = DEFAULT_MAX_FULL_FILE_BYTES,
         max_full_files: Optional[int] = None,
     ):
         self._owner = _validate_safe_string(owner)
@@ -234,6 +242,13 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         if type(max_total_bytes) is not int or max_total_bytes <= 0:
             raise SourceError(SourceProvider.github, SourceErrorCategory.configuration) from None
         self._max_total_bytes = max_total_bytes
+
+        # The complete-file reads have their own ceiling: a large diff must not
+        # starve the full file that a corrective action needs as its patch base,
+        # and a wide set of full files must not starve the patch budget.
+        if type(max_full_file_bytes) is not int or max_full_file_bytes <= 0:
+            raise SourceError(SourceProvider.github, SourceErrorCategory.configuration) from None
+        self._max_full_file_bytes = max_full_file_bytes
 
         if max_full_files is not None and (type(max_full_files) is not int or max_full_files < 0):
             raise SourceError(SourceProvider.github, SourceErrorCategory.configuration) from None
@@ -568,8 +583,13 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
     def _capture_full_file(
         self, filename: str, pinned_sha: str, entry: dict[str, Any],
         requests_count: list[int], total_bytes: list[int],
+        full_file_bytes: list[int],
     ) -> CodeDiffSnippet | None:
-        """Read one complete file only at the already resolved commit SHA."""
+        """Read one complete file only at the already resolved commit SHA.
+
+        The read is charged to the complete-file budget, not to the patch
+        budget, so neither purpose consumes the other one.
+        """
         if requests_count[0] >= self._max_requests:
             return None
         encoded_path = "/".join(quote(part, safe="") for part in filename.split("/"))
@@ -591,8 +611,8 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
             }:
                 return None
             raise SourceError(SourceProvider.github, exc.category) from None
-        total_bytes[0] += response.bytes_received
-        if total_bytes[0] > self._max_total_bytes:
+        full_file_bytes[0] += response.bytes_received
+        if full_file_bytes[0] > self._max_full_file_bytes:
             raise SourceError(SourceProvider.github, SourceErrorCategory.limit_exceeded) from None
 
         if response.status_code == 404:
@@ -649,7 +669,7 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         if size is not None and (type(size) is not int or size != len(content_bytes)):
             raise SourceError(SourceProvider.github, SourceErrorCategory.malformed_payload) from None
         self._assert_no_credential_echo(content)
-        if len(content_bytes) > min(MAX_FULL_FILE_BYTES, self._max_total_bytes):
+        if len(content_bytes) > min(MAX_FULL_FILE_BYTES, self._max_full_file_bytes):
             return None
         if len(content.splitlines()) > self._max_lines:
             return None
@@ -837,6 +857,7 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
         evidence: list[EvidenceItem] = []
         unavailable_paths: list[str] = []
         is_complete = True
+        full_file_bytes = [0]
 
         # Commit-level evidence item
         commit_ev_id = f"github-commit-{pinned_sha[:16]}"
@@ -864,6 +885,9 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
 
         # Determine eligible non-removed files for bounded full_file capture
         non_removed_files = [f for f in all_files if f.get("status") != "removed"]
+        # Binary assets are read last and never become a code source: the
+        # complete-file budget is theirs alone, so they cannot starve the code
+        # files that a corrective action needs as its patch base.
         sorted_candidates = sorted(non_removed_files, key=_full_file_priority_key)
         full_file_cap = (
             self._max_full_files if self._max_full_files is not None else len(sorted_candidates)
@@ -915,6 +939,7 @@ class GitHubCodeSourceAdapter(CodeSourcePort):
             if status != "removed" and filename in eligible_for_full_file:
                 full_file = self._capture_full_file(
                     filename, pinned_sha, entry, requests_count, total_bytes,
+                    full_file_bytes,
                 )
 
             if snip is not None:

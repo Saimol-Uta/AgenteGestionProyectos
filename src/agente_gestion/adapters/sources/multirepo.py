@@ -16,6 +16,7 @@ from agente_gestion.adapters.sources.collection_budget import (
 )
 from agente_gestion.adapters.sources.composite import CompositeSourcesAdapter
 from agente_gestion.adapters.sources.github import (
+    DEFAULT_MAX_FULL_FILE_BYTES,
     DEFAULT_MAX_REQUESTS,
     GitHubCodeSourceAdapter,
 )
@@ -49,7 +50,9 @@ from agente_gestion.domain.snapshot import RepositorySnapshotResult, WeeklySnaps
 CI_RESERVED_HTTP_CALLS = 2
 CI_RESERVED_ESTIMATED_TOKENS = 5_000
 CI_RESERVED_RESPONSE_BYTES = 1 * MIB
-DEFAULT_MULTIREPO_MAX_FULL_FILES = 8
+# A commit may touch more code files than the old cap of eight; the byte
+# budget, not an arbitrary count, is what bounds the complete-file reads.
+DEFAULT_MULTIREPO_MAX_FULL_FILES = 32
 
 
 class _UnavailableCodeSource(CodeSourcePort):
@@ -464,6 +467,12 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
                                   ledger.remaining_response_bytes(identity))
             if max_total_bytes <= 0:
                 raise SourceError(SourceProvider.github, SourceErrorCategory.limit_exceeded) from None
+            max_full_file_bytes = min(
+                DEFAULT_MAX_FULL_FILE_BYTES, self._settings.http_max_response_bytes,
+                ledger.remaining_response_bytes(identity),
+            )
+            if max_full_file_bytes <= 0:
+                raise SourceError(SourceProvider.github, SourceErrorCategory.limit_exceeded) from None
             code_adapter = GitHubCodeSourceAdapter(
                 owner=repository.owner,
                 repo=repository.repo,
@@ -473,6 +482,7 @@ class MultiRepoSourcesAdapter(SourceCollectionPort):
                 transport=self._budgeted_transport(ledger, SourceProvider.github, identity),
                 max_files=max_files,
                 max_total_bytes=max_total_bytes,
+                max_full_file_bytes=max_full_file_bytes,
                 max_full_files=DEFAULT_MULTIREPO_MAX_FULL_FILES,
             )
             access_confirmed = False
