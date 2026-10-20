@@ -11,7 +11,15 @@ from agente_gestion.adapters.storage.sqlite import (
 from agente_gestion.domain.code import CodeDiffSnippet, validate_source_syntax
 from agente_gestion.domain.code_action import BranchExecutionResult, CodeSourceSnapshot, FindingActionOrigin
 from agente_gestion.domain.findings import CandidateFinding
-from agente_gestion.application.patch_review import favorable_patch_review
+from agente_gestion.domain.patch_review import effective_patch
+from agente_gestion.application.patch_review import (
+    BLOCK_PATCH_NOT_IDENTIFIABLE,
+    BLOCK_SUGGESTED_CODE_REQUIRED,
+    ApprovalEligibility,
+    confirmed_defect_verification,
+    evaluate_approval_eligibility,
+    match_patch_review,
+)
 from agente_gestion.domain.security_rbac import SecurityAuditEntry, hash_token_fingerprint
 from agente_gestion.ports.code_action_port import CodeActionPort
 
@@ -56,6 +64,17 @@ class FindingDecisionService:
             decision="granted",
             reason=reason,
             token_fingerprint=hash_token_fingerprint(session_cookie or ""),
+        )
+
+    @staticmethod
+    def _review_note(eligibility: ApprovalEligibility | None) -> str:
+        """The identity of the review that authorized the decision, if any."""
+        if eligibility is None or eligibility.review is None:
+            return ""
+        review = eligibility.review
+        return (
+            f" Review {review.review_id} sha256:{review.patch_sha256}"
+            f" run:{review.run_id} origin:{review.commit_sha}"
         )
 
     @staticmethod
@@ -456,6 +475,118 @@ class FindingDecisionService:
             ):
                 refuse()
 
+    def _approval_context_is_valid(
+        self, *, origin: FindingActionOrigin | None, project_id: str, run_id: str,
+        finding_id: str, candidate: CandidateFinding, original_excerpt: str,
+        source: CodeSourceSnapshot | None, repository: str | None, base_branch: str,
+    ) -> bool:
+        """Whether the persisted context still supports this exact correction."""
+        if candidate.id != finding_id:
+            return False
+        if origin is None or not origin.configured_for_code_action:
+            return False
+        try:
+            self._validate_origin(
+                origin=origin, project_id=project_id, run_id=run_id, finding_id=finding_id,
+                candidate=candidate, original_excerpt=original_excerpt, source=source,
+                repository=repository, base_branch=base_branch,
+            )
+        except FindingDecisionError:
+            return False
+        except Exception:
+            return False
+        return True
+
+    def _approval_eligibility(
+        self, *, origin: FindingActionOrigin | None, project_id: str, run_id: str,
+        finding_id: str, candidate: CandidateFinding, original_excerpt: str,
+        source: CodeSourceSnapshot | None, repository: str | None, base_branch: str,
+        suggested_code_override: str | None = None,
+    ) -> ApprovalEligibility:
+        """Gather the facts of the authorization chain and apply the shared policy."""
+        effective_code = (
+            suggested_code_override if suggested_code_override is not None else candidate.suggested_code
+        )
+        patch_sha256: str | None = None
+        patch_blocked_reason: str | None = None
+        if not effective_code.strip():
+            patch_blocked_reason = BLOCK_SUGGESTED_CODE_REQUIRED
+        elif source is None or not source.is_complete or not source.content or not original_excerpt:
+            patch_blocked_reason = BLOCK_PATCH_NOT_IDENTIFIABLE
+        else:
+            try:
+                _patched, patch_sha256 = effective_patch(
+                    source.content, original_excerpt, effective_code,
+                )
+            except ValueError:
+                patch_blocked_reason = BLOCK_PATCH_NOT_IDENTIFIABLE
+        defect = confirmed_defect_verification(
+            self.storage, run_id=run_id, finding_id=finding_id,
+        )
+        match = None
+        if patch_sha256 is not None and source is not None and repository and source.commit_sha:
+            match = match_patch_review(
+                self.storage,
+                project_id=project_id, run_id=run_id, finding_id=finding_id,
+                patch_sha256=patch_sha256,
+                original_sha256=hashlib.sha256(source.content.encode("utf-8")).hexdigest(),
+                repository=repository, commit_sha=source.commit_sha,
+                file_path=candidate.file_path,
+            )
+        return evaluate_approval_eligibility(
+            context_valid=self._approval_context_is_valid(
+                origin=origin, project_id=project_id, run_id=run_id, finding_id=finding_id,
+                candidate=candidate, original_excerpt=original_excerpt, source=source,
+                repository=repository, base_branch=base_branch,
+            ),
+            defect_confirmed=defect is not None,
+            patch_sha256=patch_sha256,
+            matched_review=match.review if match is not None else None,
+            review_blocked_reason=match.blocked_reason if match is not None else None,
+            patch_blocked_reason=patch_blocked_reason,
+        )
+
+    def approval_eligibility(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        finding_id: str,
+        candidate: CandidateFinding,
+        original_excerpt: str,
+        source: CodeSourceSnapshot | None,
+        repository: str | None,
+        base_branch: str,
+        origin: FindingActionOrigin | None,
+        suggested_code_override: str | None = None,
+    ) -> dict[str, object]:
+        """The authorization fact of one finding, read-only and side-effect free.
+
+        This is the same fact the decision gate uses, so an interface can
+        enable an approval only when the backend says the chain is complete.
+        It never records a decision and never authorizes anything by itself.
+        """
+        eligibility = self._approval_eligibility(
+            origin=origin, project_id=project_id, run_id=run_id, finding_id=finding_id,
+            candidate=candidate, original_excerpt=original_excerpt, source=source,
+            repository=repository, base_branch=base_branch,
+            suggested_code_override=suggested_code_override,
+        )
+        return {
+            "eligible": eligibility.eligible,
+            "authorized": eligibility.authorized,
+            "context_valid": eligibility.context_valid,
+            "defect_confirmed": eligibility.defect_confirmed,
+            "blocked_reason": eligibility.blocked_reason,
+            "authorization_reason": eligibility.authorization_reason,
+            "patch_sha256": eligibility.patch_sha256,
+            "review_id": eligibility.review_id,
+            "review": (
+                eligibility.review.model_dump(mode="json")
+                if eligibility.review is not None else None
+            ),
+        }
+
     def decide(
         self,
         *,
@@ -483,31 +614,21 @@ class FindingDecisionService:
         if suggested_code_override is not None and not suggested_code_override.strip():
             raise FindingDecisionError(422, "codigo_sugerido_invalido", "El código alternativo no puede estar vacío.")
         effective_code = suggested_code_override if suggested_code_override is not None else candidate.suggested_code
+        eligibility: ApprovalEligibility | None = None
         if decision == "approve":
-            # A confirmed defect, a valid syntax and approved tests are not a
-            # review of the correction. The approval requires a current
-            # favorable review bound to the exact patch that would be applied:
-            # another patch, file, repository or commit has no review, and
-            # neither has an unfavorable, insufficient or missing one.
-            patch_sha256 = None
-            if (
-                source is not None and source.is_complete and original_excerpt
-                and source.content.count(original_excerpt) == 1
-            ):
-                preview = source.content.replace(original_excerpt, effective_code, 1)
-                patch_sha256 = hashlib.sha256(preview.encode("utf-8")).hexdigest()
-            review = None
-            if patch_sha256 is not None and source is not None and repository:
-                review = favorable_patch_review(
-                    self.storage,
-                    project_id=project_id,
-                    finding_id=finding_id,
-                    patch_sha256=patch_sha256,
-                    repository=repository,
-                    commit_sha=source.commit_sha,
-                    file_path=candidate.file_path,
-                )
-            if review is None:
+            # The approval requires the whole chain: a confirmed defect, an
+            # exact patch and an independent favorable review bound to that
+            # execution, repository, file, origin commit and original source.
+            # A confirmed defect, a valid syntax or approved tests are not a
+            # review of the correction, and the review of another execution
+            # never applies.
+            eligibility = self._approval_eligibility(
+                origin=origin, project_id=project_id, run_id=run_id, finding_id=finding_id,
+                candidate=candidate, original_excerpt=original_excerpt, source=source,
+                repository=repository, base_branch=base_branch,
+                suggested_code_override=suggested_code_override,
+            )
+            if not eligibility.authorized:
                 raise FindingDecisionError(
                     409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
                 )
@@ -684,7 +805,7 @@ class FindingDecisionService:
                 actor_id=actor_id, session_cookie=session_cookie,
                 reason=(
                     f"Finding decision {decision_status} recorded in {result['execution_mode']} mode"
-                    f"{origin_note}."
+                    f"{origin_note}{self._review_note(eligibility)}."
                 ),
             )
             self.storage.complete_finding_decision(
@@ -718,7 +839,10 @@ class FindingDecisionService:
         audit = self._audit_entry(
             event_id=f"audit-{event_id}", project_id=project_id, finding_id=finding_id,
             actor_id=actor_id, session_cookie=session_cookie,
-            reason=f"Finding decision failed with code {failure.code}.",
+            reason=(
+                f"Finding decision failed with code {failure.code}."
+                f"{self._review_note(eligibility)}"
+            ),
         )
         try:
             self.storage.fail_finding_decision(

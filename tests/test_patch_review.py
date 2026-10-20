@@ -119,6 +119,7 @@ class PatchReviewMechanismTests(unittest.TestCase):
         self.candidate = _candidate()
         self.source = _source()
         self.patch_sha256 = effective_patch(SOURCE_CONTENT, EXCERPT, SUGGESTED)[1]
+        self.original_sha256 = hashlib.sha256(SOURCE_CONTENT.encode()).hexdigest()
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -149,15 +150,17 @@ class PatchReviewMechanismTests(unittest.TestCase):
     def test_the_review_is_bound_to_the_patch_and_not_to_the_defect(self):
         self._review()
         identity = {
-            "project_id": PROJECT_ID, "finding_id": FINDING_ID,
-            "patch_sha256": self.patch_sha256, "repository": REPOSITORY,
-            "commit_sha": COMMIT_SHA, "file_path": FILE_PATH,
+            "project_id": PROJECT_ID, "run_id": RUN_ID, "finding_id": FINDING_ID,
+            "patch_sha256": self.patch_sha256, "original_sha256": self.original_sha256,
+            "repository": REPOSITORY, "commit_sha": COMMIT_SHA, "file_path": FILE_PATH,
         }
         for changed in (
             {"patch_sha256": "b" * 64},
             {"file_path": "src/otro.ts"},
             {"repository": "acme/otro"},
             {"commit_sha": "b" * 40},
+            {"original_sha256": "c" * 64},
+            {"run_id": "run-otro"},
         ):
             with self.subTest(changed=changed):
                 self.assertIsNone(favorable_patch_review(self.storage, **{**identity, **changed}))
@@ -167,23 +170,23 @@ class PatchReviewMechanismTests(unittest.TestCase):
             with self.subTest(verdict=verdict):
                 self._review(_StubVerifier(verdict=verdict, reason="La correccion no resuelve el defecto."))
                 self.assertIsNone(favorable_patch_review(
-                    self.storage, project_id=PROJECT_ID, finding_id=FINDING_ID,
-                    patch_sha256=self.patch_sha256, repository=REPOSITORY,
-                    commit_sha=COMMIT_SHA, file_path=FILE_PATH,
+                    self.storage, project_id=PROJECT_ID, run_id=RUN_ID, finding_id=FINDING_ID,
+                    patch_sha256=self.patch_sha256, original_sha256=self.original_sha256,
+                    repository=REPOSITORY, commit_sha=COMMIT_SHA, file_path=FILE_PATH,
                 ))
 
     def test_a_later_unfavorable_review_withdraws_the_favorable_one(self):
         self._review()
         self.assertIsNotNone(favorable_patch_review(
-            self.storage, project_id=PROJECT_ID, finding_id=FINDING_ID,
-            patch_sha256=self.patch_sha256, repository=REPOSITORY,
-            commit_sha=COMMIT_SHA, file_path=FILE_PATH,
+            self.storage, project_id=PROJECT_ID, run_id=RUN_ID, finding_id=FINDING_ID,
+            patch_sha256=self.patch_sha256, original_sha256=self.original_sha256,
+            repository=REPOSITORY, commit_sha=COMMIT_SHA, file_path=FILE_PATH,
         ))
         self._review(_StubVerifier(verdict=PatchReviewVerdict.unfavorable, reason="Revisión posterior."))
         self.assertIsNone(favorable_patch_review(
-            self.storage, project_id=PROJECT_ID, finding_id=FINDING_ID,
-            patch_sha256=self.patch_sha256, repository=REPOSITORY,
-            commit_sha=COMMIT_SHA, file_path=FILE_PATH,
+            self.storage, project_id=PROJECT_ID, run_id=RUN_ID, finding_id=FINDING_ID,
+            patch_sha256=self.patch_sha256, original_sha256=self.original_sha256,
+            repository=REPOSITORY, commit_sha=COMMIT_SHA, file_path=FILE_PATH,
         ))
 
     def test_the_reviews_are_append_only(self):
