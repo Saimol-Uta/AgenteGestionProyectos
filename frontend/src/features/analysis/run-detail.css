@@ -218,15 +218,26 @@
   font-size: 10px;
 }
 
+.run-technical-panel {
+  padding: 18px 20px;
+}
+
 .run-technical-panel > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 0 4px;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 650;
   cursor: pointer;
+  list-style-position: inside;
 }
 
 .run-technical-panel[open] > summary {
   margin-bottom: 4px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--border);
 }
 
 .run-technical-panel > .caption {
@@ -235,9 +246,16 @@
 }
 
 .run-technical-section {
+  min-width: 0;
   margin-top: 18px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
+}
+
+.run-technical-section:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .run-technical-section h3 {
@@ -276,16 +294,18 @@
 
 .run-pipeline-flow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  align-items: start;
+  gap: 14px;
   margin-top: 14px;
 }
 
 .pipeline-stage-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 14px;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -329,6 +349,15 @@
   color: var(--text-secondary);
   line-height: 1.5;
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stage-card-duration,
+.stage-providers-list,
+.stage-providers-list li {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .stage-providers-list {
@@ -378,6 +407,32 @@
   background: var(--surface-soft);
 }
 
+/* The title may carry a long evidence identifier: it yields space to the
+   source tag instead of pushing it outside the panel. */
+.evidence-accordion-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.evidence-accordion-title strong {
+  flex: 0 0 auto;
+}
+
+.evidence-accordion-title code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-accordion-item summary .pill {
+  flex: 0 0 auto;
+}
+
 .evidence-accordion-item[open] summary {
   border-bottom: 1px solid var(--border);
 }
@@ -398,12 +453,21 @@
   color: var(--text-muted);
 }
 
+@media (max-width: 1080px) {
+  .run-pipeline-flow {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
   .run-kpi-grid {
     grid-template-columns: repeat(2, 1fr);
   }
   .run-pipeline-flow {
     grid-template-columns: 1fr;
+  }
+  .run-technical-panel {
+    padding: 15px 16px;
   }
 }
 

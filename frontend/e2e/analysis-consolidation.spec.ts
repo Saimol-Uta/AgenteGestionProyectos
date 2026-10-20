@@ -144,6 +144,55 @@ test("la tarjeta del análisis en curso se titula con el proyecto y baja el iden
   await expect(card.getByText("Última actualización", { exact: true })).toBeVisible();
 });
 
+test("la sección técnica respira y no desborda su contenedor", async ({ page }) => {
+  await installApi(page);
+  await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
+
+  const panel = page.locator(".run-technical-panel");
+  await expect(panel).toBeVisible();
+
+  const layout = await panel.evaluate((element) => {
+    const styles = getComputedStyle(element);
+    const summary = element.querySelector("summary");
+    const flow = element.querySelector(".run-pipeline-flow");
+    return {
+      paddingLeft: Number.parseFloat(styles.paddingLeft),
+      paddingTop: Number.parseFloat(styles.paddingTop),
+      summaryOffset: summary
+        ? Math.round(summary.getBoundingClientRect().top - element.getBoundingClientRect().top)
+        : 0,
+      overflow: element.scrollWidth - element.clientWidth,
+      columns: flow ? getComputedStyle(flow).gridTemplateColumns : "",
+    };
+  });
+
+  // El contenido no queda pegado al borde del contenedor.
+  expect(layout.paddingLeft).toBeGreaterThanOrEqual(12);
+  expect(layout.paddingTop).toBeGreaterThanOrEqual(12);
+  expect(layout.summaryOffset).toBeGreaterThanOrEqual(8);
+  // Nada se sale del panel.
+  expect(layout.overflow).toBe(0);
+  // Las seis etapas se reparten en columnas con ancho suficiente.
+  expect(layout.columns.split(" ").length).toBeLessThanOrEqual(3);
+  const columnWidth = Number.parseFloat(layout.columns.split(" ")[0]);
+  expect(columnWidth).toBeGreaterThanOrEqual(240);
+});
+
+test("la evidencia larga no empuja la etiqueta de origen fuera del panel", async ({ page }) => {
+  await installApi(page);
+  await page.goto("/analysis/run-current");
+  await page.getByText("Información técnica del análisis").click();
+
+  const panel = page.locator(".run-technical-panel");
+  const overflow = await panel.evaluate((element) => element.scrollWidth - element.clientWidth);
+  expect(overflow).toBe(0);
+  const documentOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(documentOverflow).toBe(0);
+});
+
 test("el historial identifica cada análisis por su fecha y muestra el motivo verificado", async ({ page }) => {
   await installApi(page);
   await page.goto("/analysis");

@@ -578,7 +578,7 @@ export function RunDetailPage() {
               {evidenceQuery.data.items.map((evidence) => (
                 <details key={evidence.id} className="evidence-accordion-item">
                   <summary>
-                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="evidence-accordion-title">
                       <FileSearch aria-hidden="true" size={14} />
                       <strong>{evidence.category ?? "Evidencia"}</strong>
                       <code>{evidence.id}</code>
@@ -608,3 +608,4 @@ export function RunDetailPage() {
     </section>
   );
 }
+
