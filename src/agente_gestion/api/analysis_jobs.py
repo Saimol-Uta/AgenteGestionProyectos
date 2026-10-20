@@ -222,6 +222,8 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
         if len(repository) == 2:
             overrides.update(github_owner=repository[0], github_repo=repository[1])
     mapped_board = api_settings.trello_board_ids.get(project_id)
+    if project_id in api_settings.trello_priority_labels:
+        overrides["trello_priority_labels"] = api_settings.trello_priority_labels
     if api_settings.trello_board_bindings_explicit:
         overrides["trello_board_id"] = mapped_board or ""
     elif mapped_board:

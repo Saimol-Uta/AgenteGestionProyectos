@@ -56,7 +56,7 @@ class TaskCard(BaseModel):
     start_date: Optional[datetime] = None
     due_complete: Optional[StrictBool] = None
     is_archived: Optional[StrictBool] = None
-    priority: Optional[StrictStr] = Field(default=None, description="Explicit priority only; never inferred from labels")
+    priority: Optional[StrictStr] = Field(default=None, description="Explicit priority or configured label-ID observation; never inferred from label names")
     last_activity_at: Optional[datetime] = None
     observed_fields: Optional[list[StrictStr]] = Field(
         default=None, strict=True,

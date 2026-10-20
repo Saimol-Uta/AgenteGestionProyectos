@@ -391,6 +391,7 @@ class Settings(BaseSettings):
         default_factory=lambda: ["bloqueada", "blocked"]
     )
     trello_included_list_ids: Optional[list[str]] = Field(default=None)
+    trello_priority_labels: dict[str, dict[str, str]] = Field(default_factory=dict)
     trello_state_strategy: str = Field(
         default="list_mapping",
         description="Task state determination strategy for Trello ('list_mapping' or 'date_fields').",

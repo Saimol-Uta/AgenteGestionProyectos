@@ -98,6 +98,7 @@ class TrelloSourceAdapter(TaskSourcePort):
         state_strategy: str = "list_mapping",
         *,
         clock: Optional[Callable[[], datetime]] = None,
+        priority_labels: Optional[dict[str, str]] = None,
     ):
         self._api_key = _validate_safe_string(api_key)
         self._token = _validate_safe_string(token)
@@ -117,6 +118,13 @@ class TrelloSourceAdapter(TaskSourcePort):
         if mapping_config is not None and not isinstance(mapping_config, TaskMappingConfig):
             raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
         self._mapping_config = mapping_config or TaskMappingConfig()
+        from agente_gestion.adapters.sources.trello_action_adapter import validate_priority_labels
+        try:
+            self._priority_labels, self._priority_names = validate_priority_labels(priority_labels)
+        except ValueError:
+            raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
+        for label_id in self._priority_labels.values():
+            self._assert_no_credential_echo(label_id)
 
         if transport is not None and not isinstance(transport, HttpGetTransportPort):
             raise SourceError(SourceProvider.trello, SourceErrorCategory.configuration) from None
@@ -150,6 +158,11 @@ class TrelloSourceAdapter(TaskSourcePort):
     def mapping_config(self) -> TaskMappingConfig:
         """Current task state and list mapping configuration."""
         return self._mapping_config
+
+    @property
+    def priority_labels(self) -> dict[str, str]:
+        """Copy of the explicit project map; preserve configured action value names."""
+        return {self._priority_names[key]: label_id for key, label_id in self._priority_labels.items()}
 
     @property
     def state_strategy(self) -> str:
@@ -388,12 +401,38 @@ class TrelloSourceAdapter(TaskSourcePort):
                         raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
                     start_raw = st_val
 
-            # Priority is supported only as an explicit field, never through labels.
+            # Legacy explicit priority remains supported without a label map.
             priority = item.get("priority")
             if priority is not None:
                 if not isinstance(priority, str) or len(priority) > self._max_text_length:
                     raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
                 priority = self._sanitize_text(priority)
+
+            label_ids = None
+            if self._priority_labels:
+                if "idLabels" in item:
+                    label_ids = item["idLabels"]
+                elif "labels" in item and all(isinstance(lbl, dict) and "id" in lbl for lbl in labels_raw):
+                    label_ids = [lbl["id"] for lbl in labels_raw]
+                if label_ids is not None or "idLabels" in item:
+                    if not isinstance(label_ids, list) or any(
+                        not isinstance(i, str) or not SAFE_IDENTIFIER_RE.fullmatch(i) for i in label_ids
+                    ):
+                        raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                    for label_id in label_ids:
+                        self._assert_no_credential_echo(label_id)
+                    if "idLabels" in item and "labels" in item and all(
+                        isinstance(lbl, dict) and "id" in lbl for lbl in labels_raw
+                    ) and set(label_ids) != {lbl["id"] for lbl in labels_raw if isinstance(lbl["id"], str)}:
+                        raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                    matched = [key for key, ident in self._priority_labels.items() if ident in label_ids]
+                    if len(matched) > 1:
+                        raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                    if priority is not None:
+                        from agente_gestion.adapters.sources.trello_action_adapter import priority_key
+                        if priority_key(priority) != (matched[0] if matched else None):
+                            raise SourceError(SourceProvider.trello, SourceErrorCategory.malformed_payload) from None
+                    priority = self._priority_names[matched[0]] if matched else None
 
             field_mapping = {
                 "id": "id", "name": "title", "idList": "list_id", "labels": "labels",
@@ -402,6 +441,8 @@ class TrelloSourceAdapter(TaskSourcePort):
                 "dateLastActivity": "last_activity_at", "priority": "priority",
             }
             observed_fields = sorted(field_mapping[key] for key in field_mapping if key in item)
+            if label_ids is not None:
+                observed_fields = sorted(set(observed_fields) | {"priority"})
 
             validated_cards.append({
                 "id": card_id,
@@ -415,6 +456,7 @@ class TrelloSourceAdapter(TaskSourcePort):
                 "labels": card_labels,
                 "idMembers": sorted(set(member_ids)) if "idMembers" in item else None,
                 "priority": priority,
+                "priority_label_ids": label_ids,
                 "observed_fields": observed_fields,
                 "dueComplete": due_complete,
                 "start": start_raw,
@@ -654,6 +696,8 @@ class TrelloSourceAdapter(TaskSourcePort):
                 payload["start_raw"] = self._sanitize_text(c["start"])
 
             # Add normalized field facts while retaining legacy provenance aliases above.
+            if c["priority_label_ids"] is not None:
+                payload["priority_label_ids"] = c["priority_label_ids"]
             normalized = task_card.model_dump(mode="json")
             for field in ("assignee_ids", "start_date", "due_complete", "is_archived",
                           "priority", "last_activity_at", "observed_fields"):

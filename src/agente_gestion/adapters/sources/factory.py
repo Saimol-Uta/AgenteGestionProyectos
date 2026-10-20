@@ -53,6 +53,8 @@ def _task_source_identity(source: TaskSourcePort) -> Optional[str]:
     }
     scope = {"provider": "trello", "board_id": source.board_id,
              "state_strategy": source.state_strategy, "mapping": mapping}
+    if source.priority_labels:
+        scope["priority_labels"] = source.priority_labels
     encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "trello-sha256:" + sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -73,6 +75,9 @@ def _task_source_identity_from_settings(settings: Settings) -> Optional[str]:
         "provider": "trello", "board_id": settings.trello_board_id,
         "state_strategy": settings.trello_state_strategy, "mapping": mapping,
     }
+    priority_labels = settings.trello_priority_labels.get(settings.project_id, {})
+    if priority_labels:
+        scope["priority_labels"] = priority_labels
     encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "trello-sha256:" + sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -106,6 +111,7 @@ def create_task_source(
         transport=tr,
         timezone_name=settings.timezone,
         state_strategy=settings.trello_state_strategy,
+        priority_labels=settings.trello_priority_labels.get(settings.project_id, {}),
     )
 
 

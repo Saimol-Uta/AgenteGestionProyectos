@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field
@@ -86,6 +87,8 @@ def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[E
             code = None
             if len(cards) != 1:
                 code = "unknown_task"
+            elif cards[0].is_archived is True or not cards[0].is_included:
+                code = "inactive_task"
             elif cards[0].has_contradiction:
                 code = "conflicting_task"
             elif not cards[0].observed_fields or rule.field not in cards[0].observed_fields:
@@ -305,12 +308,14 @@ class ContextBuilder:
         all_ids = {task.id for task in tasks}
         if not required <= all_ids:
             raise ValueError("Critical metric task IDs lack snapshot evidence; request additional context.")
+        inactive_ids = {task.id for task in tasks if task.is_archived is True or not task.is_included}
+        required -= inactive_ids
         selected = sorted((task for task in tasks if task.id in required), key=lambda task: task.id)
         reason = "active_and_problem_cards"
         if not selected:
             # At most one included example grounds a concrete progress narrative
             # when no active/problem card exists. Never fill remaining capacity.
-            representatives = sorted((task for task in tasks if task.is_included),
+            representatives = sorted((task for task in tasks if task.id not in inactive_ids),
                                     key=lambda task: (task.state != TaskState.completed, task.id))
             selected = representatives[:1]
             reason = "single_representative_for_global_progress" if selected else "metrics_only_no_included_tasks"
@@ -318,6 +323,8 @@ class ContextBuilder:
         omitted_count = len(tasks) - len(selected)
         ci_matches = ci_result is not None and (source_commit_sha is None or ci_result.commit_sha == source_commit_sha)
         rows = []
+        from agente_gestion.application.tasks_query import extract_explicit_dependencies
+        task_map = {task.id: task for task in tasks}
         for task in selected:
             row = {"id": task.id, "title": task.title, "state": task.state.value,
                    "is_included": task.is_included, "has_contradiction": task.has_contradiction}
@@ -325,6 +332,31 @@ class ContextBuilder:
                 row["due_date"] = task.due_date.isoformat()
             if task.external_id is not None and task.external_id != task.id:
                 row["external_id"] = task.external_id
+            for field in ("priority", "assignee_ids", "assignee_names", "observed_fields"):
+                value = getattr(task, field)
+                if value is not None and value != {}:
+                    row[field] = value
+            row["explicit_dependencies"] = extract_explicit_dependencies(task, task_map)[0]
+            # Optional details are whole quotes or explicitly unavailable, never
+            # a clipped prefix misrepresented as complete planning evidence.
+            row["detail_availability"] = "not_observed" if task.detail is None else "complete"
+            if task.detail is not None:
+                if len(task.detail) <= 600:
+                    row["detail"] = task.detail
+                else:
+                    row["detail_availability"] = "omitted_length_limit"
+                    row["detail_char_count"] = len(task.detail)
+                    sections = {}
+                    for match in re.finditer(
+                        r"^### (Objetivo|Alcance|Objective|Scope)[ \t]*\n(.*?)(?=^### |\Z)",
+                        task.detail, re.MULTILINE | re.DOTALL,
+                    ):
+                        heading, text = match.group(1), match.group(2).strip()
+                        if heading not in sections and sum(map(len, sections.values())) + len(text) <= 600:
+                            sections[heading] = text
+                    if sections:
+                        row["detail_sections"] = sections
+                        row["detail_availability"] = "selected_sections"
             rows.append(row)
         ci_data = ci_result.model_dump(mode="json", exclude_none=True) if ci_matches else None
         data = {
@@ -333,6 +365,7 @@ class ContextBuilder:
             "source_context": {"is_complete": source_is_complete, "commit_sha": source_commit_sha,
                                "task_provenance": "deterministic_snapshot"},
             "selection": {"selected_task_ids": [task.id for task in selected], "omitted_task_count": omitted_count,
+                          "inactive_observation_count": len(inactive_ids),
                           "required_task_ids": sorted(required), "reason": reason,
                           "status": "partial" if omitted_count else "complete"},
             "evidence_ids": sorted((set(evidence_ids or []) - all_ids) | selected_ids),

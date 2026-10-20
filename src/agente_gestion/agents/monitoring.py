@@ -91,6 +91,8 @@ class ProjectMonitoringAgent:
             "REGLAS ESTRICTAS:\n"
             "- selection declara alcance relevante y cantidad omitida; si solo hay un ejemplo representativo no es una lista exhaustiva. Usa metrics para progreso global, no infieras detalles omitidos.\n"
             "- No inventes identificadores de tareas ni evidencias; cita unicamente IDs existentes en el contexto.\n"
+            "- Las metricas de estado incluyen observaciones historicas: tarjetas archivadas o excluidas no son riesgos activos ni objetivos correctivos.\n"
+            "- Usa prioridad y responsables solo si estan presentes; explicit_dependencies no incluye predecesoras propuestas. Si detail_availability no es complete, no infieras el contenido omitido.\n"
             "- Las metricas de avance son calculadas de forma autoritativa por el backend; no calcules ni modifiques conteos finales.\n"
             "- Si el CI ha fallado, destaca el riesgo correspondiente.\n"
             "- TaskCard.state es autoritativo: solo state=en_curso (TaskState.in_progress) significa en curso; no inventes estados.\n"
