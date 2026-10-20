@@ -285,7 +285,17 @@ def load_analysis_plan(api_settings: ApiSettings, project_id: str) -> AnalysisRu
         ))
 
     add_model("monitoring", "gemini", engine.gemini_monitoring_model, engine.gemini_api_key)
-    add_model("quality", "groq", engine.groq_model, engine.groq_api_key)
+    # Consent must match the same provider selection used by _build_orchestrator.
+    if engine.quality_provider == "gemini":
+        add_model(
+            "quality", "gemini",
+            engine.gemini_quality_model or engine.gemini_monitoring_model,
+            engine.gemini_api_key,
+        )
+    elif engine.quality_provider == "mistral":
+        add_model("quality", "mistral", engine.mistral_model, engine.mistral_api_key)
+    else:
+        add_model("quality", "groq", engine.groq_model, engine.groq_api_key)
     add_model("verifier", "gemini", engine.gemini_model, engine.gemini_api_key)
     add_model("report", "gemini", engine.gemini_report_model, engine.gemini_api_key)
 
