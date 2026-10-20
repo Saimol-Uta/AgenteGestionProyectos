@@ -4,6 +4,7 @@ import type {
   AuditEventDetail,
   DecideCodeFindingRequest,
   ExecuteProposalRequest,
+  FindingEligibilityRequest,
   OutboxDetail,
   ProjectConfiguration,
   ProposalDetail,
@@ -367,6 +368,17 @@ export function useDecideCodeFindingMutation() {
         queryClient.invalidateQueries({ queryKey: findingsPrefix }),
       ]);
     },
+  });
+}
+
+export function useEvaluateFindingApprovalMutation() {
+  return useMutation({
+    mutationFn: (variables: {
+      runId: string;
+      findingId: string;
+      payload: FindingEligibilityRequest;
+      csrfToken: string;
+    }) => api.evaluateFindingApproval(variables.runId, variables.findingId, variables.payload, variables.csrfToken),
   });
 }
 

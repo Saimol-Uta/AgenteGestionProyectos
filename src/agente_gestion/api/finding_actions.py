@@ -9,7 +9,12 @@ from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.api.errors import ApiProblem
 from agente_gestion.api.repository import DataIntegrityError, SQLiteQueryRepository
 from agente_gestion.api.routes import _require_project_capability, _require_session
-from agente_gestion.api.schemas import FindingDecisionRequest, FindingDecisionResponse
+from agente_gestion.api.schemas import (
+    FindingAuthorizationView,
+    FindingDecisionRequest,
+    FindingDecisionResponse,
+    FindingEligibilityRequest,
+)
 from agente_gestion.application.finding_decisions import (
     APPROVAL_REVIEW_REQUIRED_CODE,
     APPROVAL_REVIEW_REQUIRED_MESSAGE,
@@ -121,6 +126,48 @@ def _code_action_for_request(request, settings, project, candidate, source, orig
                 project_mode=project.source_mode,
             )
     return code_action, origin.repository, origin.base_branch or ""
+
+
+@router.post(
+    "/runs/{run_id}/findings/{finding_id}/approval-eligibility",
+    response_model=FindingAuthorizationView,
+    tags=["Calidad"],
+)
+def evaluate_run_finding_approval(
+    request: Request,
+    body: FindingEligibilityRequest,
+    run_id: Annotated[str, Path(pattern=_ID, max_length=128)],
+    finding_id: Annotated[str, Path(pattern=_FINDING_ID, max_length=128)],
+) -> FindingAuthorizationView:
+    """Evaluate the authorization of one finding, including an edited correction.
+
+    The answer is the very fact the approval gate uses, so an interface can
+    enable the approval only when the backend says the chain is complete. The
+    read never records a decision and never creates a branch or a pull
+    request: it only asks the shared service.
+    """
+    session = _require_session(request)
+    settings = request.app.state.settings
+    repository: SQLiteQueryRepository = request.app.state.repository
+    try:
+        project_id = repository.run_project_id(run_id)
+    except LookupError as exc:
+        raise ApiProblem(404, "corrida_no_encontrada", "No se encontró la corrida solicitada.") from exc
+    except DataIntegrityError:
+        raise ApiProblem(500, "corrida_no_valida", "No se pudo validar la corrida almacenada.") from None
+
+    session = _require_project_capability(
+        request, project_id, "quality:decide", mutation=True,
+    )
+    try:
+        return repository.finding_authorization(
+            run_id, finding_id,
+            suggested_code_override=body.suggested_code_override,
+        )
+    except LookupError:
+        raise ApiProblem(404, "hallazgo_no_encontrado", "No se encontró el hallazgo solicitado.") from None
+    except DataIntegrityError:
+        raise ApiProblem(500, "hallazgo_no_valido", "No se pudo validar el hallazgo almacenado.") from None
 
 
 @router.post(

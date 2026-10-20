@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from zoneinfo import ZoneInfo
 
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
+from agente_gestion.application.finding_decisions import FindingDecisionService
 from agente_gestion.application.tasks_query import (
     TaskDetailView,
     TaskFilter,
@@ -38,6 +39,7 @@ from agente_gestion.api.proposal_diagnostics import proposal_stage_diagnostic
 from agente_gestion.api.schemas import (
     CIRunView,
     AttentionNotice,
+    ApprovalEligibilityView,
     CaptureHistoryView,
     CaptureProgressPoint,
     CodeExcerpt,
@@ -47,9 +49,12 @@ from agente_gestion.api.schemas import (
     EvidenceView,
     ExecutiveReportSummary,
     ExecutiveSummary,
+    FindingAuthorizationView,
     FindingCounts,
     FindingDetail,
+    FindingPublicationView,
     FindingSummary,
+    PatchReviewView,
     ProjectView,
     ProposalsContext,
     RiskView,
@@ -76,6 +81,7 @@ from agente_gestion.api.schemas import (
     TaskHistoryEntry,
     VerificationView,
     ProviderAttempt,
+    blocked_reason_message,
 )
 from agente_gestion.api.security import (
     safe_commit_sha,
@@ -92,6 +98,112 @@ from agente_gestion.domain.repository_history import RepositoryHistoryFilter, Re
 
 class DataIntegrityError(RuntimeError):
     """A stored source record is invalid for a safe browser-facing projection."""
+
+
+class ReadOnlyCodeActionPort:
+    """A code action port that refuses every side effect.
+
+    The eligibility read evaluates the shared policy over the stored context
+    and never creates a branch or a pull request. Passing a port that refuses
+    any effect keeps that guarantee explicit instead of implicit.
+    """
+
+    @staticmethod
+    def _refuse(action: str) -> None:
+        raise RuntimeError(f"La lectura de elegibilidad no puede {action}.")
+
+    def create_verification_branch(self, **_kwargs: Any) -> Any:
+        self._refuse("crear una rama")
+        raise AssertionError("unreachable")
+
+    def create_pull_request(self, **_kwargs: Any) -> Any:
+        self._refuse("abrir un pull request")
+        raise AssertionError("unreachable")
+
+
+def _patch_review_view(review: Any) -> PatchReviewView | None:
+    """The recorded review of one exact patch, as an allowlisted view."""
+    if review is None:
+        return None
+    if isinstance(review, dict):
+        fields = dict(review)
+    else:
+        fields = {
+            "review_id": review.review_id,
+            "project_id": review.project_id,
+            "run_id": review.run_id,
+            "finding_id": review.finding_id,
+            "repository": review.repository,
+            "commit_sha": review.commit_sha,
+            "file_path": review.file_path,
+            "patch_sha256": review.patch_sha256,
+            "original_sha256": review.original_sha256,
+            "verdict": review.verdict.value if hasattr(review.verdict, "value") else str(review.verdict),
+            "reason": review.reason,
+            "reviewed_by": review.reviewed_by,
+            "evidence_ids": list(review.evidence_ids),
+            "reviewed_at": review.reviewed_at,
+        }
+    return PatchReviewView(
+        review_id=str(fields["review_id"]),
+        project_id=str(fields["project_id"]),
+        run_id=str(fields["run_id"]),
+        finding_id=str(fields["finding_id"]),
+        repository=str(fields["repository"]),
+        commit_sha=str(fields["commit_sha"]),
+        file_path=str(fields["file_path"]),
+        patch_sha256=str(fields["patch_sha256"]),
+        original_sha256=str(fields["original_sha256"]),
+        verdict=str(fields["verdict"]),
+        reason=str(fields["reason"]),
+        reviewed_by=str(fields["reviewed_by"]),
+        evidence_ids=[str(item) for item in (fields.get("evidence_ids") or [])],
+        reviewed_at=fields.get("reviewed_at"),
+    )
+
+
+def _publication_view(raw: Any) -> FindingPublicationView | None:
+    """The durable publication receipt, as an allowlisted view.
+
+    An unknown status is never displayed as a publication: the receipt is
+    reported as not requested and the recorded cause is preserved.
+    """
+    if not isinstance(raw, dict):
+        return None
+    status = str(raw.get("publication_status") or "not_requested")
+    if status not in {"not_requested", "published", "partial"}:
+        status = "not_requested"
+    state = raw.get("pull_request_state")
+    if state not in {None, "open", "simulated"}:
+        state = None
+    simulated = raw.get("pull_request_simulated")
+    if not isinstance(simulated, bool):
+        simulated = None
+    number = raw.get("pull_request_number")
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        number = None
+    url = raw.get("pull_request_url")
+    if not isinstance(url, str) or not url.strip():
+        url = None
+    error_code = raw.get("publication_error_code")
+    error_message = raw.get("publication_error_message")
+    return FindingPublicationView(
+        publication_status=status,
+        publication_error_code=error_code if isinstance(error_code, str) and error_code else None,
+        publication_error_message=(
+            error_message if isinstance(error_message, str) and error_message else None
+        ),
+        pull_request_number=number,
+        pull_request_url=url,
+        pull_request_state=state,
+        pull_request_simulated=simulated,
+        patch_review_id=(
+            raw.get("patch_review_id") if isinstance(raw.get("patch_review_id"), str) else None
+        ),
+        patch_sha256=(
+            raw.get("patch_sha256") if isinstance(raw.get("patch_sha256"), str) else None
+        ),
+    )
 
 
 def _safe_finding_branch_url(value: object) -> str | None:
@@ -2156,6 +2268,7 @@ class SQLiteQueryRepository:
         dump = summary.model_dump()
         dump.pop("claim", None)
         dump.pop("evidence", None)
+        authorization = self.finding_authorization(run_id, finding_id)
         return FindingDetail(
             **dump,
             claim=sanitize_text(candidate.claim, secrets_to_redact=self._configured_secrets(), limit=2000)
@@ -2170,7 +2283,131 @@ class SQLiteQueryRepository:
                 items=[item for item in evidence if evidence_ids is None or item.id in evidence_ids],
             ),
             code_excerpt=code_excerpt,
+            patch_review=authorization.patch_review,
+            approval_eligibility=authorization.approval_eligibility,
+            publication=authorization.publication,
         )
+
+    def finding_authorization(
+        self, run_id: str, finding_id: str, *, suggested_code_override: str | None = None,
+    ) -> FindingAuthorizationView:
+        """The exact patch review, the eligibility and the publication of one finding.
+
+        The eligibility is the very fact the approval gate uses: the shared
+        service answers it over the stored context, and this projection never
+        interprets the rules on its own. A finding whose context cannot be
+        verified is reported as blocked, never as authorized.
+        """
+        run_row = self._run_row(run_id)
+        project_id = safe_identifier(run_row.get("project_id"))
+        if project_id is None:
+            raise DataIntegrityError("Stored run project identifier is unsafe")
+        storage = self._adapter()
+        if storage is None:
+            return self._blocked_authorization(run_id, finding_id)
+        try:
+            candidate, excerpt, source, repository, origin = self.finding_action_context(
+                run_id, finding_id,
+            )
+        except LookupError as exc:
+            if str(exc) == "finding_not_found":
+                raise
+            return self._blocked_authorization(run_id, finding_id)
+        origin = self._configured_origin(origin, project_id)
+        service = FindingDecisionService(storage, ReadOnlyCodeActionPort())
+        eligibility = service.approval_eligibility(
+            project_id=project_id,
+            run_id=run_id,
+            finding_id=finding_id,
+            candidate=candidate,
+            original_excerpt=excerpt,
+            source=source,
+            repository=repository,
+            base_branch=origin.base_branch or "",
+            origin=origin,
+            suggested_code_override=suggested_code_override,
+        )
+        review = _patch_review_view(eligibility.get("review"))
+        return FindingAuthorizationView(
+            finding_id=finding_id,
+            run_id=run_id,
+            patch_review=review,
+            approval_eligibility=ApprovalEligibilityView(
+                eligible=bool(eligibility.get("eligible")),
+                authorized=bool(eligibility.get("authorized")),
+                context_valid=bool(eligibility.get("context_valid")),
+                defect_confirmed=bool(eligibility.get("defect_confirmed")),
+                blocked_reason=eligibility.get("blocked_reason"),
+                blocked_reason_message=blocked_reason_message(
+                    eligibility.get("blocked_reason"),
+                ),
+                authorization_reason=eligibility.get("authorization_reason"),
+                patch_sha256=eligibility.get("patch_sha256"),
+                review_id=eligibility.get("review_id"),
+                review=review,
+            ),
+            publication=self._publication_receipt(storage, project_id, run_id, finding_id),
+        )
+
+    def _blocked_authorization(self, run_id: str, finding_id: str) -> FindingAuthorizationView:
+        """The authorization of a finding whose context cannot be verified."""
+        reason = "fuente_no_verificable"
+        return FindingAuthorizationView(
+            finding_id=finding_id,
+            run_id=run_id,
+            patch_review=None,
+            approval_eligibility=ApprovalEligibilityView(
+                eligible=False,
+                authorized=False,
+                context_valid=False,
+                defect_confirmed=False,
+                blocked_reason=reason,
+                blocked_reason_message=blocked_reason_message(reason),
+                authorization_reason=None,
+                patch_sha256=None,
+                review_id=None,
+                review=None,
+            ),
+            publication=None,
+        )
+
+    def _configured_origin(
+        self, origin: FindingActionOrigin, project_id: str,
+    ) -> FindingActionOrigin:
+        """Bind the stored origin to the current project configuration.
+
+        The rule lives in the API layer because the decision endpoint owns it;
+        this read imports it lazily to avoid a circular import and to answer
+        exactly the same question the approval gate answers.
+        """
+        from agente_gestion.api.finding_actions import _configured_origin
+
+        project = next((item for item in self.settings.projects if item.id == project_id), None)
+        if project is None:
+            return origin
+        return _configured_origin(origin, self.settings, project)
+
+    def _publication_receipt(
+        self, storage: SQLiteStorageAdapter, project_id: str, run_id: str, finding_id: str,
+    ) -> FindingPublicationView | None:
+        """The latest durable publication receipt of one finding, if any.
+
+        The receipt is owned by the publication service. Until that service
+        is integrated the finding simply has no publication to show.
+        """
+        try:
+            from agente_gestion.application.finding_publication import (
+                latest_finding_publication,
+            )
+        except ImportError:
+            return None
+        try:
+            receipt = latest_finding_publication(
+                storage, project_id=project_id, run_id=run_id, finding_id=finding_id,
+            )
+        except Exception:
+            return None
+        return _publication_view(receipt)
 
     def _code_excerpt(
         self,

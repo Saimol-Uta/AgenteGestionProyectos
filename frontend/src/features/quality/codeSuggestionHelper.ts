@@ -49,3 +49,23 @@ export function safeGitHubBranchUrl(value: string | null | undefined): string | 
     return /^\/[^/]+\/[^/]+\/tree\/.+\/?$/.test(url.pathname) ? url.href : null;
   } catch { return null; }
 }
+
+/**
+ * Only a real pull request address is rendered as an external link.
+ *
+ * A simulated publication carries a `sandbox://` address, so it can never be
+ * opened in a browser and can never be read as a real pull request.
+ */
+export function safeGitHubPullRequestUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return null;
+    return /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname) ? url.href : null;
+  } catch { return null; }
+}
+
+/** Whether a publication receipt describes a simulated pull request. */
+export function isSimulatedPublication(state: string | null | undefined): boolean {
+  return state === "simulated";
+}

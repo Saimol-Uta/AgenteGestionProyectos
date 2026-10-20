@@ -500,6 +500,50 @@ export interface CodeExcerpt {
 export type CodeFindingDecision = "approve" | "reject" | "request_changes";
 export type ExecutionMode = "live" | "sandbox";
 export type FindingDecisionStatus = "approved" | "rejected" | "changes_requested" | "pending";
+export type PublicationStatus = "not_requested" | "published" | "partial";
+export type PullRequestState = "open" | "simulated";
+
+export interface PatchReviewView {
+  review_id: string;
+  project_id: string;
+  run_id: string;
+  finding_id: string;
+  repository: string;
+  commit_sha: string;
+  file_path: string;
+  patch_sha256: string;
+  original_sha256: string;
+  verdict: "favorable" | "unfavorable" | "insufficient";
+  reason: string;
+  reviewed_by: string;
+  evidence_ids: string[];
+  reviewed_at: string | null;
+}
+
+export interface ApprovalEligibilityView {
+  eligible: boolean;
+  authorized: boolean;
+  context_valid: boolean;
+  defect_confirmed: boolean;
+  blocked_reason: string | null;
+  blocked_reason_message: string | null;
+  authorization_reason: string | null;
+  patch_sha256: string | null;
+  review_id: string | null;
+  review: PatchReviewView | null;
+}
+
+export interface FindingPublicationView {
+  publication_status: PublicationStatus;
+  publication_error_code: string | null;
+  publication_error_message: string | null;
+  pull_request_number: number | null;
+  pull_request_url: string | null;
+  pull_request_state: PullRequestState | null;
+  pull_request_simulated: boolean | null;
+  patch_review_id: string | null;
+  patch_sha256: string | null;
+}
 
 export interface DecideCodeFindingRequest {
   decision: CodeFindingDecision;
@@ -516,6 +560,27 @@ export interface DecideCodeFindingResponse {
   branch_url: string | null;
   commit_sha_applied: string | null;
   execution_mode: ExecutionMode;
+  publication_status?: PublicationStatus;
+  publication_error_code?: string | null;
+  publication_error_message?: string | null;
+  pull_request_number?: number | null;
+  pull_request_url?: string | null;
+  pull_request_state?: PullRequestState | null;
+  pull_request_simulated?: boolean | null;
+  patch_review_id?: string | null;
+  patch_sha256?: string | null;
+}
+
+export interface FindingEligibilityRequest {
+  suggested_code_override?: string;
+}
+
+export interface FindingAuthorizationView {
+  finding_id: string;
+  run_id: string;
+  patch_review: PatchReviewView | null;
+  approval_eligibility: ApprovalEligibilityView;
+  publication: FindingPublicationView | null;
 }
 
 export interface FindingDetail extends FindingSummary {
@@ -533,6 +598,9 @@ export interface FindingDetail extends FindingSummary {
   verification: VerificationView | null;
   evidence: EvidenceCollection;
   code_excerpt: CodeExcerpt | null;
+  patch_review?: PatchReviewView | null;
+  approval_eligibility?: ApprovalEligibilityView | null;
+  publication?: FindingPublicationView | null;
 }
 
 export interface FindingCounts {

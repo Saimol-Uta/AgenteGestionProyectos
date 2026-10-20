@@ -330,6 +330,53 @@ export const quality = {
   ci: null,
 };
 
+/** A recorded independent review of one exact patch, as the backend exposes it. */
+export const patchReview = {
+  review_id: "patch-review-9f2c1d4b8a7e6f50",
+  project_id: "hormigestio",
+  run_id: "run-current",
+  finding_id: "finding-candidate",
+  repository: "owner/project",
+  commit_sha: "0123456789abcdef0123456789abcdef01234567",
+  file_path: "src/token.ts",
+  patch_sha256: "7a2085093d082e2732cdace7384dc271b03ed6ef6756dcac8f9d0b13f82d458a",
+  original_sha256: "1c1f0a4b2f5b3d6e8a9c0b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f",
+  verdict: "favorable" as const,
+  reason: "La corrección resuelve el defecto sin alterar el contexto del archivo completo.",
+  reviewed_by: "verifier_agent",
+  evidence_ids: ["evidence-code-1"],
+  reviewed_at: "2026-01-12T10:05:00-05:00",
+};
+
+/** The authorization fact of one finding, answered by the shared policy. */
+export const approvalEligibility = {
+  eligible: true,
+  authorized: true,
+  context_valid: true,
+  defect_confirmed: true,
+  blocked_reason: null,
+  blocked_reason_message: null,
+  authorization_reason: null,
+  patch_sha256: patchReview.patch_sha256,
+  review_id: patchReview.review_id,
+  review: patchReview,
+};
+
+/** The authorization fact of a finding whose exact patch has no review. */
+export const blockedApprovalEligibility = {
+  eligible: false,
+  authorized: false,
+  context_valid: true,
+  defect_confirmed: true,
+  blocked_reason: "revision_no_corresponde",
+  blocked_reason_message:
+    "La revisión disponible juzgó otro parche, archivo, repositorio, commit o ejecución.",
+  authorization_reason: null,
+  patch_sha256: "c3b0f2d1a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+  review_id: null,
+  review: null,
+};
+
 export const backendRepositorySha = "a".repeat(40);
 
 /** Backend-shaped repository history for offline MultiRepo UI coverage. */
@@ -790,6 +837,11 @@ export async function installApi(page: Page, options: {
   auditStatus?: number;
   configurationStatus?: number;
   requireLogin?: boolean;
+  findingDetailPayload?: unknown;
+  approvalEligibilityPayload?: unknown;
+  approvalEligibilityStatus?: number;
+  decisionPayload?: unknown;
+  decisionStatus?: number;
 } = {}) {
   let authenticated = options.authenticated ?? false;
 
@@ -821,6 +873,13 @@ export async function installApi(page: Page, options: {
   const moduleReads: string[] = [];
   const taskDetailReads: string[] = [];
   const downloadRequests: string[] = [];
+  const findingDecisionRequests: Array<{
+    path: string;
+    body: string | null;
+    csrfToken: string | null;
+    idempotencyKey: string | null;
+  }> = [];
+  const findingApprovalRequests: Array<{ path: string; body: string | null; csrfToken: string | null }> = [];
   const loginStatus = options.loginStatus ?? 200;
   const sessionCapabilities = options.capabilities ?? [];
 
@@ -1267,8 +1326,66 @@ export async function installApi(page: Page, options: {
       return;
     }
 
+    if (path.endsWith("/runs/run-current/findings/finding-candidate/approval-eligibility")
+      && request.method() === "POST") {
+      findingApprovalRequests.push({
+        path,
+        body: request.postData(),
+        csrfToken: request.headers()["x-csrf-token"] ?? null,
+      });
+      if (options.approvalEligibilityStatus && options.approvalEligibilityStatus !== 200) {
+        await json(route, { error: { code: "eligibility_unavailable", message: "La elegibilidad no está disponible." } }, options.approvalEligibilityStatus);
+        return;
+      }
+      await json(route, {
+        finding_id: "finding-candidate",
+        run_id: "run-current",
+        patch_review: options.approvalEligibilityPayload
+          ? (options.approvalEligibilityPayload as { review?: unknown }).review ?? null
+          : patchReview,
+        approval_eligibility: options.approvalEligibilityPayload ?? approvalEligibility,
+        publication: null,
+      });
+      return;
+    }
+
+    if (path.endsWith("/runs/run-current/findings/finding-candidate/decision")
+      && request.method() === "POST") {
+      findingDecisionRequests.push({
+        path,
+        body: request.postData(),
+        csrfToken: request.headers()["x-csrf-token"] ?? null,
+        idempotencyKey: request.headers()["idempotency-key"] ?? null,
+      });
+      if (options.decisionStatus && options.decisionStatus !== 200) {
+        await json(route, { error: { code: "decision_refused", message: "El backend rechazó la decisión." } }, options.decisionStatus);
+        return;
+      }
+      await json(route, options.decisionPayload ?? {
+        reused: false,
+        audit_event_id: "audit-finding-g4-0001",
+        decision_status: "approved",
+        branch_name: "quality/finding-candidate-g4",
+        branch_url: "sandbox://branches/quality/finding-candidate-g4",
+        commit_sha_applied: "d".repeat(64),
+        suggested_code: "const token = readToken().trim();",
+        improvement_summary: "Normaliza el valor de entrada.",
+        execution_mode: "sandbox",
+        publication_status: "published",
+        publication_error_code: null,
+        publication_error_message: null,
+        pull_request_number: 4321,
+        pull_request_url: "sandbox://pulls/owner/project/4321",
+        pull_request_state: "simulated",
+        pull_request_simulated: true,
+        patch_review_id: patchReview.review_id,
+        patch_sha256: patchReview.patch_sha256,
+      });
+      return;
+    }
+
     if (path.endsWith("/runs/run-current/findings/finding-candidate")) {
-      await json(route, findingDetail);
+      await json(route, options.findingDetailPayload ?? findingDetail);
       return;
     }
 
@@ -1427,6 +1544,8 @@ export async function installApi(page: Page, options: {
     moduleReads,
     taskDetailReads,
     downloadRequests,
+    findingDecisionRequests,
+    findingApprovalRequests,
     get jobPollRequests() { return jobPollRequests; },
     get analysisJobListReads() { return analysisJobListReads; },
   };

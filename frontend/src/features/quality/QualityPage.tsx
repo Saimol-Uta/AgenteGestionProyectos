@@ -4,15 +4,23 @@ import { ArrowRight, Code2, FileSearch, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { formatDate, findingVerificationLabel, formatPercentage, stageStatusLabel } from "../../api/formatters";
 import {
-  useDecideCodeFindingMutation, useFinding, usePolicies, useProject, useProjects, useQuality, useRepositoryResults, useRun, useRunFindings, useRuns,
+  useDecideCodeFindingMutation, useEvaluateFindingApprovalMutation, useFinding, usePolicies, useProject, useProjects, useQuality, useRepositoryResults, useRun, useRunFindings, useRuns,
 } from "../../api/queries";
 import { useWorkspace } from "../../app/WorkspaceContext";
 import { EmptyState, ErrorState, LoadingState, Pill } from "../../components/States";
-import type { CodeFindingDecision, DecideCodeFindingResponse, FindingDetail, FindingSummary } from "../../api/types";
+import type {
+  ApprovalEligibilityView,
+  CodeFindingDecision,
+  DecideCodeFindingResponse,
+  FindingDetail,
+  FindingPublicationView,
+  FindingSummary,
+  PatchReviewView,
+} from "../../api/types";
 import { PolicyResults } from "./PolicyResults";
 import { useSession } from "../auth/SessionProvider";
 import { useToast } from "../../components/ToastProvider";
-import { codeSuggestionFor, qualityDisplayFingerprint, safeGitHubBranchUrl } from "./codeSuggestionHelper";
+import { codeSuggestionFor, qualityDisplayFingerprint, safeGitHubBranchUrl, safeGitHubPullRequestUrl } from "./codeSuggestionHelper";
 import "./quality-phase1.css";
 
 function verificationTone(status: string): "neutral" | "positive" | "warning" | "danger" | "unknown" | "accent" {
@@ -41,6 +49,20 @@ function findingRepositoryLabel(finding: FindingSummary) {
   return finding.repository_id ?? "Origen de repositorio desconocido";
 }
 
+function reviewVerdictLabel(verdict: PatchReviewView["verdict"]): string {
+  return ({
+    favorable: "Favorable",
+    unfavorable: "Desfavorable",
+    insufficient: "Insuficiente",
+  } as Record<PatchReviewView["verdict"], string>)[verdict] ?? "Desconocido";
+}
+
+function reviewVerdictTone(verdict: PatchReviewView["verdict"]): "positive" | "danger" | "warning" {
+  if (verdict === "favorable") return "positive";
+  if (verdict === "unfavorable") return "danger";
+  return "warning";
+}
+
 interface FindingSelection {
   projectId: string;
   runId: string;
@@ -49,15 +71,147 @@ interface FindingSelection {
   findingId: string;
 }
 
+/** The exact patch review, as the backend recorded it for this run. */
+function PatchReviewBlock({ review, edited }: { review: PatchReviewView | null; edited: boolean }) {
+  if (!review) {
+    return (
+      <section className="finding-detail-section" aria-label="Revisión del parche exacto">
+        <h4>Revisión independiente del parche exacto</h4>
+        <p className="capability-note">El backend no registró una revisión que cubra el parche exacto de este código.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="finding-detail-section" aria-label="Revisión del parche exacto">
+      <h4>Revisión independiente del parche exacto</h4>
+      {edited && (
+        <p className="quality-approval-block-reason" role="note">
+          Esta revisión cubre el código original del backend; no cubre el código editado.
+        </p>
+      )}
+      <div className="quality-example-note">
+        <div><Pill tone={reviewVerdictTone(review.verdict)}>Veredicto: {reviewVerdictLabel(review.verdict)}</Pill></div>
+        <p>{review.reason}</p>
+      </div>
+      <dl className="finding-facts">
+        <div><dt>Revisión</dt><dd><code>{review.review_id}</code></dd></div>
+        <div><dt>Parche exacto (SHA-256)</dt><dd><code>{review.patch_sha256}</code></dd></div>
+        <div><dt>Fuente original (SHA-256)</dt><dd><code>{review.original_sha256}</code></dd></div>
+        <div><dt>Revisado por</dt><dd><code>{review.reviewed_by}</code></dd></div>
+        <div><dt>Ejecución revisada</dt><dd><code>{review.run_id}</code></dd></div>
+        <div><dt>Repositorio y commit</dt><dd><code>{review.repository}@{review.commit_sha}</code></dd></div>
+        <div><dt>Archivo</dt><dd><code>{review.file_path}</code></dd></div>
+        <div><dt>Revisado el</dt><dd>{review.reviewed_at ? formatDate(review.reviewed_at, true) : "Sin dato"}</dd></div>
+      </dl>
+    </section>
+  );
+}
+
+/** The eligibility, exactly as the backend answered it. */
+function EligibilityBlock({ eligibility }: { eligibility: ApprovalEligibilityView | null }) {
+  if (!eligibility) {
+    return (
+      <section className="finding-detail-section" aria-label="Elegibilidad de la aprobación">
+        <h4>Elegibilidad de la aprobación</h4>
+        <p className="capability-note">El backend no evaluó la elegibilidad de este hallazgo.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="finding-detail-section" aria-label="Elegibilidad de la aprobación">
+      <h4>Elegibilidad de la aprobación</h4>
+      <div className="quality-example-note">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
+          <Pill tone={eligibility.eligible ? "positive" : "danger"}>
+            {eligibility.eligible ? "El backend autoriza la aprobación" : "El backend no autoriza la aprobación"}
+          </Pill>
+          <Pill tone={eligibility.defect_confirmed ? "positive" : "warning"}>
+            {eligibility.defect_confirmed ? "Defecto confirmado" : "Defecto sin confirmar"}
+          </Pill>
+        </div>
+        {eligibility.blocked_reason && (
+          <p className="quality-approval-block-reason" role="note">
+            {eligibility.blocked_reason_message ?? eligibility.blocked_reason}
+            {" "}<code>{eligibility.blocked_reason}</code>
+          </p>
+        )}
+      </div>
+      <dl className="finding-facts">
+        <div><dt>Parche evaluado (SHA-256)</dt><dd><code>{eligibility.patch_sha256 ?? "Sin parche identificable"}</code></dd></div>
+        <div><dt>Revisión que lo cubre</dt><dd><code>{eligibility.review_id ?? "Ninguna"}</code></dd></div>
+      </dl>
+    </section>
+  );
+}
+
+/** The publication receipt, or the partial failure that has to be retried. */
+function PublicationBlock({
+  publication,
+  onRetry,
+  retrying,
+}: {
+  publication: FindingPublicationView | null;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
+  if (!publication || publication.publication_status === "not_requested") {
+    return (
+      <section className="quality-decision-result" aria-label="Publicación del pull request">
+        <p>El backend no registró ninguna publicación para este hallazgo.</p>
+      </section>
+    );
+  }
+  if (publication.publication_status === "partial") {
+    return (
+      <section className="quality-decision-result" aria-label="Publicación del pull request">
+        <Pill tone="warning">Publicación parcial</Pill>
+        <p>
+          La rama y el commit se conservaron, pero la creación del pull request falló.
+          {publication.publication_error_message ? ` ${publication.publication_error_message}` : ""}
+        </p>
+        {publication.publication_error_code && <span>Motivo: <code>{publication.publication_error_code}</code></span>}
+        <button type="button" className="button button-secondary" disabled={retrying} onClick={onRetry}>
+          {retrying ? "Reintentando la publicación…" : "Reintentar la publicación"}
+        </button>
+        <p className="field-help">El reintento reutiliza la misma clave de idempotencia: no requiere una segunda aprobación.</p>
+      </section>
+    );
+  }
+  const simulated = publication.pull_request_state === "simulated" || publication.pull_request_simulated === true;
+  const realUrl = safeGitHubPullRequestUrl(publication.pull_request_url);
+  return (
+    <section className="quality-decision-result" aria-label="Publicación del pull request">
+      <Pill tone={simulated ? "warning" : "positive"}>
+        {simulated ? "Pull request simulado" : "Pull request abierto"}
+      </Pill>
+      <span>Pull request #{publication.pull_request_number ?? "sin número"}</span>
+      {publication.pull_request_url && (
+        <span>Referencia: <code>{publication.pull_request_url}</code></span>
+      )}
+      {simulated && (
+        <p>
+          La publicación es una simulación de sandbox: no existe un pull request real y su dirección no se puede abrir.
+        </p>
+      )}
+      {realUrl && <a className="text-link" href={realUrl} target="_blank" rel="noopener noreferrer">Ver el pull request informado por GitHub</a>}
+    </section>
+  );
+}
+
 function QualityRecommendation({ detail, projectId, repositoryId }: { detail: FindingDetail; projectId: string; repositoryId: string | null }) {
   const suggestion = useMemo(() => codeSuggestionFor(detail), [detail]);
   const [backendDecision, setBackendDecision] = useState<DecideCodeFindingResponse | null>(null);
   const { session } = useSession();
   const { notify } = useToast();
   const mutation = useDecideCodeFindingMutation();
+  const approvalMutation = useEvaluateFindingApprovalMutation();
   const [reasonAction, setReasonAction] = useState<Exclude<CodeFindingDecision, "approve"> | null>(null);
   const [reason, setReason] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editedCode, setEditedCode] = useState<string | null>(null);
+  const [editedEligibility, setEditedEligibility] = useState<ApprovalEligibilityView | null>(null);
   const requestKeys = useRef(new Map<string, string>());
+  const approveKey = useRef<string | null>(null);
   const submitting = useRef(false);
   const canDecide = Boolean(session?.authenticated && session.csrf_token
     && session.capabilities.includes("quality:decide"));
@@ -77,6 +231,82 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
   const displayedExplanation = backendDecision?.improvement_summary ?? suggestion?.explanation ?? "";
   const language = suggestion?.language ?? (/\.pyw?$/i.test(detail.file_path ?? "") ? "Python" : "TypeScript");
   const busy = mutation.isPending;
+
+  // An edited correction is a different patch: the eligibility that was shown
+  // for the original code does not apply to it, so the backend is asked again.
+  const storedCode = detail.suggested_code ?? "";
+  const codeEdited = editing && editedCode !== null && editedCode !== storedCode;
+  const effectiveEligibility = codeEdited
+    ? editedEligibility
+    : detail.approval_eligibility ?? null;
+  const eligible = effectiveEligibility?.eligible === true;
+  // The review that covers the evaluated patch: an edited correction has its
+  // own answer, and the review of the original patch never covers it.
+  const effectiveReview = codeEdited
+    ? editedEligibility?.review ?? null
+    : detail.patch_review ?? null;
+  // The reason comes from the backend whenever it evaluated the action. Only a
+  // backend that did not answer at all keeps the previous interface message.
+  const approvalBlockedMessage = codeEdited
+    ? "Aprobación bloqueada: el código editado es otro parche y no tiene revisión vigente."
+    : effectiveEligibility?.blocked_reason_message
+      ?? (effectiveEligibility?.blocked_reason
+        ? `Aprobación bloqueada: el backend la rechazó con el motivo ${effectiveEligibility.blocked_reason}.`
+        : "Aprobación bloqueada: falta revisión independiente del parche exacto.");
+
+  useEffect(() => {
+    if (!codeEdited || !canDecide || !session?.csrf_token) {
+      setEditedEligibility(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      approvalMutation.mutate(
+        {
+          runId: detail.run_id,
+          findingId: detail.finding_id,
+          payload: { suggested_code_override: editedCode ?? undefined },
+          csrfToken: session.csrf_token!,
+        },
+        {
+          onSuccess: (result) => { if (!cancelled) setEditedEligibility(result.approval_eligibility); },
+          onError: () => { if (!cancelled) setEditedEligibility(null); },
+        },
+      );
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [codeEdited, editedCode, detail.run_id, detail.finding_id, canDecide, session?.csrf_token]);
+
+  async function submitApproval(retry = false) {
+    if (!canDecide || !session?.csrf_token || busy || submitting.current) return;
+    // A retry of a partial publication is not a new human approval: it
+    // reuses the same idempotency key so the backend recovers the
+    // publication instead of creating a second one.
+    if (!retry && !pending) return;
+    if (!retry && !eligible) return;
+    const payload = codeEdited
+      ? { decision: "approve" as const, suggested_code_override: editedCode ?? undefined }
+      : { decision: "approve" as const };
+    if (approveKey.current === null) approveKey.current = crypto.randomUUID();
+    submitting.current = true;
+    try {
+      const response = await mutation.mutateAsync({
+        runId: detail.run_id,
+        findingId: detail.finding_id,
+        payload,
+        csrfToken: session.csrf_token,
+        idempotencyKey: approveKey.current,
+        projectId,
+        repositoryId,
+      });
+      setBackendDecision(response);
+      notify(`Decisión del backend: ${response.decision_status}.`, "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "No se pudo registrar la decisión del hallazgo.", "error");
+    } finally {
+      submitting.current = false;
+    }
+  }
 
   async function submitBackend(action: Exclude<CodeFindingDecision, "approve">, reasonText: string) {
     if (!canDecide || !session?.csrf_token || !pending || busy || submitting.current || !reasonText.trim()) return;
@@ -110,13 +340,30 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
     return ({ pending: "Pendiente", approved: "Aprobada", rejected: "Rechazada", changes_requested: "Cambios solicitados", unknown: "Desconocida" } as Record<string, string>)[value] ?? "Desconocida";
   }
 
+  const publication = backendDecision
+    ? {
+      publication_status: backendDecision.publication_status ?? "not_requested",
+      publication_error_code: backendDecision.publication_error_code ?? null,
+      publication_error_message: backendDecision.publication_error_message ?? null,
+      pull_request_number: backendDecision.pull_request_number ?? null,
+      pull_request_url: backendDecision.pull_request_url ?? null,
+      pull_request_state: backendDecision.pull_request_state ?? null,
+      pull_request_simulated: backendDecision.pull_request_simulated ?? null,
+      patch_review_id: backendDecision.patch_review_id ?? null,
+      patch_sha256: backendDecision.patch_sha256 ?? null,
+    } as FindingPublicationView
+    : detail.publication ?? null;
+
   return (
     <section className="quality-recommendation" aria-label="Recomendación técnica de calidad de código">
       <h3>Recomendación técnica de Quality</h3>
       <ol className="quality-agent-trace" aria-label="Etapas de la recomendación">
-        <li><strong>1. Quality</strong><span>Hallazgo candidato y cambio sugerido</span></li>
-        <li><strong>2. Verificación del defecto</strong><span>{findingVerificationLabel(detail.verification_status)} · evalúa la afirmación, no el parche</span></li>
-        <li><strong>3. Gestora</strong><span>Rechazo o solicitud de cambios al backend</span></li>
+        <li><strong>1. Detectado</strong><span>Hallazgo candidato en {detail.file_path ?? "archivo sin dato"}</span></li>
+        <li><strong>2. Defecto confirmado</strong><span>{findingVerificationLabel(detail.verification_status)}</span></li>
+        <li><strong>3. Revisión del parche exacto</strong><span>{effectiveReview ? reviewVerdictLabel(effectiveReview.verdict) : codeEdited ? "Sin revisión para el código editado" : "Sin revisión vigente"}</span></li>
+        <li><strong>4. Elegibilidad</strong><span>{eligible ? "El backend autoriza la aprobación" : "El backend no autoriza la aprobación"}</span></li>
+        <li><strong>5. Decisión de la gestora</strong><span>{decisionStatusKnown ? decisionLabel(status) : "Desconocida"}</span></li>
+        <li><strong>6. Rama, commit y pull request</strong><span>{resultBranch ? `${resultBranch} · ${resultCommit ?? "sin commit"}` : "Todavía sin rama"}</span></li>
       </ol>
       <div className="quality-example-note" role="note">
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
@@ -136,15 +383,48 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
           {displayedCode ? <div className="code-excerpt quality-example-code"><code>{displayedCode}</code></div> : <p>El backend no entregó código sugerido.</p>}
         </section>
       </div>
+      <PatchReviewBlock review={detail.patch_review ?? null} edited={codeEdited} />
+      <EligibilityBlock eligibility={effectiveEligibility} />
       <div className="quality-human-decision">
         <h4>Decisión de la gestora</h4>
-        <p>La aprobación y ejecución de un cambio GitHub están bloqueadas hasta disponer de una revisión independiente vinculada al parche exacto. No hay controles de edición de parche ni de rama porque esta acción no está disponible.</p>
-        {!session?.authenticated && <p className="capability-note">Modo de consulta: inicia sesión para enviar un rechazo o una solicitud de cambios protegidos.</p>}
+        <p>La aprobación solo se habilita cuando el backend declara la acción elegible y la sesión de la gestora lo permite. Una revisión favorable cubre un parche exacto: si editas el código, esa revisión deja de aplicar y el backend vuelve a evaluar.</p>
+        {!session?.authenticated && <p className="capability-note">Modo de consulta: inicia sesión para enviar una decisión protegida.</p>}
         {session?.authenticated && !canDecide && <p className="capability-note">El servidor no concedió quality:decide; las decisiones protegidas están ocultas.</p>}
         {!decisionStatusKnown && <p className="capability-note" role="status">El estado de decisión es desconocido; no se ofrecen decisiones protegidas.</p>}
         {canDecide && pending && <>
-          <button type="button" className="button button-primary quality-approval-blocked" disabled aria-describedby="quality-approval-block-reason">Aprobar y crear rama</button>
-          <p id="quality-approval-block-reason" className="quality-approval-block-reason" role="note">Aprobación bloqueada: falta revisión independiente del parche exacto.</p>
+          {eligible ? (
+            <button type="button" className="button button-primary" disabled={busy || submitting.current} onClick={() => void submitApproval()}>
+              Aprobar y crear rama
+            </button>
+          ) : (            <>
+              <button type="button" className="button button-primary quality-approval-blocked" disabled aria-describedby="quality-approval-block-reason">Aprobar y crear rama</button>
+              <p id="quality-approval-block-reason" className="quality-approval-block-reason" role="note">
+                {approvalBlockedMessage}
+              </p>
+            </>
+          )}
+          {editing && (
+            <div className="quality-reject-form">
+              <label className="filter-control">
+                <span>Corrección editada por la gestora</span>
+                <textarea
+                  aria-label="Corrección editada por la gestora"
+                  maxLength={65536}
+                  rows={6}
+                  value={editedCode ?? ""}
+                  onChange={(event) => setEditedCode(event.target.value)}
+                />
+              </label>
+              <p className="field-help">El backend evalúa este código exacto. La revisión mostrada corresponde al código original y no se extiende a la edición.</p>
+              <button type="button" className="button button-secondary" disabled={busy} onClick={() => { setEditing(false); setEditedCode(null); }}>Restablecer el código del backend</button>
+            </div>
+          )}
+          {!editing && (
+            <div className="quality-reject-form">
+              <button type="button" className="button button-secondary" disabled={busy} onClick={() => { setEditing(true); setEditedCode(storedCode); }}>Editar el código sugerido</button>
+              <p className="field-help">Al editar el código, el backend vuelve a evaluar la elegibilidad de ese parche exacto.</p>
+            </div>
+          )}
           <div className="quality-decision-actions">
             <button type="button" className="button button-secondary" disabled={busy} onClick={() => setReasonAction("reject")}>Rechazar sugerencia</button>
             <button type="button" className="button button-secondary" disabled={busy} onClick={() => setReasonAction("request_changes")}>Solicitar cambios</button>
@@ -156,16 +436,24 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
           </div>}
         </>}
         {mutation.isError && <p className="form-error" role="alert">{mutation.error.message}</p>}
+        {approvalMutation.isError && codeEdited && <p className="form-error" role="alert">{approvalMutation.error.message}</p>}
         <div className="quality-decision-result" aria-live="polite" role="status">
           {backendRecorded && <>
             <Pill tone={status === "approved" ? "positive" : status === "rejected" ? "danger" : status === "changes_requested" ? "warning" : "neutral"}>{decisionLabel(status)}</Pill>
             {resultBranch && <strong>{resultBranch}</strong>}
             {resultCommit && <span>Commit informado: {resultCommit}</span>}
-            {status === "approved" && <p>Estado histórico informado por el backend; esta interfaz no ofrece una aprobación nueva sin revisión independiente del parche exacto.</p>}
+            {status === "approved" && !publication && <p>La aprobación quedó registrada; el backend todavía no informó una publicación.</p>}
             {liveBranchUrl && <a className="text-link" href={liveBranchUrl} target="_blank" rel="noopener noreferrer">Ver rama informada por GitHub</a>}
             {resultMode === "live" && resultBranchUrl && !liveBranchUrl && <p>Referencia de la rama: <code>{resultBranchUrl}</code></p>}
           </>}
         </div>
+        {backendRecorded && status === "approved" && (
+          <PublicationBlock
+            publication={publication}
+            retrying={busy}
+            onRetry={() => void submitApproval(true)}
+          />
+        )}
       </div>
     </section>
   );

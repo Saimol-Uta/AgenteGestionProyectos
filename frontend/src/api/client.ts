@@ -13,7 +13,9 @@ import type {
   ExecuteProposalResponse,
   ExecutiveSummary,
   EvidenceSummary,
+  FindingAuthorizationView,
   FindingDetail,
+  FindingEligibilityRequest,
   FindingSummary,
   OperatorSession,
   OutboxCollection,
@@ -229,6 +231,10 @@ export const api = {
   decideCodeFinding: (runId: string, findingId: string, payload: DecideCodeFindingRequest, csrfToken: string, idempotencyKey: string) =>
     request<DecideCodeFindingResponse>(`/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(findingId)}/decision`, {
       method: "POST", csrfToken, headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload),
+    }),
+  evaluateFindingApproval: (runId: string, findingId: string, payload: FindingEligibilityRequest, csrfToken: string) =>
+    request<FindingAuthorizationView>(`/runs/${encodeURIComponent(runId)}/findings/${encodeURIComponent(findingId)}/approval-eligibility`, {
+      method: "POST", csrfToken, body: JSON.stringify(payload),
     }),
   getRunEvidence: (runId: string, page = 1, pageSize = 25) =>
     request<Paginated<EvidenceSummary>>(`/runs/${encodeURIComponent(runId)}/evidence${query({ page, page_size: pageSize })}`),

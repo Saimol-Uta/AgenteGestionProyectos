@@ -4,7 +4,7 @@ from datetime import datetime
 import re
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator, model_validator
 
 from agente_gestion.application.tasks_query import TaskDetailView, TaskPlanSummary, TaskRisk
 from agente_gestion.domain.evidence import DiffSide, EvidenceSource
@@ -19,6 +19,41 @@ StageStatusValue = Literal[
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+
+# The backend explains its own reasons in the language of the interface. The
+# mapping only translates a reason code into a sentence: it never decides
+# whether an action is allowed, and an unknown code is reported as such.
+BLOCKED_REASON_MESSAGES: dict[str, str] = {
+    "fuente_no_verificable": (
+        "El origen del hallazgo no coincide con la fuente y el alcance almacenados, "
+        "o el repositorio configurado ya no corresponde."
+    ),
+    "defecto_no_confirmado": (
+        "El defecto no está confirmado por una verificación independiente de esta ejecución."
+    ),
+    "codigo_sugerido_requerido": "El hallazgo no contiene una corrección candidata que revisar.",
+    "parche_no_identificable": (
+        "No se puede identificar el parche exacto sobre el archivo completo capturado."
+    ),
+    "revision_inexistente": (
+        "No existe una revisión independiente del parche exacto que se aplicaría."
+    ),
+    "revision_no_corresponde": (
+        "La revisión disponible juzgó otro parche, archivo, repositorio, commit o ejecución."
+    ),
+    "revision_desfavorable": "La revisión independiente del parche exacto fue desfavorable.",
+    "revision_insuficiente": "La revisión independiente del parche exacto fue insuficiente.",
+}
+
+
+def blocked_reason_message(code: str | None) -> str | None:
+    """The Spanish explanation of one backend reason, or None when there is none."""
+    if not code:
+        return None
+    return BLOCKED_REASON_MESSAGES.get(
+        code, f"El backend bloqueó la aprobación con el motivo: {code}.",
+    )
 
 
 class Page(ApiModel, Generic[T]):
@@ -429,6 +464,73 @@ class CodeExcerpt(ApiModel):
     redacted: bool
 
 
+class PatchReviewView(ApiModel):
+    """One recorded independent review of one exact patch."""
+
+    review_id: str
+    project_id: str
+    run_id: str
+    finding_id: str
+    repository: str
+    commit_sha: str
+    file_path: str
+    patch_sha256: str
+    original_sha256: str
+    verdict: Literal["favorable", "unfavorable", "insufficient"]
+    reason: str
+    reviewed_by: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    reviewed_at: datetime | None = None
+
+
+class ApprovalEligibilityView(ApiModel):
+    """The authorization fact of one finding, answered by the shared policy."""
+
+    eligible: bool
+    authorized: bool
+    context_valid: bool
+    defect_confirmed: bool
+    blocked_reason: str | None = None
+    blocked_reason_message: str | None = None
+    authorization_reason: str | None = None
+    patch_sha256: str | None = None
+    review_id: str | None = None
+    review: PatchReviewView | None = None
+
+
+class FindingPublicationView(ApiModel):
+    """The durable receipt of one publication attempt.
+
+    A simulated pull request is never presented as a real one: the state and
+    the simulated flag always agree, and the URL of a simulated publication
+    is not an address a browser can open.
+    """
+
+    publication_status: Literal["not_requested", "published", "partial"] = "not_requested"
+    publication_error_code: str | None = None
+    publication_error_message: str | None = None
+    pull_request_number: int | None = Field(default=None, ge=1)
+    pull_request_url: str | None = None
+    pull_request_state: Literal["open", "simulated"] | None = None
+    pull_request_simulated: bool | None = None
+    patch_review_id: str | None = None
+    patch_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def validate_publication_state(self) -> "FindingPublicationView":
+        if self.pull_request_state == "simulated" and self.pull_request_simulated is not True:
+            raise ValueError("A simulated pull request must be reported as simulated.")
+        if self.pull_request_state == "open" and self.pull_request_simulated is True:
+            raise ValueError("A real pull request cannot be reported as simulated.")
+        if (
+            self.pull_request_state == "simulated"
+            and self.pull_request_url is not None
+            and self.pull_request_url.startswith("https://")
+        ):
+            raise ValueError("A simulated pull request cannot carry a real address.")
+        return self
+
+
 class FindingDecisionRequest(ApiModel):
     decision: Literal["approve", "reject", "request_changes"]
     suggested_code_override: StrictStr | None = Field(default=None, max_length=65536)
@@ -462,6 +564,38 @@ class FindingDecisionResponse(ApiModel):
     repository_owner: str | None = Field(default=None, exclude_if=lambda value: value is None)
     repository_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
     source_commit_sha: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    publication_status: Literal["not_requested", "published", "partial"] = "not_requested"
+    publication_error_code: str | None = None
+    publication_error_message: str | None = None
+    pull_request_number: int | None = Field(default=None, ge=1)
+    pull_request_url: str | None = None
+    pull_request_state: Literal["open", "simulated"] | None = None
+    pull_request_simulated: bool | None = None
+    patch_review_id: str | None = None
+    patch_sha256: str | None = None
+
+
+class FindingEligibilityRequest(ApiModel):
+    """The optional edited correction whose eligibility the backend evaluates."""
+
+    suggested_code_override: StrictStr | None = Field(default=None, max_length=65536)
+
+    @field_validator("suggested_code_override")
+    @classmethod
+    def non_empty_override(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("El código alternativo no puede estar vacío.")
+        return value
+
+
+class FindingAuthorizationView(ApiModel):
+    """The review, the eligibility and the publication of one finding."""
+
+    finding_id: str
+    run_id: str
+    patch_review: PatchReviewView | None = None
+    approval_eligibility: ApprovalEligibilityView
+    publication: FindingPublicationView | None = None
 
 
 class FindingDetail(FindingSummary):
@@ -471,6 +605,9 @@ class FindingDetail(FindingSummary):
     verification: VerificationView | None = None
     evidence: EvidenceCollection
     code_excerpt: CodeExcerpt | None = None
+    patch_review: PatchReviewView | None = None
+    approval_eligibility: ApprovalEligibilityView | None = None
+    publication: FindingPublicationView | None = None
 
 
 class FindingCounts(ApiModel):
