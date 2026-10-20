@@ -1,16 +1,24 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { CircleCheck, CircleX, Info, X } from "lucide-react";
+import { Link } from "react-router-dom";
 
 export type ToastTone = "success" | "error" | "info";
+
+/** Optional destination offered inside a notice, so it can lead to the result. */
+export interface ToastAction {
+  label: string;
+  to: string;
+}
 
 interface ToastEntry {
   id: number;
   message: string;
   tone: ToastTone;
+  action: ToastAction | null;
 }
 
 interface ToastContextValue {
-  notify: (message: string, tone?: ToastTone) => void;
+  notify: (message: string, tone?: ToastTone, action?: ToastAction) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -23,9 +31,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
-  const notify = useCallback((message: string, tone: ToastTone = "info") => {
+  const notify = useCallback((message: string, tone: ToastTone = "info", action?: ToastAction) => {
     const id = ++nextToastId;
-    setToasts((current) => [...current, { id, message, tone }]);
+    setToasts((current) => [...current, { id, message, tone, action: action ?? null }]);
     window.setTimeout(() => {
       setToasts((current) => current.filter((toast) => toast.id !== id));
     }, 5000);
@@ -43,6 +51,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <div className={`toast toast-${toast.tone}`} key={toast.id} role="status">
               <Icon aria-hidden="true" size={18} />
               <span>{toast.message}</span>
+              {toast.action && (
+                <Link className="toast-action" to={toast.action.to} onClick={() => dismiss(toast.id)}>
+                  {toast.action.label}
+                </Link>
+              )}
               <button
                 type="button"
                 className="icon-button toast-dismiss"

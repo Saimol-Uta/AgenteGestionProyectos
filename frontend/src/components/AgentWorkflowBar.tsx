@@ -21,6 +21,18 @@ import { useToast } from "./ToastProvider";
 type ActionKind = "sync" | "email";
 type RequestStage = "preparing" | "confirming" | null;
 
+/** State of the tracked analysis, as reported by the backend job record. */
+function analysisStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    queued: "Análisis iniciado",
+    running: "Análisis en curso",
+    completed: "Análisis finalizado",
+    failed: "Análisis fallido",
+    interrupted: "Análisis interrumpido",
+  };
+  return labels[status] ?? "Estado del análisis sin confirmar";
+}
+
 export function AgentWorkflowBar() {
   const { selectedProjectId } = useWorkspace();
   const { session } = useSession();
@@ -96,7 +108,11 @@ function Workflow({ projectId }: { projectId: string | null }) {
   const canPrepare = Boolean(projectId && session?.authenticated && session.csrf_token && session.capabilities.includes("analysis:prepare"));
   const canConfirm = Boolean(canPrepare && session?.capabilities.includes("analysis:confirm"));
   const jobs = useAnalysisJobs(canPrepare ? projectId : null);
-  const active = jobs.data?.items.find((job) => job.status === "queued" || job.status === "running");
+  // The ledger returns the jobs from the most recent to the oldest, so the
+  // first one is the last analysis of this project. Tracking it keeps the
+  // indicator alive after a reload, when no job is running anymore.
+  const latestJob = jobs.data?.items?.[0] ?? null;
+  const active = latestJob && ["queued", "running"].includes(latestJob.status) ? latestJob : null;
   const [preparation, setPreparation] = useState<AnalysisPreparation | null>(null);
   const [remoteConsent, setRemoteConsent] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -113,13 +129,22 @@ function Workflow({ projectId }: { projectId: string | null }) {
   const confirmationKey = useRef<string | null>(null);
   const emailIdempotencyKey = useRef<string | null>(null);
   const refreshedJob = useRef<string | null>(null);
+  const notifiedJob = useRef<string | null>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
-  const trackedId = jobId ?? active?.job_id ?? null;
+  /**
+   * The tracked job stays tracked after it reaches a terminal state, so the
+   * manager keeps the real outcome and the access to its result instead of
+   * losing the analysis the moment the pipeline returns.
+   */
+  const trackedId = jobId ?? latestJob?.job_id ?? null;
   const tracked = useQuery({
     queryKey: queryKeys.analysisJob(trackedId ?? ""),
     queryFn: () => api.getAnalysisJob(trackedId!),
     enabled: Boolean(canPrepare && trackedId),
+    // The same cache entry the analysis centre polls: one freshness window
+    // avoids two subscribers refetching the same protected job.
+    staleTime: 3_000,
     refetchInterval: (query) => ["queued", "running"].includes(query.state.data?.status ?? "") ? 3000 : false,
   });
   const running = Boolean(tracked.data && ["queued", "running"].includes(tracked.data.status))
@@ -133,6 +158,27 @@ function Workflow({ projectId }: { projectId: string | null }) {
       void client.invalidateQueries({ queryKey: [name, projectId] });
     }
   }, [client, projectId, tracked.data]);
+
+  /** One notice per finished job, never repeated by the polling. */
+  useEffect(() => {
+    const job = tracked.data;
+    if (!job || !projectId || ["queued", "running"].includes(job.status)) return;
+    if (notifiedJob.current === job.job_id) return;
+    notifiedJob.current = job.job_id;
+    if (job.status === "completed") {
+      notify(
+        "El análisis terminó. Puedes revisar sus resultados.",
+        "success",
+        job.run_id ? { label: "Ver resultados", to: `/analysis/${encodeURIComponent(job.run_id)}` } : undefined,
+      );
+    } else if (job.status === "failed" || job.status === "interrupted") {
+      notify(
+        "El análisis no se completó correctamente.",
+        "error",
+        job.run_id ? { label: "Ver resultados", to: `/analysis/${encodeURIComponent(job.run_id)}` } : undefined,
+      );
+    }
+  }, [notify, projectId, tracked.data]);
 
   function handleDialogOpenChange(kind: ActionKind, open: boolean) {
     if (open) {
@@ -234,9 +280,25 @@ function Workflow({ projectId }: { projectId: string | null }) {
   const canStart = canPrepare && !busy && !running && !preparation;
   const canConfirmPrepared = Boolean(preparation && canConfirm && !busy && !running && analysisPreparationIsReady(preparation)
     && (!preparation.remote.required || (remoteConsent && preparation.remote.server_allowed)));
+  const trackedJob = tracked.data;
+  const indicatorLabel = trackedJob ? analysisStatusLabel(trackedJob.status) : null;
+  const indicatorTarget = trackedJob?.run_id
+    ? `/analysis/${encodeURIComponent(trackedJob.run_id)}`
+    : "/analysis";
 
   return (
     <div className="header-workflow-actions" aria-label="Acciones del proyecto">
+      {trackedJob && indicatorLabel && (
+        <Link
+          className={`analysis-status-indicator analysis-status-${trackedJob.status}`}
+          to={indicatorTarget}
+          aria-label={`${indicatorLabel}. Proyecto ${projectId ?? "sin seleccionar"}. Ver el análisis.`}
+        >
+          <span className="analysis-status-dot" aria-hidden="true" />
+          <span className="analysis-status-text">{indicatorLabel}</span>
+          <span className="analysis-status-project">{projectId ?? "Proyecto sin seleccionar"}</span>
+        </Link>
+      )}
       <HeaderActionDialog
         kind="sync"
         label="Sincronizar proyecto"
