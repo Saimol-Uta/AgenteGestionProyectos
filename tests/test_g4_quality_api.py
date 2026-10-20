@@ -7,6 +7,7 @@ and a simulated pull request can never be presented as a real one.
 """
 
 import hashlib
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+from agente_gestion.adapters.github_code_action_adapter import CodeActionError
 from agente_gestion.adapters.storage.sqlite import SQLiteStorageAdapter
 from agente_gestion.api.control_plane import ControlPlaneRepository
 from agente_gestion.api.errors import ApiProblem
@@ -27,6 +29,7 @@ from agente_gestion.api.repository import SQLiteQueryRepository
 from agente_gestion.api.routes import router as api_router
 from agente_gestion.api.security import OperatorSessionStore
 from agente_gestion.api.settings import ApiSettings, ProjectConfig
+from agente_gestion.application.finding_publication import latest_finding_publication
 from agente_gestion.application.patch_review import (
     BLOCK_DEFECT_NOT_CONFIRMED,
     BLOCK_REVIEW_MISSING,
@@ -37,6 +40,7 @@ from agente_gestion.domain.code_action import (
     BranchExecutionResult,
     CodeSourceSnapshot,
     FindingActionOrigin,
+    PullRequestExecutionResult,
 )
 from agente_gestion.domain.findings import (
     CandidateFinding,
@@ -82,18 +86,6 @@ OTHER_PATCH_SHA256 = hashlib.sha256(
 ).hexdigest()
 
 
-def _publication_service_is_integrated() -> bool:
-    """Whether the publication service seam of the parent task is in place."""
-    try:
-        from agente_gestion.application import finding_publication  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-PUBLICATION_SERVICE_INTEGRATED = _publication_service_is_integrated()
-
-
 class _StubVerifier:
     """Returns a prepared verdict without calling any model."""
 
@@ -109,10 +101,16 @@ class _StubVerifier:
 
 
 class _RecordingCodeActionPort:
-    """Records every branch creation so a refusal can be proven inert."""
+    """Records every branch and pull request so a refusal can be proven inert.
+
+    The port mirrors the sandbox behaviour of the real adapter: the branch is
+    local and the pull request is explicitly simulated, with a deterministic
+    number and a ``sandbox://`` address that no browser can open.
+    """
 
     def __init__(self):
         self.calls: list[dict[str, Any]] = []
+        self.pull_request_calls: list[dict[str, Any]] = []
 
     def create_verification_branch(self, **kwargs):
         self.calls.append(kwargs)
@@ -120,6 +118,56 @@ class _RecordingCodeActionPort:
             execution_mode="sandbox", branch_name=kwargs["target_branch"],
             branch_url=f"sandbox://branches/{kwargs['target_branch']}", commit_sha_applied="d" * 64,
         )
+
+    def create_pull_request(
+        self, *, repo, base_branch, branch_result, finding_id, actor, patch_sha256,
+    ):
+        self.pull_request_calls.append({
+            "repo": repo, "base_branch": base_branch, "finding_id": finding_id,
+            "actor": actor, "patch_sha256": patch_sha256,
+            "head_branch": branch_result.branch_name,
+            "head_commit_sha": branch_result.commit_sha_applied,
+        })
+        identity = json.dumps({
+            "base_branch": base_branch, "finding_id": finding_id,
+            "head_branch": branch_result.branch_name,
+            "head_commit_sha": branch_result.commit_sha_applied,
+            "patch_sha256": patch_sha256, "repository": repo,
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        number = 1000 + int(hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8], 16) % 9000
+        return PullRequestExecutionResult(
+            execution_mode=branch_result.execution_mode,
+            pull_request_number=number,
+            pull_request_url=f"sandbox://pulls/{repo}/{number}",
+            state="simulated",
+            repository=repo,
+            base_branch=base_branch,
+            head_branch=branch_result.branch_name,
+            head_commit_sha=branch_result.commit_sha_applied,
+            recovered=False,
+        )
+
+
+class _FlakyPublicationPort(_RecordingCodeActionPort):
+    """Refuses the first publication and succeeds on the recovery.
+
+    It reproduces an interrupted publication: the branch and the commit are
+    already created, so only the pull request is missing.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.refusals = 1
+
+    def create_pull_request(self, **kwargs):
+        if self.refusals > 0:
+            self.refusals -= 1
+            self.pull_request_calls.append({"refused": True, **kwargs})
+            raise CodeActionError(
+                "pull_request_no_confirmado",
+                "No se pudo confirmar la creación del pull request.",
+            )
+        return super().create_pull_request(**kwargs)
 
 
 class G4QualityApiFixture(unittest.TestCase):
@@ -403,8 +451,8 @@ class FindingDecisionPublicationContractTests(G4QualityApiFixture):
         self._record_review()
         response = self.client.post(
             f"/api/v1/runs/{RUN_ID}/findings/{FINDING_ID}/decision",
-            json={"decision": "approve", "reason": "Correccion revisada y aprobada."},
-            headers={**self._authenticate(), "Idempotency-Key": "g4-approve-contract-0001"},
+            json={"decision": "reject", "reason": "El defecto no es accionable."},
+            headers={**self._authenticate(), "Idempotency-Key": "g4-decision-contract-0001"},
         )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
@@ -414,16 +462,18 @@ class FindingDecisionPublicationContractTests(G4QualityApiFixture):
             "pull_request_simulated", "patch_review_id", "patch_sha256",
         ):
             self.assertIn(field, payload)
-        self.assertIn(
-            payload["publication_status"], {"not_requested", "published", "partial"},
-        )
+        # A decision that publishes nothing reports exactly that, and never a
+        # pull request that does not exist.
+        self.assertEqual(payload["publication_status"], "not_requested")
+        self.assertIsNone(payload["publication_error_code"])
+        self.assertIsNone(payload["publication_error_message"])
         self.assertIsNone(payload["pull_request_number"])
         self.assertIsNone(payload["pull_request_url"])
         self.assertIsNone(payload["pull_request_state"])
         self.assertIsNone(payload["pull_request_simulated"])
-        self.assertEqual(payload["decision_status"], "approved")
-        self.assertTrue(payload["branch_name"])
-        self.assertTrue(payload["commit_sha_applied"])
+        self.assertEqual(payload["decision_status"], "rejected")
+        self.assertEqual(self.port.calls, [])
+        self.assertEqual(self.port.pull_request_calls, [])
 
     def test_the_decision_is_refused_without_the_reviewed_chain(self):
         response = self.client.post(
@@ -438,16 +488,13 @@ class FindingDecisionPublicationContractTests(G4QualityApiFixture):
         self.assertEqual(self.port.calls, [])
 
 
-@unittest.skipUnless(
-    PUBLICATION_SERVICE_INTEGRATED,
-    "The publication service seam is not integrated yet; the parent task owns it.",
-)
 class FindingPublicationIntegrationTests(G4QualityApiFixture):
-    """The integrated contract: the service fills the reviewed identity.
+    """The integrated contract: the service publishes the reviewed branch.
 
-    This group is the integration gate of the parent task: it runs as soon as
-    the publication service is integrated and proves that the decision
-    response carries the reviewed patch and the publication receipt.
+    The publication service is integrated, so this proof is never skipped: the
+    decision response carries the reviewed identity and the positive receipt
+    of one simulated pull request, the durable ledger agrees with it and the
+    audit records the attempt.
     """
 
     def test_the_decision_response_carries_the_reviewed_identity_and_the_publication(self):
@@ -463,10 +510,145 @@ class FindingPublicationIntegrationTests(G4QualityApiFixture):
         self.assertEqual(payload["patch_sha256"], PATCH_SHA256)
         self.assertEqual(payload["patch_review_id"], review.review_id)
         self.assertEqual(payload["publication_status"], "published")
+        self.assertIsNone(payload["publication_error_code"])
+        self.assertIsNone(payload["publication_error_message"])
         self.assertEqual(payload["pull_request_state"], "simulated")
         self.assertTrue(payload["pull_request_simulated"])
         self.assertTrue(payload["pull_request_number"])
         self.assertTrue(payload["pull_request_url"])
+        self.assertEqual(payload["decision_status"], "approved")
+
+        # The branch and the commit of the receipt are the authorized ones.
+        self.assertTrue(payload["branch_name"])
+        self.assertTrue(payload["commit_sha_applied"])
+        self.assertTrue(payload["branch_name"].startswith("quality/"))
+        self.assertNotEqual(payload["branch_name"], "develop")
+        self.assertEqual(len(payload["commit_sha_applied"]), 64)
+
+        # The adapter was asked for exactly one pull request of the reviewed patch.
+        self.assertEqual(len(self.port.pull_request_calls), 1)
+        publication_call = self.port.pull_request_calls[0]
+        self.assertEqual(publication_call["repo"], REPOSITORY)
+        self.assertEqual(publication_call["base_branch"], "develop")
+        self.assertEqual(publication_call["patch_sha256"], PATCH_SHA256)
+        self.assertEqual(publication_call["head_branch"], payload["branch_name"])
+        self.assertEqual(publication_call["head_commit_sha"], payload["commit_sha_applied"])
+
+        # The simulated pull request is addressed as a simulation, never as a
+        # real pull request of GitHub.
+        self.assertTrue(payload["pull_request_url"].startswith("sandbox://pulls/"))
+        self.assertTrue(
+            payload["pull_request_url"].endswith(f"/{payload['pull_request_number']}"),
+        )
+
+        # The durable receipt agrees with the response.
+        receipt = latest_finding_publication(
+            self.storage, project_id=PROJECT_ID, run_id=RUN_ID, finding_id=FINDING_ID,
+        )
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt["publication_status"], "published")
+        self.assertEqual(receipt["stage"], "published")
+        self.assertEqual(receipt["pull_request_number"], payload["pull_request_number"])
+        self.assertEqual(receipt["pull_request_url"], payload["pull_request_url"])
+        self.assertEqual(receipt["pull_request_state"], "simulated")
+        self.assertTrue(receipt["pull_request_simulated"])
+        self.assertEqual(receipt["patch_review_id"], review.review_id)
+        self.assertEqual(receipt["patch_sha256"], PATCH_SHA256)
+        self.assertEqual(receipt["branch_name"], payload["branch_name"])
+        self.assertEqual(receipt["commit_sha_applied"], payload["commit_sha_applied"])
+        self.assertEqual(receipt["base_branch"], "develop")
+
+        # The audit records the granted publication.
+        audits = [
+            entry for entry in self.storage.list_security_audit_events(PROJECT_ID)
+            if entry.permission_checked == "web:finding_publication"
+        ]
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(audits[0].decision, "granted")
+        self.assertIn(
+            f"Pull request {payload['pull_request_number']} published against develop",
+            audits[0].reason,
+        )
+        self.assertIn("sandbox mode", audits[0].reason)
+
+    def test_a_partial_publication_is_recovered_with_the_same_idempotency_key(self):
+        self._confirm_defect()
+        self._record_review()
+        flaky = _FlakyPublicationPort()
+        self.client.app.state.code_action_port = flaky
+        headers = {**self._authenticate(), "Idempotency-Key": "g4-approve-partial-0001"}
+        path = f"/api/v1/runs/{RUN_ID}/findings/{FINDING_ID}/decision"
+        body = {"decision": "approve", "reason": "Correccion revisada y aprobada."}
+
+        first = self.client.post(path, json=body, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        partial = first.json()
+        # The branch and the commit survive the failure of the pull request.
+        self.assertEqual(partial["decision_status"], "approved")
+        self.assertEqual(partial["publication_status"], "partial")
+        self.assertEqual(partial["publication_error_code"], "pull_request_no_confirmado")
+        self.assertTrue(partial["publication_error_message"])
+        self.assertIsNone(partial["pull_request_number"])
+        self.assertIsNone(partial["pull_request_url"])
+        self.assertTrue(partial["branch_name"])
+        self.assertTrue(partial["commit_sha_applied"])
+
+        # The same idempotency key recovers the publication: no second human
+        # decision and no second branch.
+        second = self.client.post(path, json=body, headers=headers)
+        self.assertEqual(second.status_code, 200, second.text)
+        recovered = second.json()
+        self.assertTrue(recovered["reused"])
+        self.assertEqual(recovered["publication_status"], "published")
+        self.assertIsNone(recovered["publication_error_code"])
+        self.assertEqual(recovered["pull_request_state"], "simulated")
+        self.assertTrue(recovered["pull_request_simulated"])
+        self.assertTrue(recovered["pull_request_number"])
+        self.assertTrue(recovered["pull_request_url"])
+        self.assertEqual(recovered["branch_name"], partial["branch_name"])
+        self.assertEqual(recovered["commit_sha_applied"], partial["commit_sha_applied"])
+        self.assertEqual(len(flaky.calls), 1)
+        self.assertEqual(len(flaky.pull_request_calls), 2)
+
+        # Both attempts are audited: the refusal and the granted recovery.
+        audits = [
+            entry for entry in self.storage.list_security_audit_events(PROJECT_ID)
+            if entry.permission_checked == "web:finding_publication"
+        ]
+        self.assertEqual(len(audits), 2)
+        self.assertEqual(audits[0].decision, "denied")
+        self.assertIn("pull_request_no_confirmado", audits[0].reason)
+        self.assertEqual(audits[1].decision, "granted")
+        # The recovery is audited as a recovery, not as a new publication.
+        self.assertIn(
+            f"Pull request {recovered['pull_request_number']} recovered against develop",
+            audits[1].reason,
+        )
+
+    def test_the_replayed_decision_reuses_the_published_pull_request(self):
+        self._confirm_defect()
+        self._record_review()
+        headers = {**self._authenticate(), "Idempotency-Key": "g4-approve-replay-0001"}
+        first = self.client.post(
+            f"/api/v1/runs/{RUN_ID}/findings/{FINDING_ID}/decision",
+            json={"decision": "approve", "reason": "Correccion revisada y aprobada."},
+            headers=headers,
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        second = self.client.post(
+            f"/api/v1/runs/{RUN_ID}/findings/{FINDING_ID}/decision",
+            json={"decision": "approve", "reason": "Correccion revisada y aprobada."},
+            headers=headers,
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        replayed = second.json()
+        self.assertTrue(replayed["reused"])
+        self.assertEqual(
+            replayed["pull_request_number"], first.json()["pull_request_number"],
+        )
+        self.assertEqual(replayed["pull_request_url"], first.json()["pull_request_url"])
+        # The publication is never duplicated by a replay.
+        self.assertEqual(len(self.port.pull_request_calls), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

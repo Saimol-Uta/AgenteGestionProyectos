@@ -211,7 +211,7 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
   const [editedCode, setEditedCode] = useState<string | null>(null);
   const [editedEligibility, setEditedEligibility] = useState<ApprovalEligibilityView | null>(null);
   const requestKeys = useRef(new Map<string, string>());
-  const approveKey = useRef<string | null>(null);
+  const approveKey = useRef<{ identity: string; key: string } | null>(null);
   const submitting = useRef(false);
   const canDecide = Boolean(session?.authenticated && session.csrf_token
     && session.capabilities.includes("quality:decide"));
@@ -253,6 +253,13 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
       ?? (effectiveEligibility?.blocked_reason
         ? `Aprobación bloqueada: el backend la rechazó con el motivo ${effectiveEligibility.blocked_reason}.`
         : "Aprobación bloqueada: falta revisión independiente del parche exacto.");
+  // The idempotency key belongs to the request, not to the finding: the same
+  // correction is always the same request, and a different correction is a
+  // different one. The retry of an interrupted publication keeps this key.
+  const approvalIdentity = JSON.stringify([
+    projectId, repositoryId, detail.run_id, detail.finding_id,
+    codeEdited ? editedCode : null,
+  ]);
 
   useEffect(() => {
     if (!codeEdited || !canDecide || !session?.csrf_token) {
@@ -287,7 +294,10 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
     const payload = codeEdited
       ? { decision: "approve" as const, suggested_code_override: editedCode ?? undefined }
       : { decision: "approve" as const };
-    if (approveKey.current === null) approveKey.current = crypto.randomUUID();
+    if (approveKey.current === null || approveKey.current.identity !== approvalIdentity) {
+      approveKey.current = { identity: approvalIdentity, key: crypto.randomUUID() };
+    }
+    const idempotencyKey = approveKey.current.key;
     submitting.current = true;
     try {
       const response = await mutation.mutateAsync({
@@ -295,7 +305,7 @@ function QualityRecommendation({ detail, projectId, repositoryId }: { detail: Fi
         findingId: detail.finding_id,
         payload,
         csrfToken: session.csrf_token,
-        idempotencyKey: approveKey.current,
+        idempotencyKey,
         projectId,
         repositoryId,
       });

@@ -99,32 +99,44 @@ test("cadena real: hallazgo detectado, defecto confirmado, parche revisado, apro
     decision_status: string;
     branch_name: string | null;
     commit_sha_applied: string | null;
+    publication: {
+      publication_status: string;
+      pull_request_number: number | null;
+      pull_request_url: string | null;
+      pull_request_state: string | null;
+      pull_request_simulated: boolean | null;
+      patch_review_id: string | null;
+      patch_sha256: string | null;
+    } | null;
   };
   expect(decided.decision_status).toBe("approved");
   expect(decided.branch_name).toBeTruthy();
   expect(decided.commit_sha_applied).toBeTruthy();
 
-  // 4. The publication receipt is explicit: published, partial or honestly
-  //    absent. A simulated pull request is never presented as a real one.
+  // 4. The publication receipt is positive: one published, explicitly
+  //    simulated pull request of the reviewed patch, never a real one.
   const publication = dialog.getByRole("region", { name: "Publicación del pull request" });
   await expect(publication).toBeVisible();
   const publicationText = await publication.innerText();
-  if (publicationText.includes("no registró ninguna publicación")) {
-    test.info().annotations.push({
-      type: "pending",
-      description:
-        "El servicio de publicacion (application/finding_publication.py) todavia no esta "
-        + "integrado: la aprobacion no produce todavia un recibo de publicacion.",
-    });
-    await expect(publicationText).toContain("no registró ninguna publicación");
-  } else if (publicationText.includes("Publicación parcial")) {
-    await expect(publication.getByText("Publicación parcial")).toBeVisible();
-    await expect(publication.getByRole("button", { name: "Reintentar la publicación" })).toBeEnabled();
-  } else {
-    await expect(publication.getByText("Pull request simulado")).toBeVisible();
-    await expect(publicationText).toContain("sandbox://pulls/");
-    await expect(publication.locator("a")).toHaveCount(0);
-  }
+  expect(publicationText).not.toContain("no registró ninguna publicación");
+  expect(publicationText).not.toContain("Publicación parcial");
+  await expect(publication.getByText("Pull request simulado")).toBeVisible();
+  await expect(publicationText).toContain("sandbox://pulls/");
+  // A simulated pull request is never a clickable address.
+  await expect(publication.locator("a")).toHaveCount(0);
+
+  // 5. The durable receipt of the backend agrees with the interface.
+  expect(decided.publication).toBeTruthy();
+  expect(decided.publication!.publication_status).toBe("published");
+  expect(decided.publication!.pull_request_state).toBe("simulated");
+  expect(decided.publication!.pull_request_simulated).toBe(true);
+  expect(decided.publication!.pull_request_number).toBeGreaterThan(0);
+  expect(decided.publication!.pull_request_url).toMatch(/^sandbox:\/\/pulls\//);
+  expect(decided.publication!.pull_request_url).toContain(
+    String(decided.publication!.pull_request_number),
+  );
+  expect(decided.publication!.patch_review_id).toBe(detail.patch_review?.review_id);
+  expect(decided.publication!.patch_sha256).toBe(detail.patch_review?.patch_sha256);
 
   expect(unexpected).toEqual([]);
 });

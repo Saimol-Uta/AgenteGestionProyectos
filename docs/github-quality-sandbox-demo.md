@@ -95,9 +95,19 @@ favorable review of the exact patch. It refuses to start unless
 `EXTERNAL_WRITES_ENABLED=false` and no credential variable is present, and it
 never touches the project database or `runs/`.
 
-The publication receipt of that proof is **pending** until the parent task
-integrates the publication service (`application/finding_publication.py`): the
-run reports it as an explicit annotation instead of pretending it exists.
+The proof ends with the positive receipt of the publication service
+(`application/finding_publication.py`): one branch, one commit and one pull
+request **simulated** against `develop`, persisted in the durable ledger and
+recorded in the audit. The run asserts the receipt and never tolerates a
+missing or partial publication:
+
+| Fact | Observed value in the sandbox proof |
+|------|--------------------------------------|
+| Branch | `quality/scoped-<sha256>` in `sandbox://branches/...` |
+| Commit | one SHA-256 of the patched content, bound to the reviewed patch |
+| Pull request | `sandbox://pulls/<owner>/<repo>/<number>`, state `simulated` |
+| Ledger | `finding_publications` with stage `published` and one attempt |
+| Audit | `web:finding_publication`, decision `granted`, with the pull request number |
 
 ## 8. Checklist
 
