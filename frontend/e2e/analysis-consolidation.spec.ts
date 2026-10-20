@@ -114,6 +114,36 @@ test("el indicador recupera tras recargar el estado del último análisis, aunqu
   await expect(page.locator(".analysis-status-indicator")).toHaveAttribute("href", "/analysis/run-current");
 });
 
+test("la tarjeta del análisis en curso se titula con el proyecto y baja el identificador técnico", async ({ page }) => {
+  await installApi(page, {
+    authenticated: true,
+    capabilities: ["analysis:prepare", "analysis:confirm"],
+    jobPollStatuses: ["running"],
+  });
+  await page.goto("/analysis");
+  await page.getByRole("button", { name: "Nuevo análisis" }).click();
+  await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
+  await page.getByRole("button", { name: "Confirmar análisis" }).click();
+
+  const card = page.locator(".active-job-panel");
+  await expect(card).toBeVisible();
+
+  // El encabezado nombra el proyecto, nunca el identificador del trabajo.
+  await expect(card.getByRole("heading", { name: "Análisis del proyecto HORMIGESTION" })).toBeVisible();
+  await expect(card.getByRole("heading", { name: /job-current/ })).toHaveCount(0);
+
+  // El identificador técnico sigue disponible, con menor jerarquía visual.
+  const technical = card.locator(".active-job-technical");
+  await expect(technical).toBeVisible();
+  await expect(technical).toContainText("Identificador del trabajo");
+  await expect(technical.locator("code")).toHaveText("job-current");
+
+  // El estado real se muestra en la tarjeta, junto a los datos del análisis.
+  await expect(card.getByText("En curso", { exact: true })).toBeVisible();
+  await expect(card.getByText("Iniciado", { exact: true })).toBeVisible();
+  await expect(card.getByText("Última actualización", { exact: true })).toBeVisible();
+});
+
 test("el historial identifica cada análisis por su fecha y muestra el motivo verificado", async ({ page }) => {
   await installApi(page);
   await page.goto("/analysis");

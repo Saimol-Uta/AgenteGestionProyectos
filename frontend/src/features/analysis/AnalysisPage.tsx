@@ -230,6 +230,10 @@ export function AnalysisPage() {
     && (!preparation.remote.required || remoteConsent),
   );
   const latestRunId = runSeries[0]?.run_id ?? null;
+  // The card names the project the manager works on, not the job record.
+  const jobProjectLabel = trackedJob
+    ? (trackedJob.project_id === project.id ? project.name : trackedJob.project_id)
+    : project.name;
 
   return (
     <section className="analysis-page content-section">
@@ -389,17 +393,28 @@ export function AnalysisPage() {
           <div className="section-heading compact-heading">
             <div>
               <p className="eyebrow">{activeJobStatuses.includes(trackedJob.status) ? "ANÁLISIS EN CURSO" : "ÚLTIMO ANÁLISIS"}</p>
-              <h2 id="active-job-heading">Trabajo {trackedJob.job_id}</h2>
+              <h2 id="active-job-heading">Análisis del proyecto {jobProjectLabel}</h2>
             </div>
             <Pill tone={trackedJob.status === "completed" ? "positive" : trackedJob.status === "failed" || trackedJob.status === "interrupted" ? "danger" : "accent"}>
               {analysisJobStatusLabel(trackedJob.status)}
             </Pill>
           </div>
-          <p role="status">Trabajo de análisis: {analysisJobStatusLabel(trackedJob.status).toLocaleLowerCase("es-EC")}</p>
-          <p className="section-subtitle">Última actualización: {formatDate(trackedJob.updated_at, true)}. No se estima porcentaje de progreso.</p>
+          <dl className="active-job-facts">
+            <div><dt>Iniciado</dt><dd>{formatDate(trackedJob.created_at, true)}</dd></div>
+            <div><dt>Última actualización</dt><dd>{formatDate(trackedJob.updated_at, true)}</dd></div>
+            {trackedJob.execution_mode && <div><dt>Modo de ejecución</dt><dd>{analysisExecutionModeLabel(trackedJob.execution_mode)}</dd></div>}
+          </dl>
+          <p className="section-subtitle">El estado lo informa el backend. No se estima porcentaje de progreso.</p>
           {trackedJob.error_code && <p className="stage-error">El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.</p>}
-          {trackedJob.execution_mode && <p>Modo de ejecución: {analysisExecutionModeLabel(trackedJob.execution_mode)}</p>}
-          {trackedJob.fallback_reasons?.length ? <p>Alternativas aplicadas: {trackedJob.fallback_reasons.join("; ")}</p> : null}
+          {trackedJob.fallback_reasons?.length ? (
+            <div className="capability-note active-job-fallbacks">
+              <strong>Alternativas aplicadas</strong>
+              <ul>{trackedJob.fallback_reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>
+            </div>
+          ) : null}
+          <p className="active-job-technical">
+            Identificador del trabajo: <code>{trackedJob.job_id}</code>
+          </p>
           {trackedJob.run_id && <Link className="text-link" to={`/analysis/${encodeURIComponent(trackedJob.run_id)}`}>Abrir análisis <ArrowRight aria-hidden="true" size={14} /></Link>}
         </section>
       )}

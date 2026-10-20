@@ -199,7 +199,7 @@ test("la preparación y la confirmación son pasos protegidos independientes con
   await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await expect(confirmButton).toBeEnabled();
   await confirmButton.click();
-  await expect(page.getByText("Trabajo de análisis: completado", { exact: true })).toBeVisible();
+  await expect(page.locator(".active-job-panel").getByText("Completado", { exact: true })).toBeVisible();
   expect(analysisWrites).toHaveLength(2);
   expect(analysisWrites[1].path).toBe("/api/v1/projects/hormigestio/analysis/confirm");
   expect(JSON.parse(analysisWrites[1].body ?? "{}")).toEqual({
@@ -261,10 +261,12 @@ test("la falta de una clave de IA permite confirmar el análisis mixto sin omiti
   await expect(confirmButton).toBeEnabled();
   await confirmButton.click();
 
-  const activeJob = page.getByRole("region", { name: "Trabajo job-current" });
-  await expect(activeJob.getByText("Trabajo de análisis: completado", { exact: true })).toBeVisible();
-  await expect(activeJob.getByText("Modo de ejecución: Mixto", { exact: true })).toBeVisible();
-  await expect(activeJob).toContainText(`Alternativas aplicadas: ${fallbackReason}`);
+  const activeJob = page.getByRole("region", { name: "Análisis del proyecto HORMIGESTION" });
+  await expect(activeJob.getByText("Completado", { exact: true })).toBeVisible();
+  await expect(activeJob.getByText("Modo de ejecución", { exact: true })).toBeVisible();
+  await expect(activeJob.getByText("Mixto", { exact: true })).toBeVisible();
+  await expect(activeJob.getByText("Alternativas aplicadas", { exact: true })).toBeVisible();
+  await expect(activeJob.getByText(fallbackReason, { exact: true })).toBeVisible();
   expect(analysisWrites).toHaveLength(2);
   expect(analysisWrites[0].path).toBe("/api/v1/projects/hormigestio/analysis/prepare");
   expect(analysisWrites[0].csrfToken).toBe("csrf-fixture");
@@ -339,7 +341,7 @@ test("un reintento de confirmación conserva la misma clave de idempotencia", as
   await expect(page.getByRole("checkbox", { name: /uso de servicios en la nube/i })).toBeDisabled();
   await page.getByRole("button", { name: "Intentar de nuevo" }).click();
 
-  await expect(page.getByText("Trabajo de análisis: en cola", { exact: true })).toBeVisible();
+  await expect(page.locator(".active-job-panel").getByText("En cola", { exact: true })).toBeVisible();
   const confirmations = analysisWrites.filter((write) => write.path.endsWith("/analysis/confirm"));
   expect(confirmations).toHaveLength(2);
   expect(confirmations[0].idempotencyKey).toBeTruthy();
@@ -357,7 +359,7 @@ test("el polling de trabajos se detiene en el estado terminal fallido", async ({
   await page.getByRole("button", { name: "Nuevo análisis" }).click();
   await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
-  await expect(page.getByText("Trabajo de análisis: fallido", { exact: true })).toBeVisible();
+  await expect(page.locator(".active-job-panel").getByText("Fallido", { exact: true })).toBeVisible();
   await expect(page.getByText("El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.", { exact: true })).toBeVisible();
   // El polling se detiene: el contador deja de crecer en el estado terminal.
   const settled = apiObserver.jobPollRequests;
@@ -375,7 +377,7 @@ test("el polling de trabajos se detiene en el estado terminal interrumpido", asy
   await page.getByRole("button", { name: "Nuevo análisis" }).click();
   await page.getByRole("checkbox", { name: /uso de servicios en la nube/i }).check();
   await page.getByRole("button", { name: "Confirmar análisis" }).click();
-  await expect(page.getByText("Trabajo de análisis: interrumpido", { exact: true })).toBeVisible();
+  await expect(page.locator(".active-job-panel").getByText("Interrumpido", { exact: true })).toBeVisible();
   await expect(page.getByText("El trabajo no se completó correctamente. Revisa el historial o solicita ayuda al administrador del proyecto.", { exact: true })).toBeVisible();
   // El polling se detiene: el contador deja de crecer en el estado terminal.
   const settled = apiObserver.jobPollRequests;
