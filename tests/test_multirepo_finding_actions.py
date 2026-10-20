@@ -351,7 +351,9 @@ class MultiRepoFindingActionTests(unittest.TestCase):
                     self.assertEqual(
                         response.json()["error"]["message"],
                         "No se puede aprobar ni ejecutar esta corrección de GitHub: requiere una "
-                        "revisión independiente vinculada al parche exacto y ese mecanismo aún no está disponible.",
+                        "revisión independiente favorable y vigente, vinculada al parche exacto "
+                        "que se aplicaría. Un defecto confirmado, una sintaxis válida o unas "
+                        "pruebas aprobadas no la sustituyen.",
                     )
 
                 self.assertEqual(storage.get_report(REPORT_ID).model_dump_json(), before_report)

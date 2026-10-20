@@ -151,16 +151,19 @@ def decide_run_finding(
     session = _require_project_capability(
         request, project_id, "quality:decide", mutation=True,
     )
-    if body.decision == "approve":
-        raise ApiProblem(
-            409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
-        )
     try:
         candidate, original_excerpt, source, source_repository, origin = repository.finding_action_context(
             run_id, finding_id,
         )
     except LookupError as exc:
         code = str(exc)
+        if body.decision == "approve":
+            # An approval always needs a favorable review of one exact patch.
+            # When the patch cannot even be identified there is no review, so
+            # the approval is refused before any action.
+            raise ApiProblem(
+                409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
+            ) from None
         if code == "finding_not_actionable":
             raise ApiProblem(409, "hallazgo_no_accionable", "El hallazgo no tiene un artefacto de informe utilizable.") from None
         if code in {"finding_source_ambiguous", "finding_source_unavailable"}:
@@ -175,11 +178,16 @@ def decide_run_finding(
     try:
         origin = _configured_origin(origin, settings, project)
     except CodeActionError as exc:
+        if body.decision == "approve":
+            # The review is bound to one repository, commit and file: a changed
+            # configuration leaves the reviewed patch without a review.
+            raise ApiProblem(
+                409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
+            ) from None
         raise ApiProblem(exc.status_code, exc.code, str(exc)) from None
     if body.decision == "approve" and not origin.configured_for_code_action:
         raise ApiProblem(
-            409, "fuente_no_verificable",
-            "No hay un repositorio y una rama base configurados que coincidan con el origen almacenado.",
+            409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
         )
     try:
         code_action, branch_repository, base_branch = _code_action_for_request(

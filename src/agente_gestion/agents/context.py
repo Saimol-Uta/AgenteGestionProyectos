@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from agente_gestion.domain.tasks import TaskCard, TaskState, DeterministicTaskMetrics
 from agente_gestion.domain.code import CodeDiffSnippet, CIRunResult
+from agente_gestion.domain.patch_review import PatchCandidate
 from agente_gestion.domain.report import MonitoringDraft, DomainProposalRuleSet, MonitoringRequestedChange
 from agente_gestion.domain.action_proposal import _value, _same
 from agente_gestion.domain.evidence import EvidenceItem
@@ -555,6 +556,46 @@ class ContextBuilder:
         return self._check_budget(
             BoundedContextType.verifier, project_id, data, budget_tokens, strict_budget
         )
+
+    def build_patch_review_context(
+        self,
+        project_id: str,
+        finding: Any,
+        patch: PatchCandidate,
+        patched_region: str,
+        evidence_ids: Optional[list[str]] = None,
+        budget_tokens: Optional[int] = None,
+        strict_budget: bool = False,
+    ) -> ContextPayload:
+        """Bounded context to judge one exact corrective patch.
+
+        Only the corrected region and its surroundings travel: judging a
+        correction does not need the whole file, and the budget stays small.
+        """
+        data = {
+            "project_id": project_id,
+            "finding": {
+                "id": finding.id,
+                "claim": finding.claim,
+                "severity": getattr(finding.severity, "value", finding.severity),
+                "category": getattr(finding.category, "value", finding.category),
+                "file_path": finding.file_path,
+                "commit_sha": finding.commit_sha,
+                "evidence_ids": list(finding.evidence_ids or []),
+            },
+            "patch": {
+                "repository": patch.repository,
+                "file_path": patch.file_path,
+                "commit_sha": patch.commit_sha,
+                "original_sha256": patch.original_sha256,
+                "patch_sha256": patch.patch_sha256,
+                "original_excerpt": patch.original_excerpt,
+                "suggested_code": patch.suggested_code,
+                "patched_region": patched_region,
+            },
+            "available_evidence_ids": sorted(set(evidence_ids or [])),
+        }
+        return self._check_budget(BoundedContextType.verifier, project_id, data, budget_tokens, strict_budget)
 
     def build_report_context(
         self,

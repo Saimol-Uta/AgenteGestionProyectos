@@ -11,6 +11,7 @@ from agente_gestion.adapters.storage.sqlite import (
 from agente_gestion.domain.code import CodeDiffSnippet, validate_source_syntax
 from agente_gestion.domain.code_action import BranchExecutionResult, CodeSourceSnapshot, FindingActionOrigin
 from agente_gestion.domain.findings import CandidateFinding
+from agente_gestion.application.patch_review import favorable_patch_review
 from agente_gestion.domain.security_rbac import SecurityAuditEntry, hash_token_fingerprint
 from agente_gestion.ports.code_action_port import CodeActionPort
 
@@ -18,7 +19,8 @@ from agente_gestion.ports.code_action_port import CodeActionPort
 APPROVAL_REVIEW_REQUIRED_CODE = "revision_independiente_requerida"
 APPROVAL_REVIEW_REQUIRED_MESSAGE = (
     "No se puede aprobar ni ejecutar esta corrección de GitHub: requiere una revisión "
-    "independiente vinculada al parche exacto y ese mecanismo aún no está disponible."
+    "independiente favorable y vigente, vinculada al parche exacto que se aplicaría. "
+    "Un defecto confirmado, una sintaxis válida o unas pruebas aprobadas no la sustituyen."
 )
 
 
@@ -478,13 +480,37 @@ class FindingDecisionService:
             raise FindingDecisionError(404, "hallazgo_no_encontrado", "No se encontró el hallazgo solicitado.")
         if decision not in {"approve", "reject", "request_changes"}:
             raise FindingDecisionError(422, "decision_invalida", "La decisión enviada no es válida.")
-        if decision == "approve":
-            # Defect confirmation and source/syntax checks do not review the corrective patch.
-            raise FindingDecisionError(
-                409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
-            )
         if suggested_code_override is not None and not suggested_code_override.strip():
             raise FindingDecisionError(422, "codigo_sugerido_invalido", "El código alternativo no puede estar vacío.")
+        effective_code = suggested_code_override if suggested_code_override is not None else candidate.suggested_code
+        if decision == "approve":
+            # A confirmed defect, a valid syntax and approved tests are not a
+            # review of the correction. The approval requires a current
+            # favorable review bound to the exact patch that would be applied:
+            # another patch, file, repository or commit has no review, and
+            # neither has an unfavorable, insufficient or missing one.
+            patch_sha256 = None
+            if (
+                source is not None and source.is_complete and original_excerpt
+                and source.content.count(original_excerpt) == 1
+            ):
+                preview = source.content.replace(original_excerpt, effective_code, 1)
+                patch_sha256 = hashlib.sha256(preview.encode("utf-8")).hexdigest()
+            review = None
+            if patch_sha256 is not None and source is not None and repository:
+                review = favorable_patch_review(
+                    self.storage,
+                    project_id=project_id,
+                    finding_id=finding_id,
+                    patch_sha256=patch_sha256,
+                    repository=repository,
+                    commit_sha=source.commit_sha,
+                    file_path=candidate.file_path,
+                )
+            if review is None:
+                raise FindingDecisionError(
+                    409, APPROVAL_REVIEW_REQUIRED_CODE, APPROVAL_REVIEW_REQUIRED_MESSAGE,
+                )
         self._validate_origin(
             origin=origin, project_id=project_id, run_id=run_id, finding_id=finding_id,
             candidate=candidate, original_excerpt=original_excerpt, source=source,
@@ -497,7 +523,6 @@ class FindingDecisionService:
                 409, "fuente_no_verificable",
                 "Se requiere un origen de repositorio configurado y fijado para aprobar código.",
             )
-        effective_code = suggested_code_override if suggested_code_override is not None else candidate.suggested_code
         selected_branch = self._target_branch(finding_id, idempotency_key, target_branch, origin)
         if decision == "approve" and selected_branch == base_branch:
             raise FindingDecisionError(422, "rama_destino_invalida", "La rama destino debe ser distinta de la rama base.")

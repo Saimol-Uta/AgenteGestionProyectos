@@ -12,6 +12,11 @@ from agente_gestion.domain.findings import (
     SuggestedCodeValidationStatus,
     VerificationVerdict,
 )
+from agente_gestion.domain.patch_review import (
+    PatchCandidate,
+    PatchReviewOutcome,
+    PatchReviewVerdict,
+)
 from agente_gestion.domain.policies import QualityRule
 from agente_gestion.domain.llm import GenerationRequest
 from agente_gestion.ports.llm import LLMProviderPort
@@ -36,6 +41,25 @@ class VerifierOutputSchema(BaseModel):
     verifications: list[VerificationItemSchema] = Field(
         default_factory=list,
         description="List of independent finding verifications"
+    )
+
+
+class PatchReviewItemSchema(BaseModel):
+    """Schema for one independent review of a corrective patch."""
+    finding_id: str = Field(description="Exact ID of the finding whose patch is reviewed")
+    verdict: str = Field(
+        description="Review verdict of the correction: favorable, unfavorable or insufficient"
+    )
+    reason: str = Field(description="Technical justification of the verdict about the correction")
+    evidence_ids: list[str] = Field(
+        default_factory=list, description="Identifiers cited by the review"
+    )
+
+
+class PatchReviewOutputSchema(BaseModel):
+    """Structured output schema for an independent patch review."""
+    reviews: list[PatchReviewItemSchema] = Field(
+        default_factory=list, description="Independent reviews of the corrective patches"
     )
 
 
@@ -143,6 +167,100 @@ class VerifierAgent:
         self.model = model or getattr(provider, "model", "gemini-2.5-flash")
         self.coordinator = coordinator or StageInvocationCoordinator()
         self.timeout_seconds = timeout_seconds
+
+    def review_patch(
+        self,
+        *,
+        project_id: str,
+        finding: CandidateFinding,
+        patch: PatchCandidate,
+        patched_region: str,
+        evidence_ids: Optional[list[str]] = None,
+        stage_name: Optional[str] = None,
+        max_output_tokens: Optional[int] = None,
+    ) -> PatchReviewOutcome:
+        """Review one exact corrective patch, independently of its generation.
+
+        The review judges the correction and not the defect: a confirmed
+        defect, a valid syntax and approved tests are not a review of the
+        patch. Unusable evidence leaves the review insufficient.
+        """
+        instructions = (
+            "Eres el agente Verificador Independiente de Codigo y Calidad. "
+            "Ahora revisas la CORRECCION propuesta para un defecto, no el defecto mismo.\n"
+            "REGLAS ESTRICTAS:\n"
+            "- Usa el finding_id EXACTO del defecto revisado.\n"
+            "- Evalua si la correccion propuesta resuelve el defecto reportado, si es completa "
+            "y si conserva el comportamiento del codigo circundante.\n"
+            "- Una sintaxis valida NO es una revision favorable. Un defecto confirmado NO es una "
+            "revision favorable. Pruebas aprobadas NO son una revision favorable.\n"
+            "- No inventes comportamiento ausente del fragmento observado.\n"
+            "- Los veredictos validos son: 'favorable', 'unfavorable', 'insufficient'.\n"
+            "- Usa 'insufficient' cuando la evidencia visible no permite juzgar la correccion "
+            "con certeza.\n"
+        )
+        context = self.context_builder.build_patch_review_context(
+            project_id, finding, patch, patched_region,
+            evidence_ids=sorted(set(evidence_ids or [])),
+        )
+        capabilities = self.provider.get_capabilities()
+        output_tokens = min(max_output_tokens or 1024, capabilities.max_output_tokens)
+        evidences_payload = self.context_builder.runtime_payload(
+            context, instructions, PatchReviewOutputSchema.model_json_schema(), output_tokens,
+            capabilities.context_tokens, max_output_tokens=capabilities.max_output_tokens,
+            request_fields={
+                "role": "verificador", "model": self.model,
+                "schema_name": "patch_review_output_v1", "timeout_seconds": self.timeout_seconds,
+            },
+        )
+        request = GenerationRequest(
+            role="verificador",
+            instructions=instructions,
+            evidences=evidences_payload,
+            schema_name="patch_review_output_v1",
+            json_schema=PatchReviewOutputSchema.model_json_schema(),
+            model=self.model,
+            max_generation_tokens=output_tokens,
+            timeout_seconds=self.timeout_seconds,
+        )
+        allowed = {verdict.value for verdict in PatchReviewVerdict}
+
+        def validate_payload(data: dict[str, Any]) -> list[str]:
+            errors: list[str] = []
+            for item in data.get("reviews", []):
+                if item.get("finding_id") != finding.id:
+                    errors.append("review_finding_mismatch")
+                elif str(item.get("verdict", "")).lower() not in allowed:
+                    errors.append("review_verdict_invalid")
+                elif not str(item.get("reason", "")).strip():
+                    errors.append("review_reason_missing")
+            return errors
+
+        _, validated = self.coordinator.invoke_stage(
+            stage=stage_name or "patch_review",
+            provider=self.provider,
+            request=request,
+            validator=validate_payload,
+        )
+        item = next(
+            (row for row in validated.get("reviews", []) if row.get("finding_id") == finding.id),
+            None,
+        )
+        if item is None:
+            return PatchReviewOutcome(
+                verdict=PatchReviewVerdict.insufficient,
+                reason="La revision independiente no devolvio un veredicto para este parche.",
+                evidence_ids=[],
+            )
+        try:
+            verdict = PatchReviewVerdict(str(item.get("verdict", "")).lower())
+        except ValueError:
+            verdict = PatchReviewVerdict.insufficient
+        return PatchReviewOutcome(
+            verdict=verdict,
+            reason=str(item.get("reason", "")).strip() or "La revision no explico su veredicto.",
+            evidence_ids=[str(value) for value in item.get("evidence_ids", [])],
+        )
 
     def run(
         self,

@@ -58,6 +58,7 @@ from agente_gestion.adapters.storage.artifacts import ArtifactStorageAdapter
 from agente_gestion.agents.monitoring import ProjectMonitoringAgent
 from agente_gestion.agents.quality import CodeQualityAgent
 from agente_gestion.agents.verifier import VerifierAgent
+from agente_gestion.application.patch_review import PatchReviewService
 from agente_gestion.agents.report import ReportAgent
 from agente_gestion.application.generation import (
     GlobalBudgetTracker,
@@ -641,6 +642,14 @@ class ProjectOrchestrator:
 
                     self.sqlite.save_verifications(run_id, verifications)
 
+                    # The correction is reviewed independently of the defect it
+                    # answers: the same independent verifier judges the exact
+                    # patch, and the verdict is recorded with its digest.
+                    self._review_patches(
+                        run_id=run_id, proj_id=proj_id, snapshot=snapshot,
+                        findings=escalated_findings, verifier_agent=verifier_agent,
+                    )
+
                     # Partition findings by verdict
                     verif_by_id = {v.finding_id: v for v in verifications}
                     for f in escalated_findings:
@@ -939,6 +948,55 @@ class ProjectOrchestrator:
                 # A delivery failure must not rewrite or discard a completed analysis.
                 logging.getLogger(__name__).warning("manager_notification_failed run_id=%s", run_id)
         return run
+
+    def _review_patches(
+        self, *, run_id: str, proj_id: str, snapshot: Any,
+        findings: list[Any], verifier_agent: Any,
+    ) -> list[Any]:
+        """Review every correction candidate that has a complete source."""
+        from agente_gestion.domain.code_action import CodeSourceSnapshot
+
+        service = PatchReviewService(self.sqlite, verifier_agent)
+        reviews: list[Any] = []
+        for finding in findings:
+            suggested = getattr(finding, "suggested_code", "") or ""
+            excerpt = getattr(finding, "evidence", "") or ""
+            if not suggested.strip() or not excerpt.strip():
+                continue
+            commit_sha = (getattr(finding, "commit_sha", "") or "").lower()
+            file_path = getattr(finding, "file_path", "") or ""
+            complete = [
+                snippet for snippet in snapshot.code_diffs
+                if snippet.evidence_scope == "full_file" and snippet.is_complete
+                and not snippet.truncated
+                and (snippet.commit_sha or "").lower() == commit_sha
+                and snippet.file_path == file_path
+            ]
+            if len(complete) != 1:
+                continue
+            snippet = complete[0]
+            try:
+                source = CodeSourceSnapshot(
+                    content=snippet.content, is_complete=True, repository=snippet.repository,
+                    commit_sha=commit_sha, file_path=file_path,
+                    source_sha256=snippet.source_sha256,
+                    source_blob_sha=snippet.source_blob_sha, total_lines=snippet.total_lines,
+                )
+            except ValueError:
+                continue
+            try:
+                reviews.append(service.review(
+                    project_id=proj_id, run_id=run_id, finding=finding, source=source,
+                    original_excerpt=excerpt, suggested_code=suggested,
+                    repository=snippet.repository or "", commit_sha=commit_sha,
+                    file_path=file_path,
+                    evidence_ids=list(getattr(finding, "evidence_ids", []) or []),
+                ))
+            except Exception:
+                # A patch that cannot be prepared or reviewed simply has no
+                # review, and the approval stays blocked.
+                continue
+        return reviews
 
     def _persist_proposals(self, run, draft, rules, capture, evidence, limitations, risks=None):
         """Catalogue recommendations only; pure fact checks do not prove chronology."""
