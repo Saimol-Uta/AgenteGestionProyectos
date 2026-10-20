@@ -1,5 +1,30 @@
 import { expect, test } from "@playwright/test";
-import { analysisPreparation, installApi, project, runCurrent } from "./fixtures";
+import { analysisPreparation, installApi, multiRepoResults, project, runCurrent } from "./fixtures";
+
+test("dos repositorios de una captura conservan identidad tras recargar el análisis", async ({ page }) => {
+  const duplicateKeys: string[] = [];
+  page.on("console", message => {
+    if (/same key|unique.*key/i.test(message.text())) duplicateKeys.push(message.text());
+  });
+  const observations = {
+    ...multiRepoResults,
+    items: multiRepoResults.items.map(item => ({
+      ...item, source_complete: false, incomplete_reason: "Diagnostic incomplete source.",
+    })),
+  };
+  await installApi(page, {
+    authenticated: true, capabilities: ["audit:read"], repositoryResultsPayload: observations,
+  });
+  await page.goto(`/analysis/${runCurrent.run_id}`);
+  const affected = page.locator(".run-found-card").filter({
+    has: page.getByRole("heading", { name: "Repositorios afectados", exact: true }),
+  });
+  await expect(affected).toContainText("Josu-F1/hormigestion-backend");
+  await expect(affected).toContainText("Josu-F1/hormigestion-frontend");
+  await page.reload();
+  await expect(affected.locator("li")).toHaveCount(2);
+  expect(duplicateKeys).toEqual([]);
+});
 
 /**
  * The consolidated analysis centre: one history, one verified reason, one

@@ -335,8 +335,8 @@ export function RunDetailPage() {
                     <span>{notice.message}</span>
                   </li>
                 ))}
-                {incompleteRepositories.map((observation) => (
-                  <li key={observation.capture_id}>
+                {incompleteRepositories.map((observation, index) => (
+                  <li key={`${observation.capture_id}:${observation.source_item_key ?? index}`}>
                     <strong>
                       {observation.repository ? `${observation.repository.owner}/${observation.repository.repo}` : "Repositorio sin identidad recuperable"}
                     </strong>
@@ -353,8 +353,8 @@ export function RunDetailPage() {
             <h3>Repositorios afectados</h3>
             {runObservations.length ? (
               <ul className="run-found-list">
-                {runObservations.map((observation) => (
-                  <li key={observation.capture_id}>
+                {runObservations.map((observation, index) => (
+                  <li key={`${observation.capture_id}:${observation.source_item_key ?? index}`}>
                     <strong>
                       {observation.repository ? `${observation.repository.owner}/${observation.repository.repo}` : "Identidad de repositorio desconocida"}
                     </strong>
@@ -608,4 +608,3 @@ export function RunDetailPage() {
     </section>
   );
 }
-
