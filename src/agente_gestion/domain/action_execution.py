@@ -191,7 +191,7 @@ def _execute_comment(request, proposal, capture, evidence, digest, port, actor_i
         target = port.read_comment_target(proposal.task_id)
         due = target.get("due_date")
         due = datetime.fromisoformat(due.replace("Z", "+00:00")) if isinstance(due, str) else due
-        if (target.get("is_archived") is not False or target.get("due_complete") is not False
+        if (target.get("is_archived") is not False or target.get("due_complete") is not False or target.get("is_included") is not True
                 or due != card.due_date or target.get("list_id") != card.list_id
                 or proposal.comment_context.priority_label_id not in target.get("priority_label_ids", [])):
             return _denied(request.request_id, proposal.proposal_id, "comment_live_preconditions_changed", actor_id=actor_id)

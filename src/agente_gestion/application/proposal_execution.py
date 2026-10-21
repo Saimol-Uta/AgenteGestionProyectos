@@ -46,7 +46,7 @@ class ProposalExecutionInput(BaseModel):
     modified_due_date: StrictStr | None = Field(default=None, max_length=40)
     modified_priority: StrictStr | None = Field(default=None, max_length=40)
     modified_assignee_ids: list[StrictStr] | None = Field(default=None, max_length=100)
-    modified_comment: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
+    modified_comment: StrictStr | None = Field(default=None, min_length=1, max_length=2000, exclude_if=lambda v: v is None)
     reason: StrictStr = Field(max_length=1000)
 
     @field_validator("modified_comment")
@@ -357,6 +357,15 @@ class ProposalExecutionService:
                         "La propuesta ya tiene una ejecución registrada o incierta; use su misma clave para reproducirla.",
                     )
                 if resource_task_id is not None and resource_field is not None:
+                    if resource_field.startswith("comment:"):
+                        uncertain_comment = connection.execute("""SELECT 1 FROM proposal_execution_resource_events e
+                            WHERE e.project_id=? AND e.task_id=? AND e.field LIKE 'comment:%'
+                            AND e.sequence=(SELECT MAX(prior.sequence) FROM proposal_execution_resource_events prior
+                                WHERE prior.project_id=e.project_id AND prior.task_id=e.task_id AND prior.field=e.field)
+                            AND e.state IN ('reserved','uncertain') LIMIT 1""", (project_id, resource_task_id)).fetchone()
+                        if uncertain_comment:
+                            raise ProposalExecutionError(409, "comentario_requiere_reconciliacion",
+                                "Existe un comentario concurrente o incierto en esta tarjeta; reconcilie antes de publicar otro.")
                     latest = connection.execute(
                         "SELECT state FROM proposal_execution_resource_events "
                         "WHERE project_id=? AND task_id=? AND field=? ORDER BY sequence DESC LIMIT 1",

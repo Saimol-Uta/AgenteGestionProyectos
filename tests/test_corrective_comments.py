@@ -42,6 +42,25 @@ def setup_comment(storage):
 
 
 class CommentContractTests(unittest.TestCase):
+    def test_each_initial_precondition_is_required(self):
+        from agente_gestion.domain.comment_action import comment_evidence_errors
+        with tempfile.TemporaryDirectory() as root:
+            storage = SQLiteStorageAdapter(str(Path(root) / "db.sqlite"))
+            card, _, evidence, proposal = setup_comment(storage)
+            for changed, code in [({"is_included": False}, "comment_target_ineligible"),
+                ({"is_archived": True}, "comment_target_ineligible"),
+                ({"due_complete": True}, "comment_target_ineligible"),
+                ({"has_contradiction": True}, "comment_target_ineligible"),
+                ({"priority": "baja"}, "comment_priority_mismatch"),
+                ({"due_date": NOW}, "comment_deadline_mismatch")]:
+                with self.subTest(changed=changed):
+                    self.assertIn(code, comment_evidence_errors(card.model_copy(update=changed), "HORMIGESTION",
+                        proposal.comment_context, evidence, NOW))
+            missing_label = [e.model_copy(deep=True) for e in evidence]
+            missing_label[0].provenance.payload["priority_label_ids"] = []
+            self.assertIn("comment_task_evidence_mismatch", comment_evidence_errors(card, "HORMIGESTION",
+                proposal.comment_context, missing_label, NOW))
+
     def test_deterministic_choices_require_separate_human_and_task_evidence(self):
         from agente_gestion.agents.context import monitoring_choices
         from agente_gestion.domain.report import DomainProposalRuleSet

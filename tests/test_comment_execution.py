@@ -19,12 +19,12 @@ class CommentServiceTests(unittest.TestCase):
         self.storage.save_action_proposal(self.proposal, self.evidence)
         self.service = ProposalExecutionService(self.storage)
 
-    def execute(self, body=None, key="one", live=False):
+    def execute(self, body=None, key="one", live=False, configured=False):
         return self.service.execute(project_id="HORMIGESTION", proposal_id=self.proposal.proposal_id,
             body=ProposalExecutionInput.model_validate(body or {"decision": "approve_and_execute", "reason": "Reviewed exact text"}),
             actor_id="simulated-manager", session_cookie="isolated-test-session", idempotency_key=key,
-            source_mode="real" if live else "fixtures", external_writes_enabled=live,
-            trello_api_key="fake-key" if live else None, trello_token="fake-token" if live else None,
+            source_mode="real" if live or configured else "fixtures", external_writes_enabled=live,
+            trello_api_key="fake-key" if live or configured else None, trello_token="fake-token" if live or configured else None,
             trello_board_id="board", trello_priority_labels={})
 
     def test_approval_replay_and_different_key_do_not_append_twice(self):
@@ -74,8 +74,26 @@ class CommentServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ProposalExecutionInput(decision=decision, modified_comment=TEXT, reason="Invalid payload")
         with patch("requests.sessions.Session.request", side_effect=AssertionError("No network permitted")) as network:
-            self.execute()
+            self.execute(configured=True)
             network.assert_not_called()
+
+    def test_readback_failure_preserves_native_id_and_requires_reconciliation(self):
+        from agente_gestion.adapters.sources.trello_action_adapter import TrelloActionAdapter
+        with patch.object(TrelloActionAdapter, "has_write_permission", return_value=True), \
+             patch.object(TrelloActionAdapter, "read_comment_target", return_value={**self.card.model_dump(mode="json"),
+                "priority_label_ids": [self.proposal.comment_context.priority_label_id]}), \
+             patch.object(TrelloActionAdapter, "append_card_comment", return_value="native-receipt") as append, \
+             patch.object(TrelloActionAdapter, "read_card_comment", side_effect=TimeoutError("read failure")):
+            receipt = self.execute(live=True)
+            self.assertEqual(receipt.execution["native_action_id"], "native-receipt")
+            self.assertEqual(receipt.execution["result_status"], "FAILED")
+            self.assertTrue(self.execute(live=True).replayed)
+            self.assertEqual(append.call_count, 1)
+
+    def test_legacy_request_serialization_omits_new_optional_field(self):
+        body = ProposalExecutionInput(decision="approve_and_execute", reason="Legacy approval")
+        self.assertEqual(body.model_dump(mode="json"), {"decision": "approve_and_execute", "reason": "Legacy approval",
+            "modified_due_date": None, "modified_priority": None, "modified_assignee_ids": None})
 
     def test_uncertain_live_append_replays_failure_without_a_second_call(self):
         from agente_gestion.adapters.sources.trello_action_adapter import TrelloActionAdapter
@@ -89,6 +107,37 @@ class CommentServiceTests(unittest.TestCase):
             with self.assertRaises(ProposalExecutionError):
                 self.execute({"decision": "modify_and_execute", "modified_comment": TEXT + " revised", "reason": "Retry"}, key="other", live=True)
             self.assertEqual(append.call_count, 1)
+
+    def test_new_proposal_identity_cannot_bypass_uncertain_card_append(self):
+        from agente_gestion.adapters.sources.trello_action_adapter import TrelloActionAdapter
+        with patch.object(TrelloActionAdapter, "has_write_permission", return_value=True), \
+             patch.object(TrelloActionAdapter, "read_comment_target", return_value={**self.card.model_dump(mode="json"),
+                "priority_label_ids": [self.proposal.comment_context.priority_label_id]}), \
+             patch.object(TrelloActionAdapter, "append_card_comment", side_effect=TimeoutError("uncertain")) as append:
+            self.execute(live=True)
+            fresh = self.proposal.model_copy(update={"proposal_id": "new-capture-proposal"})
+            self.storage.save_action_proposal(fresh, self.evidence)
+            self.proposal = fresh
+            with self.assertRaises(ProposalExecutionError):
+                self.execute(key="new-logical-key", live=True)
+            self.assertEqual(append.call_count, 1)
+
+    def test_new_identity_after_reserved_crash_is_blocked(self):
+        with patch("agente_gestion.application.proposal_execution.execute_proposal_action", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.execute()
+        self.proposal = self.proposal.model_copy(update={"proposal_id": "fresh-after-crash"})
+        self.storage.save_action_proposal(self.proposal, self.evidence)
+        with patch.object(SandboxTaskActions, "append_card_comment") as append:
+            with self.assertRaises(ProposalExecutionError):
+                self.execute(key="new-after-crash")
+            append.assert_not_called()
+
+    def test_distinct_followup_after_completed_comment_is_not_blocked(self):
+        self.assertEqual(self.execute().execution["result_status"], "EXECUTED")
+        self.proposal = self.proposal.model_copy(update={"proposal_id": "independent-followup"})
+        self.storage.save_action_proposal(self.proposal, self.evidence)
+        self.assertEqual(self.execute(key="followup").execution["result_status"], "EXECUTED")
 
 
 if __name__ == "__main__":

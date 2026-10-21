@@ -19,7 +19,7 @@ def comment_text(value):
 def comment_evidence_errors(card, project_id, context, evidence, cutoff: datetime):
     """Human confirmation remains separate from API-observed task facts."""
     errors = []
-    if not card.is_included or card.is_archived is not False or card.due_complete is not False:
+    if not card.is_included or card.is_archived is not False or card.due_complete is not False or card.has_contradiction:
         errors.append("comment_target_ineligible")
     if (card.due_date is None or card.due_date.date() != context.expected_due_date
             or card.due_date >= cutoff):

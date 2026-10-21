@@ -115,7 +115,16 @@ class TrelloActionAdapter(TaskActionPort):
 
     def read_comment_target(self, card_id: str) -> dict:
         data = self._request_card_data(_validate_safe_identifier(card_id), "idBoard,idList,closed,due,dueComplete,idLabels")
+        list_id = _validate_safe_identifier(data.get("idList"))
+        response = requests.get(f"https://api.trello.com/1/lists/{list_id}", params={"fields": "closed,idBoard"},
+                                headers=self._auth_headers(), timeout=self._timeout_seconds, allow_redirects=False)
+        if response.status_code != 200:
+            raise ValueError("Cannot verify current list inclusion")
+        current_list = response.json()
+        if current_list.get("idBoard") != self._board_id or current_list.get("closed") is not False:
+            raise ValueError("Comment target list is unavailable or archived")
         return {"is_archived": data.get("closed"), "due_complete": data.get("dueComplete"),
+                "is_included": True,
                 "due_date": data.get("due"), "list_id": data.get("idList"),
                 "priority_label_ids": data.get("idLabels", [])}
 

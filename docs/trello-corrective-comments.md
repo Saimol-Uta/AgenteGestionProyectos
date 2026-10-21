@@ -42,3 +42,6 @@ uncertain outcome. A native ID is retained when available. No automatic retry or
 sandbox fallback follows an attempted live append. Inspect/reconcile the provider
 action manually before authorizing any new action; there is no automatic reset
 endpoint. A crash after reservation without an outcome also remains blocked.
+Pending or uncertain comment delivery additionally blocks every new comment
+proposal on that card, even with a new proposal/key/capture identity. A completed
+comment does not block a legitimate later independent follow-up.
