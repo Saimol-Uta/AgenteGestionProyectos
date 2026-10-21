@@ -24,3 +24,21 @@ Primary API references: [append comment](https://developer.atlassian.com/cloud/t
 and [read action](https://developer.atlassian.com/cloud/trello/rest/api-group-actions/).
 The append endpoint is `POST /1/cards/{id}/actions/comments`, not a card PUT.
 No provider idempotency guarantee is assumed.
+
+## Execution and recovery
+
+Existing server-session authorization, proposal digests, technical review, decision
+ledger and execution audit apply unchanged. Edited text creates a derived proposal
+with a new digest and technical review before the manager's execution decision.
+Content and card identity are part of the approval binding; whitespace is preserved.
+
+The existing execution ledger reserves `comment:<original-proposal-id>` as the
+logical append resource. Identical request keys replay the durable receipt; a
+new key or modified variant cannot append the same logical action again. Separate
+legitimate follow-ups require their own proposal identity and evidence, not retries.
+
+POST timeout, missing native ID, mismatched text or failed read-back leaves an
+uncertain outcome. A native ID is retained when available. No automatic retry or
+sandbox fallback follows an attempted live append. Inspect/reconcile the provider
+action manually before authorizing any new action; there is no automatic reset
+endpoint. A crash after reservation without an outcome also remains blocked.

@@ -113,6 +113,7 @@ class ExecutionResult(_Frozen):
     value_observed_after: Any = None
     verification_status: ExecutionVerificationStatus = "unknown"
     actor_id: Optional[StrictStr] = None
+    native_action_id: Optional[StrictStr] = Field(default=None, exclude_if=lambda v: v is None)
     execution_mode: Literal["live", "sandbox"] | None = None
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -173,6 +174,46 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
+def _execute_comment(request, proposal, capture, evidence, digest, port, actor_id):
+    """After shared review/authorization gates, append once and verify native receipt."""
+    import hashlib
+    import json
+    frozen = {"proposal": proposal.model_dump(mode="json"), "evidence": [e.model_dump(mode="json")
+              for e in evidence if e.provenance.id in proposal.evidence_ids]}
+    actual = hashlib.sha256(json.dumps(frozen, sort_keys=True, separators=(",", ":"),
+                                      ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+    if actual != digest:
+        return _denied(request.request_id, proposal.proposal_id, "comment_content_binding_mismatch", actor_id=actor_id)
+    base = dict(execution_id="exec-" + request.request_id, request_id=request.request_id,
+                proposal_id=proposal.proposal_id, actor_id=actor_id, field="comment", value_proposed=proposal.proposed_value)
+    card = next(c for c in capture.snapshot.tasks if c.id == proposal.task_id)
+    try:
+        target = port.read_comment_target(proposal.task_id)
+        due = target.get("due_date")
+        due = datetime.fromisoformat(due.replace("Z", "+00:00")) if isinstance(due, str) else due
+        if (target.get("is_archived") is not False or target.get("due_complete") is not False
+                or due != card.due_date or target.get("list_id") != card.list_id
+                or proposal.comment_context.priority_label_id not in target.get("priority_label_ids", [])):
+            return _denied(request.request_id, proposal.proposal_id, "comment_live_preconditions_changed", actor_id=actor_id)
+    except Exception:
+        return ExecutionResult(**base, status="FAILED", reasons=("pre_read_error: comment target unavailable",))
+    try:
+        native_id = port.append_card_comment(proposal.task_id, proposal.proposed_value)
+        if not isinstance(native_id, str) or not native_id:
+            raise ValueError("Missing action ID")
+    except Exception:
+        return ExecutionResult(**base, status="FAILED", reasons=("mutation_error: comment outcome uncertain; reconciliation required",))
+    try:
+        observed = port.read_card_comment(proposal.task_id, native_id)
+        if observed != proposal.proposed_value:
+            raise ValueError("Exact text mismatch")
+    except Exception:
+        return ExecutionResult(**base, native_action_id=native_id, status="FAILED",
+                               reasons=("post_verification_read_error: reconcile native comment before retry",))
+    return ExecutionResult(**base, native_action_id=native_id, status="EXECUTED",
+                           verification_status="verified", value_observed_after=observed)
+
+
 def execute_proposal_action(
     *,
     request: ExecutionRequest,
@@ -219,7 +260,7 @@ def execute_proposal_action(
 
     # 3. Provider Native Field Compatibility Check (Fail-closed early)
     supported_fields = action_port.supported_fields()
-    if proposal.field not in supported_fields:
+    if proposal.field not in supported_fields and not (proposal.operation == "append_comment" and action_port.supports_comments()):
         if proposal.field == "priority":
             reason = "unsupported_trello_field: priority (no native field on Trello)"
         elif proposal.field == "state":
@@ -272,6 +313,9 @@ def execute_proposal_action(
     if request.expected_version != projection.version:
         return _denied(req_id, prop_id, "version_mismatch", actor_id=actor_id)
 
+
+    if proposal.operation == "append_comment":
+        return _execute_comment(request, proposal, capture, evidence_items, proposal_body_sha256, action_port, actor_id)
 
     # 7. Read-before-write concurrency and idempotency check
     try:

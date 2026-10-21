@@ -46,7 +46,14 @@ class ProposalExecutionInput(BaseModel):
     modified_due_date: StrictStr | None = Field(default=None, max_length=40)
     modified_priority: StrictStr | None = Field(default=None, max_length=40)
     modified_assignee_ids: list[StrictStr] | None = Field(default=None, max_length=100)
+    modified_comment: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
     reason: StrictStr = Field(max_length=1000)
+
+    @field_validator("modified_comment")
+    @classmethod
+    def valid_comment(cls, value):
+        from agente_gestion.domain.comment_action import comment_text
+        return comment_text(value) if value is not None else None
 
     @field_validator("modified_due_date", "modified_priority")
     @classmethod
@@ -77,12 +84,12 @@ class ProposalExecutionInput(BaseModel):
     def validate_choice(self) -> "ProposalExecutionInput":
         if self.decision == "modify_and_execute":
             modifications = sum(value is not None for value in (
-                self.modified_due_date, self.modified_priority, self.modified_assignee_ids,
+                self.modified_due_date, self.modified_priority, self.modified_assignee_ids, self.modified_comment,
             ))
             if modifications != 1:
                 raise ValueError("A modified proposal requires exactly one changed field and a reason")
         elif any(value is not None for value in (
-            self.modified_due_date, self.modified_priority, self.modified_assignee_ids,
+            self.modified_due_date, self.modified_priority, self.modified_assignee_ids, self.modified_comment,
         )):
             raise ValueError("Modified values require modify_and_execute")
         return self
@@ -179,6 +186,7 @@ class ProposalExecutionService:
             "due_date": request.modified_due_date,
             "priority": request.modified_priority,
             "assignee_ids": request.modified_assignee_ids,
+            "comment": request.modified_comment,
         }
         requested = [(field, value) for field, value in fields.items() if value is not None]
         if len(requested) != 1 or requested[0][0] != proposal.field:
@@ -354,7 +362,7 @@ class ProposalExecutionService:
                         "WHERE project_id=? AND task_id=? AND field=? ORDER BY sequence DESC LIMIT 1",
                         (project_id, resource_task_id, resource_field),
                     ).fetchone()
-                    if latest is not None and latest["state"] in {"reserved", "uncertain"}:
+                    if latest is not None and (latest["state"] in {"reserved", "uncertain"} or resource_field.startswith("comment:")):
                         raise ProposalExecutionError(
                             409, "recurso_de_tarea_incierto",
                             "Ya existe una escritura concurrente o incierta para este campo; no se repetirá.",
@@ -508,6 +516,7 @@ class ProposalExecutionService:
             "actor_id": result.actor_id,
             "execution_mode": mode,
             "live_state_changed": mode == "live" and result.status == "EXECUTED",
+            **({"native_action_id": result.native_action_id} if result.native_action_id is not None else {}),
         }
 
     def execute(
@@ -581,6 +590,7 @@ class ProposalExecutionService:
                 board_id=trello_board_id or "", api_key=trello_api_key or "",
                 token=trello_token or "",
                 priority_labels=trello_priority_labels if proposal.field == "priority" else None,
+                allow_comment_writes=proposal.operation == "append_comment",
             )
             try:
                 if not live_action_port.has_write_permission():
@@ -591,13 +601,14 @@ class ProposalExecutionService:
                     "No se pudo verificar el permiso de Trello; no se intentó ninguna escritura.",
                 ) from None
 
+        resource_field = "comment:" + original.proposal_id if proposal.operation == "append_comment" else proposal.field
         replay = self._reserve(
             project_id=project_id, proposal_id=selected_proposal_id,
             idempotency_key=idempotency_key, request_sha256=request_sha256,
             actor_id=actor_id, session_sha256=session_sha256,
             execution_id=request_id,
             resource_task_id=(proposal.task_id if body.decision != "reject" else None),
-            resource_field=(proposal.field if body.decision != "reject" else None),
+            resource_field=(resource_field if body.decision != "reject" else None),
         )
         if replay is not None:
             return replay
@@ -699,9 +710,11 @@ class ProposalExecutionService:
                                 technical_review=technical_review.model_dump(mode="json"),
                             ),
                             request_sha256=request_sha256, actor_id=actor_id, session_cookie=session_cookie,
-                            human_reason=body.reason, task_id=proposal.task_id, field=proposal.field,
+                            human_reason=body.reason, task_id=proposal.task_id, field=resource_field,
                         )
                     initial = {
+                        **(card.model_dump(mode="json") if proposal.operation == "append_comment" else {}),
+                        **({"priority_label_ids": [proposal.comment_context.priority_label_id]} if proposal.operation == "append_comment" else {}),
                         "due_date": card.due_date,
                         "start_date": card.start_date,
                         "assignee_ids": list(card.assignee_ids or []),
@@ -736,5 +749,5 @@ class ProposalExecutionService:
             session_cookie=session_cookie,
             human_reason=body.reason,
             task_id=proposal.task_id if body.decision != "reject" else None,
-            field=proposal.field if body.decision != "reject" else None,
+            field=resource_field if body.decision != "reject" else None,
         )
