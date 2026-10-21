@@ -10,18 +10,21 @@ from agente_gestion.domain.evidence import EvidenceItem
 from agente_gestion.domain.risks import ProposalRiskRef
 from agente_gestion.domain.snapshot import SnapshotCapture
 from agente_gestion.domain.tasks import TaskState
+from agente_gestion.domain.comment_action import CommentContext, comment_text, comment_evidence_errors
 
-ProposalField = Literal["start_date", "due_date", "priority", "assignee_ids", "state"]
+ProposalField = Literal["start_date", "due_date", "priority", "assignee_ids", "state", "comment"]
 ProposalValue = datetime | TaskState | StrictStr | list[StrictStr] | None
 
 # Submission fields that a stored proposal may omit when they carry no value.
 # Keeping them out preserves the exact bytes of every proposal created before
 # the field existed, so its identifier and its content hash never change.
-OPTIONAL_SUBMISSION_FIELDS = frozenset({"risk_refs"})
+OPTIONAL_SUBMISSION_FIELDS = frozenset({"risk_refs", "operation", "comment_context"})
 
 
 def _value(field, value):
     """Parse only explicit field types, without provider aliases or date coercion."""
+    if field == "comment" and value is not None:
+        return comment_text(value)
     if field == "state":
         if isinstance(value, TaskState):
             return value
@@ -58,6 +61,8 @@ class ActionProposal(BaseModel):
     task_id: StrictStr
     observed_capture_id: StrictStr
     field: ProposalField
+    operation: Literal["append_comment"] | None = Field(default=None, exclude_if=lambda v: v is None)
+    comment_context: CommentContext | None = Field(default=None, exclude_if=lambda v: v is None)
     current_value: ProposalValue
     proposed_value: ProposalValue
     evidence_ids: list[StrictStr]
@@ -76,6 +81,12 @@ class ActionProposal(BaseModel):
         if not isinstance(data, dict):
             raise ValueError("Proposal must be an object")
         result = dict(data)
+        if result.get("field") == "comment":
+            if (result.get("operation") != "append_comment" or not result.get("comment_context")
+                    or result.get("current_value") is not None or result.get("proposed_value") is None):
+                raise ValueError("Comment requires append operation, context, exact text and no previous field value")
+        elif result.get("operation") is not None or result.get("comment_context") is not None:
+            raise ValueError("Comment metadata is forbidden on field updates")
         for key in ("current_value", "proposed_value"):
             if key in result:
                 result[key] = _value(result.get("field"), result[key])
@@ -129,6 +140,12 @@ def validate_action_proposal(
     if errors:
         return errors
     card = targets[0]
+    if proposal.operation == "append_comment":
+        selected = [e for e in evidence_items if e.provenance.id in proposal.evidence_ids]
+        if (len(selected) != len(proposal.evidence_ids) or len(set(proposal.evidence_ids)) != len(proposal.evidence_ids)):
+            return ["invalid_evidence_ids"]
+        return comment_evidence_errors(card, proposal.project_id, proposal.comment_context, selected,
+                                       capture.snapshot.cutoff_datetime)
     field = proposal.field
     if card.has_contradiction:
         errors.append("conflicting_task")

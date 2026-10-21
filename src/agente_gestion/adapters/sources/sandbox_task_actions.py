@@ -21,11 +21,38 @@ class SandboxTaskActions(TaskActionPort):
         self._cards = {card_id: dict(values) for card_id, values in (initial_cards or {}).items()}
         self._priority_labels, self._priority_names = validate_priority_labels(priority_labels)
         self.mutation_log: list[dict[str, Any]] = []
+        self._comments: dict[str, tuple[str, str]] = {}
         self.simulate_read_error = False
         self.simulate_write_failure = False
 
     def supported_fields(self) -> Set[str]:
         return self.BASE_FIELDS | ({"priority"} if self._priority_labels else set())
+
+    def supports_comments(self) -> bool:
+        return True
+
+    def read_comment_target(self, card_id: str) -> dict:
+        if self.simulate_read_error:
+            raise ConnectionError("Sandbox target read failed")
+        return dict(self._cards[card_id])
+
+    def append_card_comment(self, card_id: str, text: str) -> str:
+        from agente_gestion.domain.comment_action import comment_text
+        comment_text(text)
+        if card_id not in self._cards or self.simulate_write_failure:
+            raise ValueError("Sandbox append failed")
+        action_id = f"sandbox-comment-{len(self._comments) + 1}"
+        self._comments[action_id] = (card_id, text)
+        self.mutation_log.append({"operation": "append_comment", "card_id": card_id, "text": text, "action_id": action_id})
+        return action_id
+
+    def read_card_comment(self, card_id: str, action_id: str) -> str:
+        if self.simulate_read_error:
+            raise ConnectionError("Sandbox comment read failed")
+        target, text = self._comments[action_id]
+        if target != card_id:
+            raise ValueError("Comment target mismatch")
+        return text
 
     def set_card_field(self, card_id: str, field: str, value: Any) -> None:
         self._cards.setdefault(card_id, {})[field] = value

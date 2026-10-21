@@ -91,6 +91,7 @@ class TrelloActionAdapter(TaskActionPort):
         token: str,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         priority_labels: Optional[dict[str, str]] = None,
+        allow_comment_writes: bool = False,
     ) -> None:
         self._board_id = _validate_safe_identifier(board_id)
         if not api_key or not isinstance(api_key, str) or not api_key.strip():
@@ -101,12 +102,50 @@ class TrelloActionAdapter(TaskActionPort):
         self._token = token.strip()
         self._timeout_seconds = max(1.0, float(timeout_seconds))
         self._priority_labels, self._priority_names = validate_priority_labels(priority_labels)
+        self._allow_comment_writes = allow_comment_writes is True
 
     def supported_fields(self) -> Set[str]:
         fields = set(self.SUPPORTED_FIELDS)
         if self._priority_labels:
             fields.add("priority")
         return fields
+
+    def supports_comments(self) -> bool:
+        return True
+
+    def read_comment_target(self, card_id: str) -> dict:
+        data = self._request_card_data(_validate_safe_identifier(card_id), "idBoard,idList,closed,due,dueComplete,idLabels")
+        return {"is_archived": data.get("closed"), "due_complete": data.get("dueComplete"),
+                "due_date": data.get("due"), "list_id": data.get("idList"),
+                "priority_label_ids": data.get("idLabels", [])}
+
+    def append_card_comment(self, card_id: str, text: str) -> str:
+        from agente_gestion.domain.comment_action import comment_text
+        if not self._allow_comment_writes:
+            raise ValueError("External comment writes are disabled")
+        card_id = _validate_safe_identifier(card_id)
+        comment_text(text)
+        self._request_card_data(card_id, "idBoard")
+        # Exactly one POST. No retry and no sandbox fallback after uncertain delivery.
+        response = requests.post(f"https://api.trello.com/1/cards/{card_id}/actions/comments",
+            headers=self._auth_headers(), data={"text": text}, timeout=self._timeout_seconds, allow_redirects=False)
+        if response.status_code != 200:
+            raise ValueError("Comment delivery unconfirmed; reconcile before retrying")
+        data = response.json()
+        return _validate_safe_identifier(data.get("id"))
+
+    def read_card_comment(self, card_id: str, action_id: str) -> str:
+        card_id, action_id = _validate_safe_identifier(card_id), _validate_safe_identifier(action_id)
+        response = requests.get(f"https://api.trello.com/1/actions/{action_id}", headers=self._auth_headers(),
+                                timeout=self._timeout_seconds, allow_redirects=False)
+        if response.status_code != 200:
+            raise ValueError("Comment read-back unavailable")
+        action = response.json()
+        data = action.get("data", {})
+        if (action.get("id") != action_id or action.get("type") != "commentCard"
+                or data.get("card", {}).get("id") != card_id or data.get("board", {}).get("id") != self._board_id):
+            raise ValueError("Comment read-back target mismatch")
+        return data["text"]
 
     def _auth_headers(self) -> dict[str, str]:
         return {
@@ -294,4 +333,3 @@ class TrelloActionAdapter(TaskActionPort):
             return False
 
         return True
-

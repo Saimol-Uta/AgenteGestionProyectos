@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, Literal
 from pydantic import BaseModel, Field, ConfigDict, StrictStr, model_validator
 from agente_gestion.domain.action_proposal import ProposalField, ProposalValue, _value
 
@@ -29,6 +29,9 @@ class TaskStateClaim(BaseModel):
     state: TaskState
 
 
+from agente_gestion.domain.comment_action import CommentContext
+
+
 class DomainProposalRule(BaseModel):
     """Owner-supplied constraints, not authorization or authenticated identity.
 
@@ -41,6 +44,8 @@ class DomainProposalRule(BaseModel):
     rule_id: StrictStr
     task_ids: list[StrictStr]
     field: ProposalField
+    operation: Literal["append_comment"] | None = Field(default=None, exclude_if=lambda v: v is None)
+    comment_context: CommentContext | None = Field(default=None, exclude_if=lambda v: v is None)
     allowed_values: list[ProposalValue]
     rationale: StrictStr
     expected_impact: StrictStr
@@ -57,6 +62,11 @@ class DomainProposalRule(BaseModel):
         if type(ids) is not list or not ids or any(type(i) is not str or not i.strip() for i in ids):
             raise ValueError("Explicit eligible task IDs required")
         values = data.get("allowed_values")
+        if data.get("field") == "comment":
+            if data.get("operation") != "append_comment" or not data.get("comment_context"):
+                raise ValueError("Comment rule requires explicit append operation and preconditions")
+        elif data.get("operation") is not None or data.get("comment_context") is not None:
+            raise ValueError("Comment preconditions cannot change field-update rules")
         if type(values) is not list or not values:
             raise ValueError("Explicit alternatives required")
         data["allowed_values"] = [_value(data.get("field"), v) for v in values]
@@ -78,6 +88,8 @@ class MonitoringRequestedChange(BaseModel):
     rule_id: StrictStr
     task_id: StrictStr
     field: ProposalField
+    operation: Literal["append_comment"] | None = Field(default=None, exclude_if=lambda v: v is None)
+    comment_context: CommentContext | None = Field(default=None, exclude_if=lambda v: v is None)
     current_value: ProposalValue
     proposed_value: ProposalValue
     evidence_ids: list[StrictStr]

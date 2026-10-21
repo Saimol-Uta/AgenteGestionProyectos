@@ -84,6 +84,25 @@ def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[E
     for rule in rules.rules:
         for tid in rule.task_ids:
             cards = [t for t in tasks if t.id == tid]
+            if rule.operation == "append_comment" and len(cards) == 1:
+                from agente_gestion.domain.comment_action import comment_evidence_errors
+                card = cards[0]
+                observed = [e for e in evidence or [] if e.category == "task"
+                            and e.provenance.project_id == project_id and e.provenance.external_id == tid]
+                relevant = [e for e in evidence or [] if e in observed or e.provenance.id == rule.comment_context.human_evidence_id]
+                risk = next((r for r in known_risks if r.kind.value == "overdue" and tid in r.task_ids), None)
+                errors = (["comment_task_evidence_required"] if len(observed) != 1 else
+                          comment_evidence_errors(card, project_id, rule.comment_context, relevant, observed[0].provenance.timestamp))
+                if errors or risk is None:
+                    limitations.extend(errors or ["risk_not_present"])
+                    continue
+                for text in rule.allowed_values:
+                    choices.append(MonitoringRequestedChange(project_id=project_id, rule_id=rule.rule_id,
+                        task_id=tid, field="comment", operation="append_comment", comment_context=rule.comment_context,
+                        current_value=None, proposed_value=text, evidence_ids=[e.provenance.id for e in relevant],
+                        rationale=rule.rationale, expected_impact=rule.expected_impact,
+                        risk_refs=[ProposalRiskRef(risk_id=risk.risk_id, kind=risk.kind, task_id=tid, capture_id=risk.capture_id)]))
+                continue
             code = None
             if len(cards) != 1:
                 code = "unknown_task"
