@@ -155,6 +155,7 @@ export function ProposalDecisionTrail({
             <div><dt>Decisión</dt><dd>{decisionLabel(receipt.decision)}</dd></div>
             <div><dt>Modo</dt><dd>{modeLabel(receipt.execution_mode)}</dd></div>
             <div><dt>Verificación</dt><dd>{verificationLabel(receipt.verification_status)}</dd></div>
+            {receipt.native_action_id && <div><dt>Identificador del comentario {receipt.execution_mode === "sandbox" ? "simulado" : "nativo"}</dt><dd><code>{receipt.native_action_id}</code></dd></div>}
             <div><dt>Actor</dt><dd>{receipt.actor_id ?? "Desconocido"} · {receipt.actor_verification === "verified_local_session" ? "sesión verificada" : "verificación desconocida"}</dd></div>
             {receipt.reason && <div><dt>Motivo</dt><dd>{receipt.reason}</dd></div>}
             {receipt.audit_event_id && <div><dt>Evento de auditoría</dt><dd><code>{receipt.audit_event_id}</code></dd></div>}

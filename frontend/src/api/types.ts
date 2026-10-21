@@ -806,6 +806,7 @@ export interface ProposalDecisionHistoryEntry {
 }
 
 export interface ProposalExecutionReceipt {
+  native_action_id?: string | null;
   execution_id: string;
   proposal_id: string;
   original_proposal_id: string | null;
@@ -839,6 +840,7 @@ export interface ProposalTechnicalReview {
 }
 
 export interface ProposalSummary {
+  operation?: "append_comment" | null;
   proposal_id: string;
   project_id: string;
   task_id: string;
@@ -879,6 +881,7 @@ export interface ProposalCollection extends Paginated<ProposalSummary> {
 export type ProposalExecutionDecision = "approve_and_execute" | "modify_and_execute" | "reject";
 
 export interface ExecuteProposalRequest {
+  modified_comment?: string;
   decision: ProposalExecutionDecision;
   modified_due_date?: string;
   modified_priority?: string;

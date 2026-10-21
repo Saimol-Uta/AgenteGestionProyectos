@@ -1093,6 +1093,8 @@ class ProjectOrchestrator:
 
     def _persist_proposals(self, run, draft, rules, capture, evidence, limitations, risks=None):
         """Catalogue recommendations only; pure fact checks do not prove chronology."""
+        from agente_gestion.agents.context import proposal_rule_evidence
+        evidence = proposal_rule_evidence(evidence, rules)
         codes = list(limitations)
         saved, failures = 0, []
         technical_ready, technical_blocked = 0, 0

@@ -61,5 +61,5 @@ export function proposalCanExecute(proposal: ProposalDetail) {
 }
 
 export function proposalCanModify(proposal: ProposalDetail) {
-  return ["due_date", "priority", "assignee_ids"].includes(proposal.field);
+  return ["due_date", "priority", "assignee_ids", "comment"].includes(proposal.field);
 }

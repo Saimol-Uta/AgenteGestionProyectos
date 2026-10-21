@@ -596,6 +596,7 @@ class ControlPlaneRepository:
                 task_id=proposal.task_id,
                 capture_id=proposal.observed_capture_id,
                 field=proposal.field,
+                operation=proposal.operation,
                 current_value=_safe_proposal_value(proposal.current_value, self._safe_text),
                 proposed_value=_safe_proposal_value(proposal.proposed_value, self._safe_text),
                 rationale=self._safe_text(proposal.rationale, 2000) or "",
@@ -800,6 +801,7 @@ class ControlPlaneRepository:
         }:
             result = latest_record.result
             latest_receipt = ProposalExecutionReceiptView(
+                native_action_id=result.native_action_id,
                 execution_id=safe_identifier(result.execution_id) or "unknown",
                 proposal_id=safe_identifier(result.proposal_id) or "unknown",
                 original_proposal_id=safe_identifier(latest_record.original_proposal_id),
@@ -1557,4 +1559,3 @@ def _int_or_none(value: object) -> int | None:
 
 def _float_or_none(value: object) -> float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-

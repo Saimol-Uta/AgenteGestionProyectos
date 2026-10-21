@@ -249,6 +249,7 @@ export function fieldLabel(field: string | null | undefined): string {
     due_date: "Fecha de vencimiento",
     due_complete: "Vencimiento completado",
     priority: "Prioridad explícita",
+    comment: "Comentario de seguimiento",
     labels: "Etiquetas",
     is_included: "Incluida en el avance",
     has_contradiction: "Señales contradictorias",

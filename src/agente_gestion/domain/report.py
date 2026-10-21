@@ -30,6 +30,7 @@ class TaskStateClaim(BaseModel):
 
 
 from agente_gestion.domain.comment_action import CommentContext
+from agente_gestion.domain.evidence import EvidenceItem
 
 
 class DomainProposalRule(BaseModel):
@@ -46,6 +47,7 @@ class DomainProposalRule(BaseModel):
     field: ProposalField
     operation: Literal["append_comment"] | None = Field(default=None, exclude_if=lambda v: v is None)
     comment_context: CommentContext | None = Field(default=None, exclude_if=lambda v: v is None)
+    human_confirmation: EvidenceItem | None = Field(default=None, exclude_if=lambda v: v is None)
     allowed_values: list[ProposalValue]
     rationale: StrictStr
     expected_impact: StrictStr

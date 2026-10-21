@@ -18,7 +18,7 @@ import "./proposals-phase1.css";
 
 const pageSize = 25;
 type DecisionAction = "approve" | "modify" | "reject";
-type ModifiableField = "due_date" | "priority" | "assignee_ids";
+type ModifiableField = "due_date" | "priority" | "assignee_ids" | "comment";
 
 function technicalEligibilityLabel(status: ProposalDetail["technical_eligibility"] | null | undefined) {
   if (status === "eligible") return "Elegible";
@@ -69,7 +69,7 @@ function actionCopy(action: DecisionAction, modified: boolean) {
 }
 
 function modifiableField(field: ProposalField): field is ModifiableField {
-  return field === "due_date" || field === "priority" || field === "assignee_ids";
+  return field === "due_date" || field === "priority" || field === "assignee_ids" || field === "comment";
 }
 
 function openProposalEvidence() {
@@ -153,6 +153,7 @@ export function ProposalsPage() {
   const [dueDate, setDueDate] = useState("");
   const [priority, setPriority] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [comment, setComment] = useState("");
   const [progress, setProgress] = useState("");
   const [failure, setFailure] = useState("");
   const inFlight = useRef(false);
@@ -178,6 +179,7 @@ export function ProposalsPage() {
     setDueDate("");
     setPriority("");
     setAssignee("");
+    setComment("");
     setFailure("");
     setProgress("");
   }, [proposal?.project_id, proposal?.proposal_id, proposal?.capture_id, proposal?.proposal_body_sha256]);
@@ -202,11 +204,13 @@ export function ProposalsPage() {
     setDueDate(proposal.field === "due_date" && typeof proposal.proposed_value === "string" ? proposal.proposed_value.slice(0, 10) : "");
     setPriority(proposal.field === "priority" && typeof proposal.proposed_value === "string" && ["low", "medium", "high"].includes(proposal.proposed_value) ? proposal.proposed_value : "");
     setAssignee(proposal.field === "assignee_ids" && Array.isArray(proposal.proposed_value) ? proposal.proposed_value.join(", ") : "");
+    setComment(proposal.field === "comment" && typeof proposal.proposed_value === "string" ? proposal.proposed_value : "");
   }
 
   function changeDraft(field: ModifiableField, value: string) {
     setModifiedField(field);
     if (field === "due_date") setDueDate(value);
+    else if (field === "comment") setComment(value);
     else if (field === "priority") setPriority(value);
     else setAssignee(value);
   }
@@ -229,7 +233,8 @@ export function ProposalsPage() {
       }
       if ((modifiedField === "due_date" && !modifiedDueDate)
         || (modifiedField === "priority" && !modifiedPriority)
-        || (modifiedField === "assignee_ids" && !modifiedAssigneeIds?.length)) {
+        || (modifiedField === "assignee_ids" && !modifiedAssigneeIds?.length)
+        || (modifiedField === "comment" && !comment.trim())) {
         setFailure("El campo modificado debe tener un valor válido antes de enviar la decisión.");
         return;
       }
@@ -239,6 +244,7 @@ export function ProposalsPage() {
       ...(decision === "modify_and_execute" && modifiedDueDate ? { modified_due_date: modifiedDueDate } : {}),
       ...(decision === "modify_and_execute" && modifiedPriority ? { modified_priority: modifiedPriority } : {}),
       ...(decision === "modify_and_execute" && modifiedAssigneeIds ? { modified_assignee_ids: modifiedAssigneeIds } : {}),
+      ...(decision === "modify_and_execute" && modifiedField === "comment" ? { modified_comment: comment } : {}),
       reason: reason.trim(),
     };
     const keyIdentity = `${proposalScope(proposal)}:${JSON.stringify(payload)}`;
@@ -380,9 +386,9 @@ export function ProposalsPage() {
                     <p className="eyebrow">2 · CAMBIO RECOMENDADO</p>
                     <h3 id="proposal-change-title">{fieldLabel(proposal.field)}</h3>
                     <div className="proposal-single-comparison" aria-label={`Comparación del campo ${fieldLabel(proposal.field)}`}>
-                      <div><span>Valor actual</span><strong>{comparisonValue(proposal.current_value, proposal.field)}</strong></div>
+                      <div><span>{proposal.field === "comment" ? "Operación" : "Valor actual"}</span><strong>{proposal.field === "comment" ? "Agregar comentario; no sustituye datos de la tarjeta" : comparisonValue(proposal.current_value, proposal.field)}</strong></div>
                       <ArrowRight aria-hidden="true" size={18} />
-                      <div><span>{modifiedField ? "Cambio de la gestora" : "Cambio recomendado"}</span><strong>{modifiedField === "due_date" ? dueDate || comparisonValue(proposal.proposed_value, proposal.field) : modifiedField === "priority" ? priority || comparisonValue(proposal.proposed_value, proposal.field) : modifiedField === "assignee_ids" ? assignee || comparisonValue(proposal.proposed_value, proposal.field) : comparisonValue(proposal.proposed_value, proposal.field)}</strong></div>
+                      <div><span>{modifiedField ? "Cambio de la gestora" : "Cambio recomendado"}</span><strong>{modifiedField === "comment" ? comment : modifiedField === "due_date" ? dueDate || comparisonValue(proposal.proposed_value, proposal.field) : modifiedField === "priority" ? priority || comparisonValue(proposal.proposed_value, proposal.field) : modifiedField === "assignee_ids" ? assignee || comparisonValue(proposal.proposed_value, proposal.field) : comparisonValue(proposal.proposed_value, proposal.field)}</strong></div>
                     </div>
                     <p>Impacto esperado: {proposal.expected_impact || "No informado."}</p>
                     {modifiedField && <p className="caption">La modificación sustituye únicamente el valor recomendado para este mismo campo.</p>}
@@ -420,6 +426,7 @@ export function ProposalsPage() {
                     {canDecide && (canExecute || canReject) && !executionResult && (
                       <div className="proposal-action-area">
                         <label className="filter-control"><span>Motivo de la decisión</span><textarea aria-label="Motivo de la decisión" maxLength={1000} rows={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+                        {editing && proposal.field === "comment" && <fieldset className="proposal-draft-editor" disabled={working || Boolean(executionResult)}><legend>Revisar el comentario efectivo</legend><label>Comentario de seguimiento<textarea aria-label="Comentario de seguimiento" maxLength={2000} rows={7} value={comment} onChange={(event) => changeDraft("comment", event.target.value)} /></label><p>El backend revisará el texto modificado antes de ejecutar. La simulación no publica en Trello.</p></fieldset>}
                         <p>El motivo se envía con la decisión protegida. Rechazar no requiere que la propuesta sea técnicamente ejecutable.</p>
                         {editing && proposal.field === "due_date" && <fieldset className="proposal-draft-editor" disabled={working || Boolean(executionResult)}><legend>Modificar la fecha recomendada</legend><label>Nueva fecha límite<input type="date" value={dueDate} onChange={(event) => changeDraft("due_date", event.target.value)} /></label></fieldset>}
                         {editing && proposal.field === "priority" && <fieldset className="proposal-draft-editor" disabled={working || Boolean(executionResult)}><legend>Modificar la prioridad recomendada</legend><label>Nueva prioridad<select value={priority} onChange={(event) => changeDraft("priority", event.target.value)}><option value="">Selecciona prioridad</option><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option></select></label></fieldset>}

@@ -51,7 +51,8 @@ class ProposalSummary(ApiModel):
     project_id: str
     task_id: str
     capture_id: str
-    field: Literal["start_date", "due_date", "priority", "assignee_ids", "state"]
+    field: Literal["start_date", "due_date", "priority", "assignee_ids", "state", "comment"]
+    operation: Literal["append_comment"] | None = Field(default=None, exclude_if=lambda v: v is None)
     current_value: ProposalValue
     proposed_value: ProposalValue
     rationale: str
@@ -97,6 +98,7 @@ class ProposalDecisionHistoryEntry(ApiModel):
 
 
 class ProposalExecutionReceiptView(ApiModel):
+    native_action_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     execution_id: str
     proposal_id: str
     original_proposal_id: str | None = None

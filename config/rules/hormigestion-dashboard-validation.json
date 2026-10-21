@@ -1,0 +1,30 @@
+{
+  "project_id": "HORMIGESTION",
+  "rules": [{
+    "rule_id": "hormigestion-dashboard-validation-followup",
+    "task_ids": ["6a9582c16a2c16f6106609e2"],
+    "field": "comment",
+    "operation": "append_comment",
+    "comment_context": {
+      "priority_label_id": "6a957e9173d4d13d0c5db616",
+      "expected_due_date": "2026-10-19",
+      "human_evidence_id": "dashboard-owner-validation-confirmation"
+    },
+    "human_confirmation": {
+      "category": "human_confirmation",
+      "summary": "Confirmación humana: implementación desarrollada; pruebas funcionales y verificación de criterios pendientes. No procede del snapshot de Trello ni autoriza publicación.",
+      "provenance": {
+        "id": "dashboard-owner-validation-confirmation",
+        "source": "manual",
+        "project_id": "HORMIGESTION",
+        "external_id": "6a9582c16a2c16f6106609e2",
+        "timestamp": "2026-10-20T23:00:00Z",
+        "payload": {"confirmed_by": "user-request-owner-confirmation", "implementation_developed": true, "validation_pending": true}
+      }
+    },
+    "allowed_values": ["Seguimiento de validación: la implementación del módulo Dashboard y reportería se encuentra desarrollada. Permanecen pendientes las pruebas funcionales y la verificación de los criterios de aceptación. Se solicita registrar los resultados y sus evidencias antes de marcar la actividad como completada. Se conserva la fecha y el responsable oficiales."],
+    "risk_kind": "overdue",
+    "rationale": "La implementación está desarrollada según confirmación humana, pero resta validar funcionalidad y criterios antes del cierre. No se afirma un defecto técnico ni una causa de retraso.",
+    "expected_impact": "Obtener resultados y evidencia verificable sin cambiar planificación ni responsables."
+  }]
+}

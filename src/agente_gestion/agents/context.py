@@ -55,6 +55,16 @@ def estimate_tokens_from_data(data: Any) -> int:
     return max(1, len(raw_text) // 3 + 1)
 
 
+def proposal_rule_evidence(evidence, rules):
+    """Owner-supplied manual evidence is separate from collected provider evidence."""
+    result = list(evidence or [])
+    for rule in getattr(rules, "rules", []):
+        item = rule.human_confirmation
+        if item is not None and item not in result:
+            result.append(item)
+    return result
+
+
 def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[EvidenceItem]],
                        risks: Optional[list] = None):
     """Build only observed, visible, rule-backed choices; never infer change intent.
@@ -76,6 +86,7 @@ def monitoring_choices(project_id, tasks, rows, rules, evidence: Optional[list[E
         return [], ["project_mismatch"]
     if not rules.rules:
         return [], ["missing_rules"]
+    evidence = proposal_rule_evidence(evidence, rules)
     keys = [(tid, r.field) for r in rules.rules for tid in r.task_ids]
     rule_ids = [r.rule_id for r in rules.rules]
     if len(set(keys)) != len(keys) or len(set(rule_ids)) != len(rule_ids):
